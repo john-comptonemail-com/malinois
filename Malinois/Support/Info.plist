@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>MALINOIS</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<!--
+	  Driven by the build settings (MARKETING_VERSION / CURRENT_PROJECT_VERSION) rather than
+	  hardcoded. These were literals until now, which made the Xcode version fields inert:
+	  the project said 1.1 while every build shipped as 1.0(1). Worse, CFBundleVersion was
+	  never bumped in any commit, so builds 2-5 were archived from an uncommitted working
+	  tree and the v1.0-b5 tag does not contain the source of the build it names. Bump in
+	  the target's build settings and commit before archiving. (CFBundleName above already
+	  used $(PRODUCT_NAME), so this substitution is proven in this target.)
+	-->
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Malinois captures a photo or short clip as evidence when your unattended device is tampered with.</string>
+	<!--
+	  PINViews calls LAContext.evaluatePolicy(.deviceOwnerAuthentication) for lost-PIN
+	  recovery, which attempts Face ID before falling back to the device passcode. Without
+	  this key the biometric leg is skipped and recovery silently degrades to passcode-only.
+	-->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID can open your evidence log and run sensor tests, and confirms it's you before re-setting a forgotten PIN. Settings and disarming always require your Malinois PIN.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Malinois listens for handling noise (footsteps, movement) as a tamper tripwire and can record a short evidence clip.</string>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<!-- Empty dict = the system default launch screen. It previously declared a UIColorName
+	     of "", which names no colour asset and simply resolved to the same default. -->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

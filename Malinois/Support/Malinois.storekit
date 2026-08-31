@@ -1,0 +1,41 @@
+{
+  "identifier" : "5B1F2A3C-4D5E-6F70-8192-A3B4C5D6E7F8",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : true,
+      "internalID" : "A1B2C3D4-E5F6-4788-99AA-BBCCDDEEFF00",
+      "localizations" : [
+        {
+          "description" : "One-time unlock. Evidence backs up to your private iCloud and survives a power-off, alerts reach your other Apple devices, plus both cameras, 5s / until-clear clips, and the sound tripwire.",
+          "displayName" : "Malinois Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.johncompton.Malinois.pro",
+      "referenceName" : "Malinois Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "",
+    "_developerTeamID" : "",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

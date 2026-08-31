@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- RELEASE ONLY. Identical to Malinois.entitlements except aps-environment, which must be
+	     `production` for TestFlight and App Store builds: a shipped binary carrying the
+	     `development` value gets an APNs *sandbox* push token, so the CloudKit subscription
+	     that alerts the owner's other devices silently never arrives. That is a paid Pro
+	     feature, so the failure would hit exactly the customers who paid for it.
+	     Keep the two files in sync when adding any other capability. -->
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>

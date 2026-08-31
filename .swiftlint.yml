@@ -1,0 +1,99 @@
+# SwiftLint configuration for Malinois (written against SwiftLint 0.65.1).
+#
+# Philosophy: the default rule set stays on — in particular the correctness
+# rules (force_cast, force_try, implicitly unwrapped optionals, etc.) — and the
+# numeric thresholds are tuned to the style this codebase already ships,
+# measured from the whole tree (~14.6k lines of Swift) at adoption. The few
+# rules disabled at the bottom are pure formatting opinions that a deliberate
+# local pattern contradicts; each entry names the pattern. The bar this file
+# must hold: `swiftlint` from the repo root reports zero violations.
+
+excluded:
+  - .build
+  - DerivedData
+
+identifier_name:
+  # Single-letter and two-letter names are idiomatic here: vector and geometry
+  # math (x, y, z, a, b, d), tight loop/closure locals (i, m, e, s, ev, ck),
+  # and short domain names (ok, on, op). 200+ existing uses — a minimum length
+  # fights the house style, so the minimum is effectively off. The default
+  # 40-char maximum and lowercase-start checks still apply.
+  min_length:
+    warning: 1
+    error: 1
+  # A leading underscore marks lazy backing storage for a computed accessor
+  # (e.g. CloudExfiltrator's `_container` behind `container()`).
+  excluded:
+    - ^_\w+$
+
+line_length:
+  # Plain code lines top out around 170 today (test truth-tables with long
+  # argument labels); 175 keeps that shape working with a little slack. Lines
+  # carrying a long string literal (60+ chars inside one pair of quotes) are
+  # exempt: user-facing copy and log messages are deliberately written as one
+  # full sentence on one line (OnboardingViews, ArmingView) so they can be read
+  # and edited as prose. For everything else 300 is a hard stop.
+  warning: 175
+  error: 300
+  ignores_urls: true
+  excluded_lines_patterns:
+    - '"[^"]{60,}'
+
+# Size metrics: runaway guards, not targets. MonitoringEngine.swift is a
+# deliberate monolith (2,776 lines, 1,526-line type body today) — the arming /
+# detection / escalation state machine stays in one file so it can be audited
+# in one read. Limits sit well above today's high-water marks so they only
+# fire on pathological growth (say, a generated file committed by mistake).
+file_length:
+  warning: 4000
+  error: 5000
+type_body_length:
+  warning: 2000
+  error: 3000
+function_body_length: # high-water mark today: 76 lines (CameraController)
+  warning: 120
+  error: 200
+cyclomatic_complexity: # high-water mark today: 18 — switch-heavy engine code
+  warning: 25
+  error: 40
+function_parameter_count:
+  # Pure, unit-testable decision functions (MonitoringEngine.alertAction and
+  # friends) take every input as an explicit parameter instead of reading
+  # object state; 8 parameters is the current maximum.
+  warning: 10
+  error: 12
+large_tuple:
+  # Gravity/attitude vectors are (x, y, z); capture results and test fixture
+  # rows are labeled 4-tuples. Allow up to 4; anything wider should be a struct.
+  warning: 4
+  error: 5
+
+switch_case_alignment:
+  # Allow compact one-line switches, e.g. HomeView's
+  # `switch self { case .log: 0; case .settings: 1; case .test: 2 }`.
+  ignore_one_liners: true
+
+disabled_rules:
+  # Both trailing-comma shapes are in deliberate use: data tables end rows with
+  # a trailing comma (EventTests eviction tables — rows move without touching
+  # neighbours), while most other multiline literals (Keychain query
+  # dictionaries, notification categories) end without one. The rule can ban
+  # or mandate the comma, never allow both, so it is off.
+  - trailing_comma
+  # Test fixtures column-align tuple tables (the eviction-order tables in
+  # EventTests) with extra spaces after commas; the rule allows exactly one.
+  - comma
+  # The compact-conditional pattern stacks one-line bodies:
+  #     if let failure { cont.resume(throwing: failure) }
+  #     else if let data { cont.resume(returning: data) }
+  # statement_position can enforce cuddled or uncuddled `else`, never both,
+  # and this codebase legitimately uses both shapes.
+  - statement_position
+  # Paired lines are vertically aligned with padding before the brace
+  # (front/rear captures in MonitoringEngine, begin/endCalibration in
+  # VisionMonitor); the rule forbids the alignment spaces.
+  - opening_brace
+  # `var onActivity: (() -> Void)? = nil` keeps a struct's memberwise-init
+  # default explicit; stripping the `= nil` as this rule wants risks changing
+  # the generated initializer's signature.
+  - implicit_optional_initialization

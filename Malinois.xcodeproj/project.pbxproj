@@ -1,0 +1,635 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B1B2C3D4E5F6000000000001 /* MalinoisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000001 /* MalinoisApp.swift */; };
+		B1B2C3D4E5F6000000000002 /* CoreTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000002 /* CoreTypes.swift */; };
+		B1B2C3D4E5F6000000000003 /* Event.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000003 /* Event.swift */; };
+		B1B2C3D4E5F6000000000004 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000004 /* AppSettings.swift */; };
+		B1B2C3D4E5F6000000000005 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000005 /* KeychainService.swift */; };
+		B1B2C3D4E5F6000000000006 /* EventStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000006 /* EventStore.swift */; };
+		B1B2C3D4E5F6000000000007 /* CameraController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000007 /* CameraController.swift */; };
+		B1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */; };
+		B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */; };
+		B1B2C3D4E5F600000000000A /* SensorMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000A /* SensorMonitor.swift */; };
+		B1B2C3D4E5F600000000000B /* MotionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000B /* MotionMonitor.swift */; };
+		B1B2C3D4E5F600000000000C /* PowerMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000C /* PowerMonitor.swift */; };
+		B1B2C3D4E5F600000000000D /* ProximityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000D /* ProximityMonitor.swift */; };
+		B1B2C3D4E5F600000000000E /* AudioMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000E /* AudioMonitor.swift */; };
+		B1B2C3D4E5F600000000000F /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000F /* RootView.swift */; };
+		B1B2C3D4E5F6000000000010 /* PINViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000010 /* PINViews.swift */; };
+		B1B2C3D4E5F6000000000011 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000011 /* HomeView.swift */; };
+		B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000012 /* ArmingView.swift */; };
+		B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000013 /* ArmedView.swift */; };
+		B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000014 /* EventLogView.swift */; };
+		B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000015 /* EventDetailView.swift */; };
+		B1B2C3D4E5F6000000000016 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000016 /* SettingsView.swift */; };
+		B1B2C3D4E5F6000000000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000017 /* Assets.xcassets */; };
+		B1B2C3D4E5F6000000000018 /* SirenPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */; };
+		B1B2C3D4E5F6000000000020 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000020 /* Brand.swift */; };
+		B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000021 /* DryRunView.swift */; };
+		B1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */; };
+		B1B2C3D4E5F6000000000023 /* ProEntitlements.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */; };
+		B1B2C3D4E5F6000000000024 /* PaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000024 /* PaywallView.swift */; };
+		B1B2C3D4E5F6000000000103 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000103 /* PrivacyInfo.xcprivacy */; };
+		B1B2C3D4E5F6000000000201 /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000201 /* OnboardingViews.swift */; };
+		B1B2C3D4E5F6000000000301 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000301 /* Log.swift */; };
+		B1B2C3D4E5F6000000000401 /* VisionDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000401 /* VisionDetector.swift */; };
+		B1B2C3D4E5F6000000000402 /* VisionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000402 /* VisionMonitor.swift */; };
+		E1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */; };
+		E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000002 /* EventTests.swift */; };
+		E1D2C3D4E5F6000000000003 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */; };
+		E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */; };
+		E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */; };
+		E1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C1C2C3D4E5F6000000000209 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C1C2C3D4E5F6000000000100 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C1C2C3D4E5F6000000000101;
+			remoteInfo = Malinois;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A1B2C3D4E5F6000000000001 /* MalinoisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MalinoisApp.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000002 /* CoreTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTypes.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000003 /* Event.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Event.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000004 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000005 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000006 /* EventStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventStore.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000007 /* CameraController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraController.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudExfiltrator.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngine.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000A /* SensorMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000B /* MotionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000C /* PowerMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000D /* ProximityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProximityMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000E /* AudioMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600000000000F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000010 /* PINViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINViews.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000011 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000012 /* ArmingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmingView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000013 /* ArmedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000014 /* EventLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventLogView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000015 /* EventDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SirenPlayer.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000020 /* Brand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Brand.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000021 /* DryRunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DryRunView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectivityMonitor.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProEntitlements.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000024 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000101 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000102 /* Malinois.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Malinois.entitlements; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000103 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000104 /* Malinois.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Malinois.storekit; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000199 /* Malinois-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Malinois-Release.entitlements"; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000200 /* Malinois.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Malinois.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D4E5F6000000000201 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000301 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000401 /* VisionDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionDetector.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000402 /* VisionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionMonitor.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000002 /* EventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTypesTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngineTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudExfiltratorTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000200 /* MalinoisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MalinoisTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C1C2C3D4E5F6000000000103 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C1C2C3D4E5F6000000000203 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		C1C2C3D4E5F6000000000001 = {
+			isa = PBXGroup;
+			children = (
+				C1C2C3D4E5F6000000000002 /* Malinois */,
+				C1C2C3D4E5F6000000000009 /* MalinoisTests */,
+				C1C2C3D4E5F6000000000008 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000002 /* Malinois */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000000000001 /* MalinoisApp.swift */,
+				C1C2C3D4E5F6000000000003 /* Models */,
+				C1C2C3D4E5F6000000000004 /* Services */,
+				C1C2C3D4E5F6000000000005 /* Monitors */,
+				C1C2C3D4E5F6000000000006 /* Views */,
+				C1C2C3D4E5F6000000000007 /* Support */,
+				A1B2C3D4E5F6000000000017 /* Assets.xcassets */,
+			);
+			path = Malinois;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000000000002 /* CoreTypes.swift */,
+				A1B2C3D4E5F6000000000003 /* Event.swift */,
+				A1B2C3D4E5F6000000000004 /* AppSettings.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000004 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000000000005 /* KeychainService.swift */,
+				A1B2C3D4E5F6000000000006 /* EventStore.swift */,
+				A1B2C3D4E5F6000000000007 /* CameraController.swift */,
+				A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */,
+				A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */,
+				A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */,
+				A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */,
+				A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000005 /* Monitors */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F600000000000A /* SensorMonitor.swift */,
+				A1B2C3D4E5F600000000000B /* MotionMonitor.swift */,
+				A1B2C3D4E5F600000000000C /* PowerMonitor.swift */,
+				A1B2C3D4E5F600000000000D /* ProximityMonitor.swift */,
+				A1B2C3D4E5F600000000000E /* AudioMonitor.swift */,
+				A1B2C3D4E5F6000000000402 /* VisionMonitor.swift */,
+				A1B2C3D4E5F6000000000401 /* VisionDetector.swift */,
+			);
+			path = Monitors;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000006 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F600000000000F /* RootView.swift */,
+				A1B2C3D4E5F6000000000201 /* OnboardingViews.swift */,
+				A1B2C3D4E5F6000000000010 /* PINViews.swift */,
+				A1B2C3D4E5F6000000000011 /* HomeView.swift */,
+				A1B2C3D4E5F6000000000012 /* ArmingView.swift */,
+				A1B2C3D4E5F6000000000013 /* ArmedView.swift */,
+				A1B2C3D4E5F6000000000014 /* EventLogView.swift */,
+				A1B2C3D4E5F6000000000015 /* EventDetailView.swift */,
+				A1B2C3D4E5F6000000000021 /* DryRunView.swift */,
+				A1B2C3D4E5F6000000000016 /* SettingsView.swift */,
+				A1B2C3D4E5F6000000000024 /* PaywallView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000007 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000000000101 /* Info.plist */,
+				A1B2C3D4E5F6000000000102 /* Malinois.entitlements */,
+				A1B2C3D4E5F6000000000199 /* Malinois-Release.entitlements */,
+				A1B2C3D4E5F6000000000103 /* PrivacyInfo.xcprivacy */,
+				A1B2C3D4E5F6000000000104 /* Malinois.storekit */,
+				A1B2C3D4E5F6000000000020 /* Brand.swift */,
+				A1B2C3D4E5F6000000000301 /* Log.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000008 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F6000000000200 /* Malinois.app */,
+				D1D2C3D4E5F6000000000200 /* MalinoisTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C1C2C3D4E5F6000000000009 /* MalinoisTests */ = {
+			isa = PBXGroup;
+			children = (
+				D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */,
+				D1D2C3D4E5F6000000000002 /* EventTests.swift */,
+				D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */,
+				D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */,
+				D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */,
+				D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */,
+			);
+			path = MalinoisTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C1C2C3D4E5F6000000000101 /* Malinois */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C1C2C3D4E5F6000000000106 /* Build configuration list for PBXNativeTarget "Malinois" */;
+			buildPhases = (
+				C1C2C3D4E5F6000000000102 /* Sources */,
+				C1C2C3D4E5F6000000000103 /* Frameworks */,
+				C1C2C3D4E5F6000000000104 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Malinois;
+			productName = Malinois;
+			productReference = A1B2C3D4E5F6000000000200 /* Malinois.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C1C2C3D4E5F6000000000201 /* MalinoisTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C1C2C3D4E5F6000000000205 /* Build configuration list for PBXNativeTarget "MalinoisTests" */;
+			buildPhases = (
+				C1C2C3D4E5F6000000000202 /* Sources */,
+				C1C2C3D4E5F6000000000203 /* Frameworks */,
+				C1C2C3D4E5F6000000000204 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C1C2C3D4E5F6000000000208 /* PBXTargetDependency */,
+			);
+			name = MalinoisTests;
+			productName = MalinoisTests;
+			productReference = D1D2C3D4E5F6000000000200 /* MalinoisTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C1C2C3D4E5F6000000000100 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1520;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					C1C2C3D4E5F6000000000101 = {
+						CreatedOnToolsVersion = 15.2;
+					};
+					C1C2C3D4E5F6000000000201 = {
+						CreatedOnToolsVersion = 15.2;
+						TestTargetID = C1C2C3D4E5F6000000000101;
+					};
+				};
+			};
+			buildConfigurationList = C1C2C3D4E5F6000000000105 /* Build configuration list for PBXProject "Malinois" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = C1C2C3D4E5F6000000000001;
+			productRefGroup = C1C2C3D4E5F6000000000008 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C1C2C3D4E5F6000000000101 /* Malinois */,
+				C1C2C3D4E5F6000000000201 /* MalinoisTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C1C2C3D4E5F6000000000104 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1B2C3D4E5F6000000000017 /* Assets.xcassets in Resources */,
+				B1B2C3D4E5F6000000000103 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C1C2C3D4E5F6000000000204 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C1C2C3D4E5F6000000000102 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1B2C3D4E5F6000000000001 /* MalinoisApp.swift in Sources */,
+				B1B2C3D4E5F6000000000002 /* CoreTypes.swift in Sources */,
+				B1B2C3D4E5F6000000000003 /* Event.swift in Sources */,
+				B1B2C3D4E5F6000000000004 /* AppSettings.swift in Sources */,
+				B1B2C3D4E5F6000000000005 /* KeychainService.swift in Sources */,
+				B1B2C3D4E5F6000000000006 /* EventStore.swift in Sources */,
+				B1B2C3D4E5F6000000000007 /* CameraController.swift in Sources */,
+				B1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift in Sources */,
+				B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */,
+				B1B2C3D4E5F6000000000018 /* SirenPlayer.swift in Sources */,
+				B1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift in Sources */,
+				B1B2C3D4E5F6000000000023 /* ProEntitlements.swift in Sources */,
+				B1B2C3D4E5F6000000000020 /* Brand.swift in Sources */,
+				B1B2C3D4E5F6000000000301 /* Log.swift in Sources */,
+				B1B2C3D4E5F600000000000A /* SensorMonitor.swift in Sources */,
+				B1B2C3D4E5F600000000000B /* MotionMonitor.swift in Sources */,
+				B1B2C3D4E5F600000000000C /* PowerMonitor.swift in Sources */,
+				B1B2C3D4E5F600000000000D /* ProximityMonitor.swift in Sources */,
+				B1B2C3D4E5F600000000000E /* AudioMonitor.swift in Sources */,
+				B1B2C3D4E5F6000000000402 /* VisionMonitor.swift in Sources */,
+				B1B2C3D4E5F6000000000401 /* VisionDetector.swift in Sources */,
+				B1B2C3D4E5F600000000000F /* RootView.swift in Sources */,
+				B1B2C3D4E5F6000000000201 /* OnboardingViews.swift in Sources */,
+				B1B2C3D4E5F6000000000010 /* PINViews.swift in Sources */,
+				B1B2C3D4E5F6000000000011 /* HomeView.swift in Sources */,
+				B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */,
+				B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */,
+				B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */,
+				B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */,
+				B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */,
+				B1B2C3D4E5F6000000000016 /* SettingsView.swift in Sources */,
+				B1B2C3D4E5F6000000000024 /* PaywallView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C1C2C3D4E5F6000000000202 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift in Sources */,
+				E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */,
+				E1D2C3D4E5F6000000000003 /* AppSettingsTests.swift in Sources */,
+				E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */,
+				E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */,
+				E1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C1C2C3D4E5F6000000000208 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C1C2C3D4E5F6000000000101 /* Malinois */;
+			targetProxy = C1C2C3D4E5F6000000000209 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C1C2C3D4E5F6000000000107 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C1C2C3D4E5F6000000000108 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C1C2C3D4E5F6000000000109 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 31;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Malinois/Support/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C1C2C3D4E5F600000000010A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 31;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Malinois/Support/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		C1C2C3D4E5F6000000000206 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Malinois.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Malinois";
+			};
+			name = Debug;
+		};
+		C1C2C3D4E5F6000000000207 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Malinois.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Malinois";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C1C2C3D4E5F6000000000105 /* Build configuration list for PBXProject "Malinois" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1C2C3D4E5F6000000000107 /* Debug */,
+				C1C2C3D4E5F6000000000108 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C1C2C3D4E5F6000000000106 /* Build configuration list for PBXNativeTarget "Malinois" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1C2C3D4E5F6000000000109 /* Debug */,
+				C1C2C3D4E5F600000000010A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C1C2C3D4E5F6000000000205 /* Build configuration list for PBXNativeTarget "MalinoisTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1C2C3D4E5F6000000000206 /* Debug */,
+				C1C2C3D4E5F6000000000207 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = C1C2C3D4E5F6000000000100 /* Project object */;
+}
