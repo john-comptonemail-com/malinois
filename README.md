@@ -30,9 +30,23 @@ This is ultimately a personal project, but it's a project I think others might f
 
 ## Pro
 
-A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (evidence survives even if the phone is destroyed seconds later), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
+A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (evidence survives even if the phone is destroyed seconds later), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors. New installs include a 30-day trial of everything Pro does — no card, nothing to cancel.
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
+
+## Roadmap
+
+Solo project, no dates, and everything here is subject to change — or to being talked out of. If one of these matters to you (or something missing does), support@comptonemail.com reaches me.
+
+**Planned**
+
+- **Hardware-key disarm** — disarm with a YubiKey-class security key, NFC or USB-C. The crypto path is already proven on-device; this is the next major feature.
+- **Honest capture-interruption records** — when iOS takes the camera or microphone away mid-capture (a call, another app, system pressure), the log should say exactly that, as an event, rather than fail silently.
+
+**Exploring**
+
+- **Apple Watch alerts** — the tamper alert as a tap on your wrist. (An iOS quirk makes this need a real watch app: an armed phone that is unlocked and in the foreground never mirrors its notifications to its own paired watch.)
+- **Heartbeat records** — periodic proof-of-life while armed, so that if a device goes silent, the silence itself becomes evidence.
 
 ---
 

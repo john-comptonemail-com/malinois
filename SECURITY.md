@@ -286,7 +286,11 @@ Two consequences matter for the threat model:
   protection posture is exactly what the boundary exists to prevent (eighth review, M1).
   Viewing is a convenience; the security boundary is unmoved: disarm, stopping a recovery
   re-arm, and changing the PIN itself never accept a
-  face, because a face can be *presented* while a PIN has to be *given*. Test sensors records nothing, but it lists
+  face, because a face can be *presented* while a PIN has to be *given*. Inside a Guided
+  Access session the Face ID offer is skipped entirely and the pad stands with a caption:
+  iOS defers the biometric sheet under GA without erroring, and pre-fix the
+  queued request left the privacy cover over the pad — a fail-closed hang, but a
+  dead-end. Test sensors records nothing, but it lists
   exactly which tripwires are enabled and renders their live thresholds — the same
   reconnaissance the Settings gate exists to deny — so gating the log and Settings while
   leaving it open would have been an inconsistency worth nothing to the owner and quite a lot

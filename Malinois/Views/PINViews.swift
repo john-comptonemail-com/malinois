@@ -9,6 +9,7 @@
 import SwiftUI
 import Combine
 import LocalAuthentication
+import UIKit
 
 // MARK: - PIN pad
 
@@ -226,6 +227,7 @@ struct PINRecoveryView: View {
     var onAuthenticated: () -> Void
     @State private var failed = false
     @State private var authUnavailable = false
+    @State private var guidedAccessBlocked = false
 
     private var title: String {
         kind == .lostHash ? "PIN unavailable" : "Verify it's you"
@@ -251,7 +253,15 @@ struct PINRecoveryView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
-            if authUnavailable {
+            if guidedAccessBlocked {
+                Text("End Guided Access first (triple-click the side button) — iOS won't show the verification screen while it's on. Then tap Try Again.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                Button("Try Again", action: authenticate)
+                    .buttonStyle(.borderedProminent)
+            } else if authUnavailable {
                 Text("Recovery requires a device passcode. Set one in iOS Settings → Face ID & Passcode, then tap Try Again.")
                     .font(.footnote)
                     .foregroundStyle(.orange)
@@ -271,6 +281,16 @@ struct PINRecoveryView: View {
     }
 
     private func authenticate() {
+        // Same OS behavior as the gate's Face ID offer (BACKLOG 44): under Guided Access
+        // the system auth sheet is DEFERRED, not refused — canEvaluatePolicy still says
+        // yes, and the request queues silently until GA ends. Recovery is fail-closed
+        // (sixth review F4), so without this branch that hang reads as a dead-end. The
+        // owner ends GA (it is their session) and taps Try Again.
+        guard !UIAccessibility.isGuidedAccessEnabled else {
+            guidedAccessBlocked = true
+            return
+        }
+        guidedAccessBlocked = false
         let ctx = LAContext()
         var error: NSError?
         // Fail CLOSED when device authentication can't run (sixth review, F4): "cannot be
@@ -312,9 +332,16 @@ struct PINEntryView: View {
     @State private var error = false
     @State private var shakes: CGFloat = 0   // bumped on a wrong PIN to shake the pad
     @State private var lockoutRemaining: TimeInterval = KeychainService.lockoutRemaining()
+    @State private var gaActive = UIAccessibility.isGuidedAccessEnabled
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private var isLocked: Bool { lockoutRemaining > 0 }
+    /// The offer was wanted in every respect except an active Guided Access session —
+    /// the one case worth a caption, so the missing Face ID prompt reads as iOS policy,
+    /// not a breakage (BACKLOG 44).
+    private var biometricsVetoedByGuidedAccess: Bool {
+        allowBiometrics && settings.biometricUnlock && !isLocked && gaActive
+    }
 
     var body: some View {
         VStack(spacing: 28) {
@@ -330,6 +357,11 @@ struct PINEntryView: View {
                 Text("Incorrect PIN")
                     .font(.footnote)
                     .foregroundStyle(.red)
+            } else if biometricsVetoedByGuidedAccess {
+                Text("Face ID is unavailable during Guided Access — enter your PIN.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
             }
             PINPad(digits: $digits, maxLength: 6, conceal: true, scramble: settings.scramblePINPad,
                    onActivity: onActivity, onComplete: check)
@@ -348,15 +380,37 @@ struct PINEntryView: View {
         .onReceive(ticker) { _ in
             lockoutRemaining = KeychainService.lockoutRemaining()
         }
+        // Ending Guided Access mid-gate lifts the caption AND makes the offer the owner
+        // originally wanted — the clean version of what iOS did by itself pre-fix (the
+        // deferred sheet popping the moment GA ended, from behind the privacy cover).
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIAccessibility.guidedAccessStatusDidChangeNotification)) { _ in
+            gaActive = UIAccessibility.isGuidedAccessEnabled
+            tryBiometrics()
+        }
         .onAppear(perform: tryBiometrics)
     }
 
-    /// Offers Face ID / Touch ID over the pad when the caller allows it and the owner opted
-    /// in. Deliberately skipped during a PIN lockout (the pad is the locked thing; a face
-    /// opening a locked gate would read as the lockout being decorative), and PIN counters
+    /// Pure (unit-tested): whether the pad may offer Face ID / Touch ID. All four gates
+    /// must agree — the caller allows it (write surfaces never do), the owner opted in,
+    /// no lockout stands (the pad is the locked thing; a face opening a locked gate would
+    /// read as the lockout being decorative), and NO Guided Access session is active:
+    /// iOS defers the biometric sheet under GA without erroring (BACKLOG 44), which left
+    /// the request queued behind the privacy cover — a dead-end covering the very pad
+    /// that could have answered. Under GA the pad simply stands.
+    nonisolated static func shouldOfferBiometrics(allow: Bool, optedIn: Bool,
+                                                  locked: Bool, guidedAccess: Bool) -> Bool {
+        allow && optedIn && !locked && !guidedAccess
+    }
+
+    /// Offers Face ID / Touch ID over the pad per `shouldOfferBiometrics`. PIN counters
     /// are untouched either way — a biometric open neither spends nor resets attempts.
     private func tryBiometrics() {
-        guard allowBiometrics, settings.biometricUnlock, !isLocked else { return }
+        guard Self.shouldOfferBiometrics(allow: allowBiometrics,
+                                         optedIn: settings.biometricUnlock,
+                                         locked: isLocked,
+                                         guidedAccess: UIAccessibility.isGuidedAccessEnabled)
+        else { return }
         let ctx = LAContext()
         var error: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return }

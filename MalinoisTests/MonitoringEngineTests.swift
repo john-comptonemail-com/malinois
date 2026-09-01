@@ -234,6 +234,27 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertTrue(HomeView.Gate.test.allowsBiometrics)
     }
 
+    /// BACKLOG 44: iOS defers the biometric sheet under Guided Access without erroring —
+    /// pre-fix the queued request left the privacy cover stuck over the pad (owner-reported
+    /// on device, build 31). The offer rule: all four gates must agree, and an active GA
+    /// session vetoes the offer so the pad simply stands.
+    func testBiometricOfferVetoedUnderGuidedAccess() {
+        XCTAssertTrue(PINEntryView.shouldOfferBiometrics(allow: true, optedIn: true,
+                                                         locked: false, guidedAccess: false))
+        XCTAssertFalse(PINEntryView.shouldOfferBiometrics(allow: true, optedIn: true,
+                                                          locked: false, guidedAccess: true),
+                       "under GA the sheet would queue, not present — never fire the request (44)")
+        XCTAssertFalse(PINEntryView.shouldOfferBiometrics(allow: false, optedIn: true,
+                                                          locked: false, guidedAccess: false),
+                       "write surfaces never offer, whatever the toggle says")
+        XCTAssertFalse(PINEntryView.shouldOfferBiometrics(allow: true, optedIn: false,
+                                                          locked: false, guidedAccess: false),
+                       "no opt-in, no offer")
+        XCTAssertFalse(PINEntryView.shouldOfferBiometrics(allow: true, optedIn: true,
+                                                          locked: true, guidedAccess: false),
+                       "a face must not open a locked gate — the lockout is not decorative")
+    }
+
     /// The lift is auditable: its state record renders as itself, never as "Signal loss"
     /// (the unknown-kind fallback that asserts an attack).
     func testGuidedAccessLiftRecordRendersHonestly() {
