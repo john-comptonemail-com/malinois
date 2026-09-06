@@ -6,6 +6,10 @@
 //  Pro-locked control. Sells the one-time unlock — leading with "one time, no subscription,"
 //  the wedge against subscription competitors. Reuses the app's brand styling.
 //
+//  During Early-Access (BACKLOG 66) it is a support screen instead: Pro is already the
+//  owner's, free and permanently, and the purchase is labelled as what it then is — support
+//  for the project that adds nothing. The same product, the same button, honest copy.
+//
 
 import SwiftUI
 import StoreKit
@@ -32,7 +36,8 @@ struct PaywallView: View {
                     VStack(spacing: 6) {
                         Text("Malinois Pro")
                             .font(.largeTitle.weight(.bold))
-                        Text("One time. No subscription.")
+                        Text(entitlements.status == .earlyAccess ? "Early-Access: Free, permanently"
+                                                                  : "One time. No subscription.")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                     }
@@ -44,7 +49,18 @@ struct PaywallView: View {
                     }
                     .padding(.horizontal, 8)
 
-                    if entitlements.status == .trial {
+                    if entitlements.status == .earlyAccess {
+                        Text("Pro is free for Early-Access installs, permanently. If Pro ever becomes a paid unlock, that will apply to new installs only.")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        Text("Buying adds nothing you don't already have. It supports the project, and that is all it does.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    } else if entitlements.status == .trial {
                         Text("You're in your free trial\(entitlements.trialDaysRemaining.map { " — \($0) day\($0 == 1 ? "" : "s") left" } ?? ""). Buy now to keep Pro when it ends.")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.tint)
@@ -52,7 +68,7 @@ struct PaywallView: View {
                             .padding(.horizontal)
                     }
 
-                    Text("Your evidence stays yours — no account, no server, nothing sent to us.")
+                    Text("Your data stays yours. No account, no server, nothing sent to the developer.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -96,14 +112,16 @@ struct PaywallView: View {
             } label: {
                 HStack {
                     if working { ProgressView().tint(.white) }
-                    Text(working ? "…" : "Unlock Pro — \(priceText)")
+                    Text(working ? "…"
+                         : entitlements.status == .earlyAccess ? "Support Malinois - \(priceText)"
+                                                               : "Unlock Pro - \(priceText)")
                         .font(.headline)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(working || entitlements.status == .pro)   // buyable during the trial, not after purchase
+            .disabled(working || entitlements.status == .pro)   // buyable during the trial and Early-Access, not after purchase
             .padding(.horizontal)
         }
         .padding(.bottom, 8)
@@ -145,12 +163,12 @@ struct PaywallView: View {
               detail: "Capture the face and the room together."),
         .init(feature: .extendedVideo, icon: "video",
               title: "5-second & until-clear clips",
-              detail: "More frames to catch a face — not just a single still."),
+              detail: "More frames to catch a face, not just a single still."),
         .init(feature: .audioSensor, icon: "waveform",
               title: "Sound tripwire",
-              detail: "Detect footsteps and handling noise nearby."),
+              detail: "Trips on a sudden sound nearby."),
         .init(feature: .visionSensor, icon: "eye",
               title: "Vision tripwire",
-              detail: "While charging, the camera watches its view for movement — catching someone approaching before they touch it.")
+              detail: "While charging, the camera watches its view for movement, catching someone approaching before they touch it.")
     ]
 }

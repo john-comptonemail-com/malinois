@@ -71,6 +71,10 @@ final class AudioMonitor: SensorMonitor {
 
     private func makeRecorderIfNeeded() {
         guard recorder == nil else { return }
+        // Never start recording without the permission already granted: with it undetermined,
+        // iOS would raise the microphone prompt here, in the middle of arming (item 69). The
+        // Sound tripwire asks when it is switched on; until then the monitor reports unhealthy.
+        guard AVAudioApplication.shared.recordPermission == .granted else { healthy = false; return }
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .measurement,
                                  options: [.mixWithOthers, .defaultToSpeaker])

@@ -55,26 +55,26 @@ struct ArmingView: View {
         if settings.isEnabled(.camera) {
             switch settings.cameraReadiness {
             case .instant:
-                parts.append("Instant mode keeps the camera warm for zero-delay capture, which drains the battery — best kept on a charger.")
+                parts.append("Instant mode keeps the camera warm for zero-delay capture, which drains the battery - best kept on a charger.")
             case .auto:
                 parts.append("On a charger the camera stays warm for instant capture; on battery it cold-starts on a trigger (~1–2 s) to save power.")
             case .batterySaver:
                 parts.append("Battery saver cold-starts the camera on a trigger (~1–2 s), so it sips power on battery.")
             }
         } else {
-            parts.append("The screen stays on (black) while armed — a light draw.")
+            parts.append("The screen stays on (black) while armed - a light draw.")
         }
         if settings.isEnabled(.vision) && settings.isEnabled(.camera) {
             // Never silently unprotected: say plainly when this tripwire won't be running, and
             // WHICH reason applies. The first branch is the device's own answer — whether the
             // tap actually came up — which beats predicting it from the camera setting.
             if engine.visionTapUnavailable {
-                parts.append("Vision detection isn't running on this device with the current camera setup — there wasn't capacity for it alongside the capture. The other tripwires still run.")
+                parts.append("Vision detection isn't running on this device with the current camera setup - there wasn't capacity for it alongside the capture. The other tripwires still run.")
             } else if settings.effectiveCameraPosition(pro: entitlements.proActive) == .both
                         && CameraController.supportsMultiCam {
                 parts.append("With the camera set to Both, vision detection watches through the front camera.")
             } else if settings.cameraReadiness != .instant {
-                parts.append("Vision detection watches through the camera only while it's warm — on a charger (Auto) or in Instant mode. On battery it's off; the other tripwires still run.")
+                parts.append("Vision detection watches through the camera only while it's warm - on a charger (Auto) or in Instant mode. On battery it's off; the other tripwires still run.")
             }
         }
         // The capture-mode setting does not apply in Siren mode (F4), and until now nothing in
@@ -83,7 +83,7 @@ struct ArmingView: View {
         // effect has to be stated before arming, not discovered in the Event Log afterwards.
         if settings.isEnabled(.camera), settings.responseMode == .siren,
            settings.effectiveCaptureMode(pro: entitlements.proActive).isClip {
-            parts.append("Siren mode photographs each trigger instead of filming it — recording a clip needs the microphone, and that would silence the alarm. Your clip setting applies again when the response is Alert.")
+            parts.append("Siren mode photographs each trigger instead of filming it - recording a clip needs the microphone, and that would silence the alarm. Your clip setting applies again when the response is Alert.")
         }
         // Both-camera clips are silent. Said before arming rather than discovered on playback
         // after an incident, when the setting can no longer be changed for that night.
@@ -93,6 +93,13 @@ struct ArmingView: View {
            CameraController.supportsMultiCam,
            settings.effectiveCaptureMode(pro: entitlements.proActive).isClip {
             parts.append("With the camera on Both, clips are video only and will not contain audio.")
+        }
+        // Clip audio is off by default (item 69); said before arming, like the Both caveat.
+        if settings.isEnabled(.camera), settings.responseMode != .siren,
+           settings.effectiveCaptureMode(pro: entitlements.proActive).isClip,
+           !settings.clipAudio,
+           !(settings.effectiveCameraPosition(pro: entitlements.proActive) == .both && CameraController.supportsMultiCam) {
+            parts.append("Clips are video only. Turn on Record audio in clips in Settings → Capture to add sound.")
         }
         if settings.isEnabled(.power) {
             parts.append("A power-connection change (plugging in or unplugging) is itself a tripwire.")
@@ -121,6 +128,7 @@ struct ArmingView: View {
                 }
 
                 if engine.armingBlockedByGuidedAccess { guidedAccessRequiredNotice }
+                if engine.cameraAskBlockedByGuidedAccess { cameraAskBlockedNotice }
 
                 guidedAccessRecommendation
             }
@@ -128,16 +136,33 @@ struct ArmingView: View {
         }
     }
 
-    /// Shown when the owner has turned on "Require Guided Access" and it's currently off, so
-    /// arming is refused. Offers BOTH remedies inline — turn Guided Access on (steps below),
-    /// or drop the requirement — so this never dead-ends someone who can't or won't set up
-    /// Guided Access right now.
+    /// iOS shows no permission alert while Guided Access is on, so the ARM tap could not ask for
+    /// the camera (item 69, leg 11 on 40). Said here, where the owner is, with the way out; the
+    /// countdown stays available — the other tripwires work without the camera.
+    private var cameraAskBlockedNotice: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Allow the camera first", systemImage: "camera.badge.ellipsis")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text("iOS can't show the camera permission while Guided Access is on, so no photo or clip can be captured yet. Tap Cancel, end Guided Access (triple-click the side button), tap ARM again and allow the camera, then start Guided Access. The other tripwires work either way.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
+    }
+
+    /// Shown when "Require Guided Access" — on by default since 1.3 — is on and Guided Access
+    /// is currently off, so arming is refused. Offers BOTH remedies inline — turn Guided
+    /// Access on (steps below), or lift the requirement for this one arm — so this never
+    /// dead-ends someone who can't or won't set up Guided Access right now.
     private var guidedAccessRequiredNotice: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Guided Access is required to arm", systemImage: "lock.slash")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.orange)
-            Text("You've set Malinois to refuse arming without it. Follow the steps below to turn it on — or lift the requirement for this arm if you're just testing. Your setting stays on; turn it off permanently in Settings.")
+            Text("Malinois refuses to arm without it - it's the configuration the app is designed for. Follow the steps below to turn it on, or lift the requirement for this arm if you're just testing. The setting stays on; turn it off for good in Settings → Require Guided Access.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Don't require it for this arm") {
@@ -157,17 +182,17 @@ struct ArmingView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
     }
 
-    /// Guided Access status + coaching, shown below the arm controls. Recommended by
-    /// default; enforced only if the owner turns on "Require Guided Access".
+    /// Guided Access status + coaching, shown below the arm controls. Required by default
+    /// since 1.3 ("Require Guided Access"), liftable for one arm from the notice above.
     @ViewBuilder
     private var guidedAccessRecommendation: some View {
         if engine.guidedAccessEnabled {
             header("Guided Access is on",
-                   subtitle: "The device is locked to Malinois — a snoop can't switch apps or power it off.")
+                   subtitle: "The device is locked to Malinois - a snoop can't switch apps or power it off.")
             guidedAccessIndicator
         } else {
             header("Recommended: turn on Guided Access",
-                   subtitle: "It locks the device to Malinois so a snoop can't switch apps or power it off. Strongly recommended — but you can arm without it, for a first try or just to see how it works.")
+                   subtitle: "It locks the device to Malinois so a snoop can't switch apps or power it off. Strongly recommended - but you can arm without it, for a first try or just to see how it works.")
 
             guidedAccessIndicator
 
@@ -176,7 +201,7 @@ struct ArmingView: View {
             // between. Malinois cannot say when or by whom — it can't observe Guided Access
             // while suspended at all — so this claims only what it can support.
             if engine.guidedAccessOffSinceDisarm {
-                Label("Guided Access was ON when you last disarmed, and is off now. Malinois can't tell when it changed or who changed it — but you didn't leave it this way.",
+                Label("Guided Access was ON when you last disarmed, and is off now. Malinois can't tell when it changed or who changed it - but you didn't leave it this way.",
                       systemImage: "exclamationmark.shield.fill")
                     .font(.footnote)
                     .foregroundStyle(.orange)
@@ -189,8 +214,8 @@ struct ArmingView: View {
                 instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, so someone who knows your unlock code still can't exit.")
                 instruction(3, "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.")
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
-                instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) — it keeps working under Guided Access and can be told to close the app.")
-                instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons — otherwise a thief can turn the siren down.")
+                instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
+                instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise a thief can turn the siren down.")
             }
             .padding()
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
@@ -252,7 +277,7 @@ struct ArmingView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if engine.armWasAutoRecovered {
-                Label("Re-arming after an interrupted session — PIN required to stop.",
+                Label("Re-arming after an interrupted session - PIN required to stop.",
                       systemImage: "arrow.clockwise.circle")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -260,7 +285,7 @@ struct ArmingView: View {
                     .padding(.horizontal)
             }
             if engine.sirenVolumeLow {
-                Label("Media volume is low — turn it up now so the siren is audible (it can't override the volume buttons).",
+                Label("Media volume is low - turn it up now so the siren is audible (it can't override the volume buttons).",
                       systemImage: "speaker.slash.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -268,7 +293,7 @@ struct ArmingView: View {
                     .padding(.horizontal)
             }
             if !entitlements.proActive {
-                Label("Local protection only — evidence stays on this device (it won't back up to iCloud or survive a power-off), single camera, 3s clips.",
+                Label("Local protection only - evidence stays on this device (it won't back up to iCloud or survive a power-off), single camera, 3s clips.",
                       systemImage: "icloud.slash")
                     .font(.caption)
                     .foregroundStyle(.orange)

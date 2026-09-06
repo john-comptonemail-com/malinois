@@ -4,10 +4,50 @@
 //
 
 import XCTest
+import AVFoundation
 import UIKit
+import CloudKit
 @testable import Malinois
 
 final class CoreTypesTests: XCTestCase {
+
+    // MARK: - Outbound links (BACKLOG 21)
+
+    func testEveryAppLinkIsHTTPSOnAKnownHost() {
+        for row in AppLinks.rows {
+            XCTAssertEqual(row.url.scheme, "https", row.title)
+            XCTAssertTrue(AppLinks.allowedHosts.contains(row.url.host ?? ""), "\(row.title) → \(row.url)")
+        }
+    }
+
+    func testAppLinksMatchTheRegisteredPagesAndTheMirror() {
+        // The two GitHub Pages addresses are the App Store Connect Support / Privacy Policy URLs
+        // (store/HOSTING.md); the third is the public mirror (BACKLOG 46). Pinned so the
+        // in-app rows cannot drift from what the store listing and the README point at.
+        XCTAssertEqual(AppLinks.support.absoluteString,
+                       "https://john-comptonemail-com.github.io/malinois/support/")
+        XCTAssertEqual(AppLinks.privacyPolicy.absoluteString,
+                       "https://john-comptonemail-com.github.io/malinois/privacy-policy/")
+        XCTAssertEqual(AppLinks.source.absoluteString,
+                       "https://github.com/john-comptonemail-com/malinois")
+    }
+
+    func testHelpRowsAreExactlyTheThreeInOrder() {
+        XCTAssertEqual(AppLinks.rows.map(\.title), ["Help & FAQ", "Privacy policy", "View source"])
+        XCTAssertEqual(AppLinks.rows.map(\.url), [AppLinks.support, AppLinks.privacyPolicy, AppLinks.source])
+        XCTAssertEqual(Set(AppLinks.rows.map(\.id)).count, 3, "row ids must be distinct for ForEach")
+    }
+
+    func testHelpFooterNamesGuidedAccessOnlyWhileItIsOn() {
+        XCTAssertTrue(AppLinks.footer(guidedAccessActive: true).contains("Guided Access"))
+        XCTAssertFalse(AppLinks.footer(guidedAccessActive: false).contains("Guided Access"))
+        // Both variants say the links leave the app and how to copy an address instead.
+        for on in [true, false] {
+            let text = AppLinks.footer(guidedAccessActive: on)
+            XCTAssertTrue(text.contains("Safari"), text)
+            XCTAssertTrue(text.lowercased().contains("copy"), text)
+        }
+    }
 
     func testClockStringFormatting() {
         XCTAssertEqual(TimeInterval(9).clockString, "0:09")
@@ -472,5 +512,105 @@ final class CoreTypesTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(checked, 20, "the sweep stopped matching symbol literals — regex or layout drift")
+    }
+
+    // MARK: - Error text stays out of public logs (ninth review, R1-L3)
+
+    /// `Log.ref` is the public half of every error log line: domain#code, no free text.
+    func testLogRefIsDomainAndCodeOnly() {
+        XCTAssertEqual(Log.ref(CKError(.networkFailure)), "CKErrorDomain#4")
+        XCTAssertEqual(Log.ref(NSError(domain: "AVFoundationErrorDomain", code: -11800)),
+                       "AVFoundationErrorDomain#-11800")
+    }
+
+    /// R1-L3's regression guard, in the symbol-sweep's mold: no app source may log an error's
+    /// description `.public` again — CKError text can embed record/zone IDs carrying event
+    /// UUIDs, which would reach any sysdiagnose. The pattern is `Log.ref(error)` public +
+    /// description `.private`; this sweep fails on the banned shape coming back anywhere.
+    func testNoErrorDescriptionIsLoggedPublicly() throws {
+        let sourcesRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Malinois", isDirectory: true)
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sourcesRoot,
+                                                                 includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" }
+        XCTAssertGreaterThan(files.count, 10, "the sweep did not find the app sources — path assumption broke")
+
+        let banned = [#"String(describing: error), privacy: .public"#,
+                      #"error.localizedDescription, privacy: .public"#,
+                      #"(error, privacy: .public)"#]
+        for file in files {
+            guard let source = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for pattern in banned where source.contains(pattern) {
+                XCTFail("\(file.lastPathComponent) logs an error description publicly (\(pattern)) — use Log.ref(error) public + the description .private (R1-L3)")
+            }
+        }
+    }
+
+    // MARK: - BootStamp (BACKLOG 53)
+
+    /// Pure classifier: a restart moves the kernel's boot time forward by the previous
+    /// session's uptime plus the downtime; clock corrections move it by far less.
+    func testBootStampClassifiesARestartByTheBootTimeJump() {
+        let armed = BootStamp(bootTime: 1_000, takenAt: 5_000)   // up 4,000 s at arm
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 1_000, takenAt: 9_000)),
+                       .terminated, "same boot, later launch — the app alone ended")
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 1_020, takenAt: 9_000)),
+                       .terminated, "a 20 s boot-time shift is clock correction, inside the tolerance")
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 1_030, takenAt: 9_000)),
+                       .terminated, "the tolerance itself is not a restart")
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 9_100, takenAt: 9_200)),
+                       .rebooted, "the boot time jumped past the tolerance — the device restarted")
+    }
+
+    /// Winding the clock back after a restart can hide the boot-time jump; uptime cannot
+    /// shrink without a restart, whatever was done to the clock — while a clock set back with
+    /// NO restart shifts boot time and wall clock together, so uptime keeps growing.
+    func testBootStampClassifiesARestartHiddenByAWoundBackClock() {
+        let armed = BootStamp(bootTime: 1_000, takenAt: 5_000)      // up 4,000 s at arm
+        let hidden = BootStamp(bootTime: 1_010, takenAt: 1_100)     // up only 90 s now
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: hidden), .rebooted)
+        let steppedBack = BootStamp(bootTime: 1_000 - 3_600, takenAt: 9_000 - 3_600)
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: steppedBack), .terminated)
+    }
+
+    /// Nothing to compare — a marker planted by a build before the stamp existed, or a kernel
+    /// that would not answer — classifies as nothing rather than as a restart.
+    func testBootStampWithoutBothSidesDoesNotGuess() {
+        let stamp = BootStamp(bootTime: 1_000, takenAt: 5_000)
+        XCTAssertNil(BootStamp.classify(armed: nil, current: stamp))
+        XCTAssertNil(BootStamp.classify(armed: stamp, current: nil))
+        XCTAssertNil(BootStamp.classify(armed: nil, current: nil))
+    }
+
+    /// The live reading is sane on whatever runs the tests: a boot in the past, uptime that is
+    /// positive and not absurd, and two readings from one boot that never read as a restart.
+    func testBootStampCurrentReadsAPlausibleBootTime() throws {
+        let first = try XCTUnwrap(BootStamp.current())
+        XCTAssertLessThan(first.bootTime, first.takenAt)
+        XCTAssertGreaterThan(first.uptime, 0)
+        XCTAssertLessThan(first.uptime, 366 * 86_400, "under a year of uptime")
+        let second = try XCTUnwrap(BootStamp.current(now: Date().addingTimeInterval(1)))
+        XCTAssertEqual(BootStamp.classify(armed: first, current: second), .terminated)
+    }
+
+    // MARK: - Capture interruption reasons (item 54)
+
+    /// The system's five interruption reasons map to the app's four owner-facing ones (two
+    /// system reasons both mean "another app has the camera"); anything else is unknown.
+    func testInterruptionReasonMappingFromTheSystemNotification() {
+        func reason(_ raw: Int?) -> CaptureInterruptionReason {
+            CameraController.interruptionReason(fromUserInfo: raw.map { [AVCaptureSessionInterruptionReasonKey: $0] })
+        }
+        XCTAssertEqual(reason(AVCaptureSession.InterruptionReason.videoDeviceNotAvailableInBackground.rawValue), .background)
+        XCTAssertEqual(reason(AVCaptureSession.InterruptionReason.audioDeviceInUseByAnotherClient.rawValue), .audioClient)
+        XCTAssertEqual(reason(AVCaptureSession.InterruptionReason.videoDeviceInUseByAnotherClient.rawValue), .anotherApp)
+        XCTAssertEqual(reason(AVCaptureSession.InterruptionReason.videoDeviceNotAvailableWithMultipleForegroundApps.rawValue), .anotherApp)
+        XCTAssertEqual(reason(AVCaptureSession.InterruptionReason.videoDeviceNotAvailableDueToSystemPressure.rawValue), .systemPressure)
+        XCTAssertEqual(reason(nil), .unknown)
+        XCTAssertEqual(reason(999), .unknown)
+        XCTAssertEqual(CameraController.interruptionReason(fromUserInfo: [AVCaptureSessionInterruptionReasonKey: "nope"]), .unknown)
     }
 }

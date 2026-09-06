@@ -34,7 +34,13 @@
 				  35F9.1: measure elapsed time between events that occur inside the app.
 				  KeychainService uses ProcessInfo.systemUptime as the brute-force lockout
 				  clock precisely because it is monotonic and cannot be rewound by changing
-				  the device clock — the whole point of the lockout.
+				  the device clock — the whole point of the lockout. BootStamp reads the
+				  kernel's boot time (kern.boottime) when a session arms and again at the
+				  next launch, to tell "the device restarted" from "the app was closed" on
+				  the interruption record — the same reason: elapsed time between two
+				  in-app events. Never fingerprinting; the value is compared on-device and
+				  discarded. (sysctl is not on Apple's named list for this category; the
+				  category is declared anyway, because the information is the same.)
 				-->
 				<string>35F9.1</string>
 			</array>

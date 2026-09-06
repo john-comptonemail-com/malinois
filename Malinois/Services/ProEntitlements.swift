@@ -6,7 +6,15 @@
 //  30-day full-Pro trial that STARTS ON FIRST LAUNCH. With a trial this generous, starting at
 //  launch keeps the whole pre-arm experience coherent — the user is simply "in trial" rather
 //  than in a confusing half-locked free state — and the trial can be bought at any point
-//  during it. `proActive` is the single boolean the rest of the app consults; the
+//  during it.
+//
+//  Early-Access (BACKLOG 66, owner ruling 2026-09-04): while `earlyAccessProgramOpen` is true,
+//  every install has Pro — free, permanently. A first launch writes a membership marker (a
+//  synchronizable Keychain item, so it follows the owner to a new phone) and the trial below is
+//  dormant. The build that closes the program flips the flag; members keep Pro for good, and
+//  only installs after that see the trial and the paywall. Buying during Early-Access adds
+//  nothing — it is support, and the screen says so. `proActive` is the single boolean the rest
+//  of the app consults; the
 //  `AppSettings` extension at the bottom turns it into the
 //  "effective" (Pro-aware) config used at arm time — the "store intent, clamp at use" rule
 //  from the paywall spec, so a lapsed trial never destroys the user's saved preferences.
@@ -34,7 +42,14 @@ final class ProEntitlements: ObservableObject {
     // safe to expose that way. Without this, Swift 6 language mode errors on the reference.
     nonisolated static let trialDays = 30
 
-    enum Status: Equatable { case free, trial, pro }
+    /// `.earlyAccess`: Pro, free, permanently — an install made while the program was open
+    /// (BACKLOG 66). Distinct from `.pro` (a purchase) so the screens can say which it is.
+    enum Status: Equatable { case free, trial, pro, earlyAccess }
+
+    /// Whether Early-Access is admitting new installs. Ships `true` in 1.3 (owner ruling
+    /// 2026-09-04: no paywall until the app has a user base). The build that closes the program
+    /// flips this to `false` — and nothing else: members keep their marker and their Pro.
+    nonisolated static let earlyAccessProgramOpen = true
 
     @Published private(set) var status: Status = .free
     /// Whether `refresh()` has completed at least once.
@@ -101,6 +116,10 @@ final class ProEntitlements: ObservableObject {
         Task { await refresh() }
     }
 
+    #if DEBUG
+    // Test seams: Debug-only so they don't ship in the Release binary (ninth review,
+    // R2-F2). XCTest builds the Debug configuration, so every test keeps compiling.
+
     /// A pre-resolved instance, for tests that need a known entitlement rather than a race.
     ///
     /// The ordinary `init()` starts a StoreKit listener and an async refresh, so a freshly
@@ -129,6 +148,7 @@ final class ProEntitlements: ObservableObject {
         status = newStatus
         hasResolved = true
     }
+    #endif
 
     deinit { updatesTask?.cancel() }
 
@@ -161,18 +181,39 @@ final class ProEntitlements: ObservableObject {
             if product == nil { await loadProduct() }
             return
         }
-        // Begin the trial on first launch (idempotent — recorded once, survives reinstall).
+        // Record the first launch (idempotent — once, survives reinstall). Kept during early
+        // access too: it is the install date, and the trial a newcomer gets after the program
+        // closes runs from it.
         if Self.storedTrialStart == nil { Self.storedTrialStart = Date() }
         let start = Self.storedTrialStart ?? Date()
-        if Self.trialActive(start: start, now: Date()) {
-            status = .trial
+        // Early-Access (BACKLOG 66): a member has Pro permanently; a first launch while the
+        // program is open becomes a member on the spot. If the marker cannot be written the
+        // promise still holds for this launch — `resolvedStatus` grants Pro on the open program
+        // alone — and the next launch tries again.
+        var member = KeychainService.earlyAccessMember
+        if !member && Self.earlyAccessProgramOpen {
+            member = KeychainService.markEarlyAccessMember()
+        }
+        status = Self.resolvedStatus(purchased: false, member: member,
+                                     programOpen: Self.earlyAccessProgramOpen,
+                                     trialStart: start, now: Date())
+        if status == .trial {
             scheduleTrialEndNotification(start: start)
         } else {
-            status = .free
-            cancelTrialEndNotification()
+            cancelTrialEndNotification()   // a member (or a lapsed trial) gets no "trial ended" reminder
         }
         hasResolved = true
         if product == nil { await loadProduct() }
+    }
+
+    /// Pure (unit-tested; BACKLOG 66). A purchase first; then Early-Access — a member for good,
+    /// or anyone at all while the program is open; then the trial, for newcomers after the
+    /// program closes; then free.
+    nonisolated static func resolvedStatus(purchased: Bool, member: Bool, programOpen: Bool,
+                                           trialStart: Date?, now: Date) -> Status {
+        if purchased { return .pro }
+        if member || programOpen { return .earlyAccess }
+        return trialActive(start: trialStart, now: now) ? .trial : .free
     }
 
     /// Purchase the one-time unlock. Returns true once Pro is active.
@@ -219,7 +260,7 @@ final class ProEntitlements: ObservableObject {
         guard secondsUntilEnd > 0 else { return }
         let content = UNMutableNotificationContent()
         content.title = "Malinois Pro trial ended"
-        content.body = "Your device is still protected. Local detection and evidence keep working — cloud backup and cross-device alerts are off. Upgrade to restore them."
+        content.body = "Your device is still protected. Local detection and evidence keep working - cloud backup and cross-device alerts are off. Upgrade to restore them."
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: secondsUntilEnd, repeats: false)
         UNUserNotificationCenter.current().add(
@@ -309,8 +350,9 @@ extension AppSettings {
     }
 
     /// Multi-cam ("Both") is Pro; free clamps to the front camera.
-    static func effectiveCamera(_ choice: CameraChoice, pro: Bool) -> CameraChoice {
-        (pro || choice != .both) ? choice : .front
+    static func effectiveCamera(_ choice: CameraChoice, pro: Bool, visionOn: Bool = true) -> CameraChoice {
+        let choice = AppSettings.cameraChoice(choice, visionOn: visionOn)   // ADR 0012: Rear/Auto serve Vision only
+        return (pro || choice != .both) ? choice : .front
     }
 
     /// Longer video (5s / until-clear) is Pro; free clamps to the 3s clip. Photo stays photo.
@@ -320,7 +362,9 @@ extension AppSettings {
     }
 
     func effectiveEnabledSensors(pro: Bool) -> Set<SensorType> { Self.effectiveSensors(enabledSensors, pro: pro) }
-    func effectiveCameraPosition(pro: Bool) -> CameraChoice { Self.effectiveCamera(cameraPosition, pro: pro) }
+    func effectiveCameraPosition(pro: Bool) -> CameraChoice {
+        Self.effectiveCamera(cameraPosition, pro: pro, visionOn: effectiveEnabledSensors(pro: pro).contains(.vision))
+    }
     func effectiveCaptureMode(pro: Bool) -> CaptureMode { Self.effectiveCapture(captureMode, pro: pro) }
 
     /// Cloud backup and cross-device push are Pro-only.

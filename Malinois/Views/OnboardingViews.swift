@@ -4,10 +4,12 @@
 //
 //  Two one-time screens that fire at the moments the owner is actually receptive:
 //
-//  1. `TrialWelcomeView` — right after PIN setup. States plainly that the 30-day Pro trial has
-//     already started and that some of what they're about to use will switch off when it ends.
-//     The trial begins at first launch (see `ProEntitlements`), so without this the first
-//     experience silently *is* Pro and the eventual downgrade reads as features being taken away.
+//  1. `TrialWelcomeView` — right after PIN setup. During Early-Access (BACKLOG 66) it states
+//     the promise: Pro is free for this install, permanently. Otherwise it states plainly that
+//     the 30-day Pro trial has already started and that some of what they're about to use will
+//     switch off when it ends. The trial begins at first launch (see `ProEntitlements`), so
+//     without this the first experience silently *is* Pro and the eventual downgrade reads as
+//     features being taken away.
 //  2. `GuidedAccessPromptView` — after the first completed armed session. Guided Access is the
 //     difference between "logs a tamper" and "can't be stopped", and the arming screen's
 //     coaching is easy to skim past while impatient to arm. After a real session the owner has
@@ -23,6 +25,8 @@ import SwiftUI
 enum OnboardingState {
     private static let welcomeKey = "com.malinois.onboarding.seenTrialWelcome"
     private static let guidedAccessKey = "com.malinois.onboarding.seenGuidedAccessPrompt"
+    private static let armedOnceKey = "com.malinois.onboarding.hasArmedOnce"
+    private static let notificationAskHiddenKey = "com.malinois.onboarding.notificationAskHidden"
 
     static var hasSeenTrialWelcome: Bool {
         get { UserDefaults.standard.bool(forKey: welcomeKey) }
@@ -32,6 +36,21 @@ enum OnboardingState {
     static var hasSeenGuidedAccessPrompt: Bool {
         get { UserDefaults.standard.bool(forKey: guidedAccessKey) }
         set { UserDefaults.standard.set(newValue, forKey: guidedAccessKey) }
+    }
+
+    /// The owner tapped Hide on Home's "Allow notifications" line (item 69, owner ask
+    /// 2026-09-05); the ask stays reachable under Settings → iCloud.
+    static var notificationAskHidden: Bool {
+        get { UserDefaults.standard.bool(forKey: notificationAskHiddenKey) }
+        set { UserDefaults.standard.set(newValue, forKey: notificationAskHiddenKey) }
+    }
+
+    /// Whether a watch has ever gone live on this install (BACKLOG 68). Set when the first
+    /// watch reaches covert; read by `beginArming` to auto-lift the Guided Access requirement
+    /// for the very first arm only. Cleared with the app (a reinstall is a fresh first arm).
+    static var hasArmedOnce: Bool {
+        get { UserDefaults.standard.bool(forKey: armedOnceKey) }
+        set { UserDefaults.standard.set(newValue, forKey: armedOnceKey) }
     }
 
     /// Whether the post-session Guided Access nudge is due. Pure (unit-tested).
@@ -62,16 +81,18 @@ struct TrialWelcomeView: View {
     // announcing "your trial has started" in either case would simply be false.
     private var headline: String {
         switch entitlements.status {
-        case .pro:   "Malinois Pro is active"
-        case .trial: "Your \(ProEntitlements.trialDays)-day Pro trial has started"
-        case .free:  "Welcome to Malinois"
+        case .pro:         "Malinois Pro is active"
+        case .earlyAccess: "Malinois Pro is free for Early-Access installs"
+        case .trial:       "Your \(ProEntitlements.trialDays)-day Pro trial has started"
+        case .free:        "Welcome to Malinois"
         }
     }
     private var subhead: String {
         switch entitlements.status {
-        case .pro:   "You own Pro — everything below is unlocked, permanently."
-        case .trial: "\(daysLeft) days left · no card, nothing to cancel"
-        case .free:  "This device has already used its Pro trial."
+        case .pro:         "You own Pro - everything below is unlocked, permanently."
+        case .earlyAccess: "Permanently · no card, nothing to cancel"
+        case .trial:       "\(daysLeft) days left · no card, nothing to cancel"
+        case .free:        "This device has already used its Pro trial."
         }
     }
     private var includedTitle: String {
@@ -80,9 +101,11 @@ struct TrialWelcomeView: View {
     private var closingNote: String {
         switch entitlements.status {
         case .pro:
-            "Nothing expires and there's nothing to renew. Your evidence stays on this device and in your own private iCloud — nobody else can read it, including me."
+            "Nothing expires and there's nothing to renew. Your evidence stays on this device and in your own private iCloud - nobody else can read it, including me."
+        case .earlyAccess:
+            "Nothing expires and there's nothing to renew. If Pro ever becomes a paid unlock, that will apply to new installs only. Your data stays yours. No account, no server, nothing sent to the developer."
         case .trial:
-            "When the trial ends, your device stays protected — only the iCloud backup, the cross-device alerts and the richer capture options switch off. Nothing you've recorded is lost, and your settings are kept."
+            "When the trial ends, your device stays protected - only the iCloud backup, the cross-device alerts and the richer capture options switch off. Nothing you've recorded is lost, and your settings are kept."
         case .free:
             "Your device is still fully protected: detection, capture, the local log and the alarm all keep working. Pro restores the iCloud backup, the cross-device alerts and the richer capture options whenever you want it."
         }
@@ -117,11 +140,11 @@ struct TrialWelcomeView: View {
                             ("icloud.and.arrow.up", "Evidence backed up to your private iCloud", "Survives the phone being switched off or taken."),
                             ("iphone.radiowaves.left.and.right", "Alerts on your other Apple devices", "Know the moment it's touched, wherever you are."),
                             ("camera.on.rectangle", "Both cameras at once, longer clips", "More frames, and the face plus the room together."),
-                            ("waveform", "The Sound tripwire", "Detects handling noise nearby."),
+                            ("waveform", "The Sound tripwire", "Trips on a sudden sound nearby."),
                             ("eye", "The Vision tripwire", "While charging, the camera watches its view for movement.")
                         ])
 
-                section(title: "Free forever, trial or not",
+                section(title: "Free forever, for everyone",
                         tint: .green,
                         icon: "checkmark.shield",
                         rows: [
@@ -194,7 +217,7 @@ struct GuidedAccessPromptView: View {
 
                 // The specific failure, not a vague exhortation. Someone who just watched the app
                 // work needs to know what it still can't stop.
-                Text("That session ran **without Guided Access**. Malinois caught what happened — but anyone holding your phone could have swiped the app away or powered it off before the evidence uploaded, and nothing would have reached your iCloud.")
+                Text("That session ran **without Guided Access**. Malinois caught what happened - but anyone holding your phone could have swiped the app away or powered it off before the evidence uploaded, and nothing would have reached your iCloud.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -213,17 +236,17 @@ struct GuidedAccessPromptView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Brand.blue.opacity(0.10)))
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Set it up once — about a minute")
+                    Text("Set it up once - about a minute")
                         .font(.subheadline.weight(.bold))
                     step(1, "Settings → Accessibility → Guided Access → turn it on.")
                     step(2, "Guided Access → Passcode Settings → set a passcode. Make it **different** from your device passcode, so someone who knows your unlock code still can't exit.")
-                    step(3, "Then whenever you arm Malinois, triple-click the side button and tap Start.")
+                    step(3, "Then whenever you arm Malinois: tap ARM first, and on the arming screen triple-click the side button and tap Start.")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.06)))
 
-                Text("Malinois will keep working without it, and the arming screen shows these steps every time. You can also make Guided Access mandatory in Settings → Require Guided Access.")
+                Text("Malinois requires it to arm by default - the arming screen shows these steps every time, with a one-arm skip for testing. Turning the requirement off for good is in Settings → Require Guided Access.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

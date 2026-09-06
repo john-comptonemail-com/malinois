@@ -58,7 +58,7 @@ struct HomeView: View {
 
                 statusBadge
 
-                Button(action: engine.beginArming) {
+                Button(action: armTapped) {
                     VStack(spacing: 6) {
                         Image("MalinoisEmblem")
                             .resizable()
@@ -157,6 +157,7 @@ struct HomeView: View {
             }
             .onAppear {
                 if engine.eventLogOpenRequested { openLogFromNotification() }
+                Task { await engine.refreshNotificationHealth() }   // a pull-to-refresh or Settings may have changed the picture (item 69)
             }
         }
     }
@@ -166,6 +167,20 @@ struct HomeView: View {
     /// request if any PIN gate happened to be up, losing the one notification the owner
     /// most wants). Already-open log: nothing to do. A different gate mid-prompt: retarget
     /// it to the log — the tapped alert's intent wins; the PIN still gates as always.
+    /// The camera permission is asked on the first ARM tap (item 69): before the arming
+    /// screen, and so before Guided Access could be on. A denial still arms, with the existing
+    /// "Camera access is denied" notice; Vision needs the camera as much as capture does.
+    private func armTapped() {
+        Task {
+            if CameraController.cameraPromptIsDue(cameraNeeded: settings.isEnabled(.camera) || settings.isEnabled(.vision),
+                                                  undetermined: CameraController.cameraIsUndetermined,
+                                                  guidedAccessOn: UIAccessibility.isGuidedAccessEnabled) {
+                _ = await CameraController.requestCameraAccessIfUndetermined()
+            }
+            engine.beginArming()
+        }
+    }
+
     private func openLogFromNotification() {
         engine.consumeEventLogOpenRequest()
         guard !showLog else { return }
@@ -219,7 +234,7 @@ struct HomeView: View {
             } else if entitlements.proActive {
                 statusRow(ready: cloud.accountState.isReady, text: cloud.accountState.displayName)
             } else {
-                statusRow(ready: false, text: "iCloud backup is Pro — evidence stays on device")
+                statusRow(ready: false, text: "iCloud backup is Pro - evidence stays on device")
             }
             statusRow(ready: engine.guidedAccessEnabled,
                       text: engine.guidedAccessEnabled ? "Guided Access ready" : "Guided Access off")
@@ -258,18 +273,54 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            if engine.notificationAskDue {
+                // Asked here, in context, on the device that would show the alert — and only
+                // once another device's evidence has arrived in this log (item 69). Hide keeps
+                // it out of the way; Settings → iCloud carries the same ask.
+                VStack(spacing: 4) {
+                    Label("Cross-device alerts need notifications on this device. You can also allow it later in Settings → iCloud.",
+                          systemImage: "bell.badge")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: 10) {
+                        Button("Allow notifications") {
+                            Task {
+                                await NotificationPermission.requestIfUndetermined()
+                                await engine.refreshNotificationHealth()
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        Button("Hide") { engine.hideNotificationAsk() }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal)
+            }
             if engine.recoveredInterruptedSession {
-                Label("Recovered an interrupted armed session — re-syncing any pending evidence.",
+                Label("Recovered an interrupted armed session - re-syncing any pending evidence.",
                       systemImage: "arrow.clockwise.icloud")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            if engine.cloudRestoreInProgress {
+                // The launch pull (owner, 2026-09-04): while it runs, an empty log is "loading".
+                Label("Restoring your event log from iCloud…", systemImage: "icloud.and.arrow.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
             if !engine.isOnline && entitlements.proActive {
                 // Only meaningful when cloud backup is in use; a free user's evidence stays
                 // on-device regardless of connectivity, so this would be misleading (P-05).
-                Label("Offline — captured evidence can't upload until you reconnect.",
+                Label("Offline - captured evidence can't upload until you reconnect.",
                       systemImage: "wifi.slash")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -281,8 +332,8 @@ struct HomeView: View {
                 // the only one enabled is the Pro-locked audio sensor — which needs its own
                 // honest message rather than "turn one on" when one already is (P-04).
                 Label(settings.hasActiveTripwire
-                      ? "Your only enabled tripwire is audio, which is Pro — enable a free tripwire in Settings or upgrade, or nothing will trigger."
-                      : "No tripwires enabled — nothing will trigger. Turn one on in Settings.",
+                      ? "Your only enabled tripwire is audio, which is Pro - enable a free tripwire in Settings or upgrade, or nothing will trigger."
+                      : "No tripwires enabled - nothing will trigger. Turn one on in Settings.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -293,7 +344,7 @@ struct HomeView: View {
             // tripwires off, so a settings reset the owner didn't ask for reduces protection.
             // It has to be said, not just logged.
             if AppSettings.loadWasReset {
-                Label("Your settings couldn't be read and have been reset to defaults. Check Settings before arming — tripwires and Guided Access enforcement may not be as you left them.",
+                Label("Your settings couldn't be read and have been reset to defaults. Check Settings before arming - tripwires and Guided Access enforcement may not be as you left them.",
                       systemImage: "gear.badge.xmark")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -309,7 +360,7 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if eventStore.persistDegraded {
-                Label("New events aren't being saved to this device — storage may be full. Anything already uploaded to iCloud is unaffected.",
+                Label("New events aren't being saved to this device - storage may be full. Anything already uploaded to iCloud is unaffected.",
                       systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.red)
@@ -324,7 +375,7 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if engine.cloudPushRefused {
-                Label("iCloud refused an evidence upload — evidence is kept on this device and will retry. Check your iCloud storage.",
+                Label("iCloud refused an evidence upload - evidence is kept on this device and will retry. Check your iCloud storage.",
                       systemImage: "icloud.slash")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -332,7 +383,7 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if cloud.cloudUnavailable {
-                Label("iCloud backup isn't available in this build — evidence is kept on-device only. A signed build with an iCloud container restores off-device sync.",
+                Label("iCloud backup isn't available in this build - evidence is kept on-device only. A signed build with an iCloud container restores off-device sync.",
                       systemImage: "icloud.slash")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -343,19 +394,32 @@ struct HomeView: View {
         }
     }
 
-    /// Trial status / upgrade prompt. The 30-day trial starts at first launch, so a new
-    /// install shows a low-key "Pro trial active — N days left" indicator (a positive status,
-    /// not an upsell nag); once the trial lapses it makes the reduced protection explicit.
+    /// Pro status line. During Early-Access (BACKLOG 66) it states the promise — Pro, free,
+    /// permanently — and doubles as the door to the support screen. Otherwise: the 30-day trial
+    /// starts at first launch, so a new install shows a low-key "Pro trial active — N days
+    /// left" indicator (a positive status, not an upsell nag); once the trial lapses it makes
+    /// the reduced protection explicit.
     @ViewBuilder
     private var proBanner: some View {
-        if entitlements.trialEnded {
+        if entitlements.status == .earlyAccess {
+            Button { showPaywall = true } label: {
+                Label {
+                    Text("Pro")
+                } icon: {
+                    CollarIcon(height: 12)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        } else if entitlements.trialEnded {
             VStack(spacing: 6) {
-                Label("Pro trial ended — your device is still protected. Local detection and evidence keep working; cloud backup and cross-device alerts are off.",
+                Label("Pro trial ended - your device is still protected. Local detection and evidence keep working; cloud backup and cross-device alerts are off.",
                       systemImage: "lock.circle")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
-                Button("Restore protection — \(entitlements.product?.displayPrice ?? "$9.99")") { showPaywall = true }
+                Button("Restore protection - \(entitlements.product?.displayPrice ?? "$9.99")") { showPaywall = true }
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -364,8 +428,8 @@ struct HomeView: View {
         } else if entitlements.status == .trial, let days = entitlements.trialDaysRemaining {
             Button { showPaywall = true } label: {
                 Label {
-                    Text(days <= 3 ? "\(days) day\(days == 1 ? "" : "s") of Pro left — tap to keep it"
-                                   : "Pro trial active — \(days) days left")
+                    Text(days <= 3 ? "\(days) day\(days == 1 ? "" : "s") of Pro left - tap to keep it"
+                                   : "Pro trial active - \(days) days left")
                 } icon: {
                     CollarIcon(height: 12)
                 }

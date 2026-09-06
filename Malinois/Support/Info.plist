@@ -43,7 +43,7 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID can open your evidence log and run sensor tests, and confirms it's you before re-setting a forgotten PIN. Settings and disarming always require your Malinois PIN.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Malinois listens for handling noise (footsteps, movement) as a tamper tripwire and can record a short evidence clip.</string>
+	<string>Malinois listens for sudden sounds nearby as a tamper tripwire, and records sound in evidence clips if you turn that on.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

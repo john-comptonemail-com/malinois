@@ -56,7 +56,7 @@ struct EventLogView: View {
                 Circle().fill(cloud.accountState.isReady ? .orange : .red).frame(width: 8, height: 8)
                 Text(cloud.accountState.isReady
                      ? "\(unsyncedCount) event(s) not yet synced to iCloud"
-                     : "iCloud unavailable — \(cloud.accountState.displayName)")
+                     : "iCloud unavailable - \(cloud.accountState.displayName)")
                     .font(.caption)
                 Spacer()
                 if isRetrying {
@@ -79,7 +79,7 @@ struct EventLogView: View {
     private var freeTierBanner: some View {
         HStack(spacing: 6) {
             Circle().fill(.secondary).frame(width: 8, height: 8)
-            Text("iCloud backup is Pro — \(unsyncedCount) event(s) stay on this device")
+            Text("iCloud backup is Pro - \(unsyncedCount) event(s) stay on this device")
                 .font(.caption)
             Spacer()
         }

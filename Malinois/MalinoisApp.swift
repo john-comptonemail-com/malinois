@@ -59,14 +59,26 @@ struct MalinoisApp: App {
                 .environmentObject(camera)
                 .environmentObject(entitlements)
                 .task {
-                    _ = await CameraController.requestAccess()
-                    await requestNotificationAuthorization()
+                    // Registration needs no permission and feeds the CloudKit pushes; the
+                    // permission to SHOW an alert is asked in context instead (item 69).
+                    UIApplication.shared.registerForRemoteNotifications()
                 }
         }
     }
+}
 
-    private func requestNotificationAuthorization() async {
+/// The notifications prompt, asked where it matters (item 69): on a device that will RECEIVE
+/// cross-device alerts — from Home's "Allow notifications" line, or when Cross-device alerts is
+/// switched on — never at launch. The sending device needs no permission at all.
+enum NotificationPermission {
+    /// The current authorization, for the Settings → iCloud row.
+    static func status() async -> UNAuthorizationStatus {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    static func requestIfUndetermined() async {
         let center = UNUserNotificationCenter.current()
+        guard await center.notificationSettings().authorizationStatus == .notDetermined else { return }
         _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
         await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
     }
@@ -128,7 +140,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // Log-only used to be the whole story — a device that could never receive a
         // cross-device alert looked exactly like a healthy one (34.H7).
-        Log.app.error("Remote notification registration failed: \(String(describing: error), privacy: .public)")
+        Log.app.error("Remote notification registration failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
         Task { @MainActor in RemotePushCoordinator.shared.registrationFailed = true }
     }
 

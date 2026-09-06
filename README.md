@@ -15,22 +15,25 @@ With Guided Access on and iOS set to ask before new wired accessories connect, t
 
 ## Try it out
 
-1. **First run** - set a 4–6 digit PIN and allow the camera/microphone prompts so capture works.
-2. Tap **ARM**, then **Start countdown**.
-3. Walk away. The countdown ends, sensors calibrate, and the screen goes black.
-4. **To disarm:** press and hold the black screen for 5 seconds, then enter your PIN. Evidence is in the **Event Log**.
+1. **First run** — set a 4–6 digit PIN.
+2. Tap **ARM**. The camera prompt appears the first time; allow it.
+3. (Optional) On the arming screen, **triple-click the side button** to start **Guided Access** (one-time iOS setup: Settings → Accessibility → Guided Access).
+4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes black.
+5. **To disarm:** press and hold the black screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
 
 **Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. Using a PIN instead of Face ID for Guided Access is recommended due to the open "Guided Access is not available" iOS bug.
 
 ## AI Disclosure
 
-**I am a guy who wanted an app that didn't exist, and am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable/Opus 5/4.8. Several rounds of adversarial reviews were performed with multiple passes from different models (5.6 Sol, Kimi K3, GLM 5.2, Deepseek V4 Pro/Flash, etc.) until a release-ready consensus was reached, and tested on a couple of my personal devices: that is the extent of my abilities. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
+**I am a guy who wanted an app that didn't exist, and am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable 5. Rounds of adversarial reviews are performed with multiple passes from different models (5.6 Sol, Kimi K3, GLM 5.2, Deepseek V4 Pro/Flash, etc.) until a release-ready consensus is reached, and I test on 3 modern iOS devices. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
 
-This is ultimately a personal project, but it's a project I think others might find a use for, and it would not have happened without AI. As such, please poke holes in the code, the assumptions and decisions I made, threat model thinking, anything and everything: I'm relying on it too. I don't have the budget for a bounty program, but would be happy to offer Pro license codes for not-stupid defects, improvements, or threat model gaps.
+This is ultimately a personal project, but it's a project I think others might find a use for, and it would not have happened without AI. As such, please poke holes in the code, the assumptions and decisions I made, threat model thinking, anything and everything: I'm relying on it too.
 
 ## Pro
 
-A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (evidence survives even if the phone is destroyed seconds later), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors. New installs include a 30-day trial of everything Pro does — no card, nothing to cancel.
+**Early-Access:** while the program is open, Pro is free for every install, permanently — no card, nothing to cancel, nothing to do. If Pro ever becomes a paid unlock, that will apply to new installs only; Early-Access installs keep everything.
+
+A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (evidence survives even if the phone is destroyed seconds later), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
@@ -38,13 +41,11 @@ A Pro in-app purchase is available, but **Pro is not required to meet Malinois' 
 
 Solo project, no dates, and everything here is subject to change — or to being talked out of. If one of these matters to you (or something missing does), support@comptonemail.com reaches me.
 
-**Planned**
-
-- **Hardware-key disarm** — disarm with a YubiKey-class security key, NFC or USB-C. The crypto path is already proven on-device; this is the next major feature.
-- **Honest capture-interruption records** — when iOS takes the camera or microphone away mid-capture (a call, another app, system pressure), the log should say exactly that, as an event, rather than fail silently.
+**Shipped in 1.3** — honest capture-interruption records: a capture that produced nothing now says why, on the event itself.
 
 **Exploring**
 
+- **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.
 - **Apple Watch alerts** — the tamper alert as a tap on your wrist. (An iOS quirk makes this need a real watch app: an armed phone that is unlocked and in the foreground never mirrors its notifications to its own paired watch.)
 - **Heartbeat records** — periodic proof-of-life while armed, so that if a device goes silent, the silence itself becomes evidence.
 

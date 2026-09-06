@@ -60,6 +60,66 @@ final class EventTests: XCTestCase {
         XCTAssertNil(decoded.interrupted)
     }
 
+    /// BACKLOG 53: the record says WHY protection stopped when the launch can tell — the
+    /// device restarted, the app alone was ended, or it was sent to the background — and an
+    /// unclassified record (older builds, a marker with no stamp, a cause this build does not
+    /// know) keeps the bare sentence rather than guessing.
+    func testInterruptionCauseWording() {
+        func summary(_ cause: String?) -> String {
+            Event(startDate: Date(), endDate: Date(), triggeredSensors: [],
+                  interrupted: true, interruptionCause: cause).sensorSummary
+        }
+        XCTAssertTrue(summary("rebooted").contains("device restarted"), summary("rebooted"))
+        XCTAssertTrue(summary("terminated").contains("closed or crashed"), summary("terminated"))
+        XCTAssertTrue(summary("backgrounded").contains("sent to the background"), summary("backgrounded"))
+        XCTAssertEqual(summary(nil), "Monitoring interrupted: the app closed before a clean disarm")
+        XCTAssertEqual(summary("something-newer"), summary(nil), "an unknown cause reads as unclassified")
+        for cause in InterruptionCause.allCases {
+            XCTAssertTrue(summary(cause.rawValue).hasPrefix("Monitoring interrupted"), cause.rawValue)
+            XCTAssertNotEqual(summary(cause.rawValue), summary(nil), "\(cause.rawValue) must say more than the bare record")
+        }
+    }
+
+    /// The cause rides the encrypted metadata blob only when set — a 1.2.1 mirror reads such
+    /// a record as the bare "interrupted" it already understands — and survives the local
+    /// round trip, while a pre-53 payload decodes with it absent.
+    func testInterruptionCauseRidesTheMetadataBlobOnlyWhenSet() throws {
+        let with = Event(startDate: Date(), endDate: Date(), triggeredSensors: [],
+                         interrupted: true, interruptionCause: "rebooted")
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(with.metadataJSON)) as? [String: Any])
+        XCTAssertEqual(obj["interruptionCause"] as? String, "rebooted")
+        XCTAssertEqual(obj["interrupted"] as? Bool, true)
+
+        let without = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], interrupted: true)
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(without.metadataJSON)) as? [String: Any])
+        XCTAssertNil(plain["interruptionCause"], "absent when unclassified, so the payload shape is unchanged")
+
+        XCTAssertEqual(try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(with)).interruptionCause, "rebooted")
+        XCTAssertNil(try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(without)).interruptionCause)
+    }
+
+    /// Item 54: the record says why it has no capture — in the owner's words — and the raw
+    /// value rides the payload only when set; a value this build does not know reads as nothing.
+    func testCaptureFailureWordingAndPayload() throws {
+        let failed = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion],
+                           captureFailure: CaptureFailureReason.storageFailed.rawValue)
+        XCTAssertEqual(failed.captureFailureSummary, CaptureFailureReason.storageFailed.summary)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(failed.metadataJSON)) as? [String: Any])
+        XCTAssertEqual(obj["captureFailure"] as? String, "storageFailed")
+        XCTAssertEqual(try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(failed)).captureFailure, "storageFailed")
+
+        let fine = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
+        XCTAssertNil(fine.captureFailureSummary)
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(fine.metadataJSON)) as? [String: Any])
+        XCTAssertNil(plain["captureFailure"])
+
+        var unknown = fine
+        unknown.captureFailure = "lensCapOn"
+        XCTAssertNil(unknown.captureFailureSummary, "an unknown reason is not rendered")
+        XCTAssertEqual(Event(startDate: Date(), endDate: Date(), triggeredSensors: [], stateChange: "cameraError").sensorSummary,
+                       "Camera session failed while armed")
+    }
+
     func testDurationSummaryLabelsFrontAndBack() {
         var e = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
         e.primaryCamera = "front"; e.primaryDuration = 5
@@ -318,6 +378,20 @@ final class EventTests: XCTestCase {
                        "the oldest synced row — a cloud-recoverable cache copy — goes instead")
     }
 
+    /// Ext-review #1 (2026-08-31): the newest-row exemption is a FIRST-HAND rationale
+    /// (the just-added record of an incident in progress, 39.R1.6) — it must not shield a
+    /// mirror. At cap, one merged mirror sorting newest with no older mirrors retained
+    /// (the steady state, since mirrors evict first) slipped past the mirror pass, and a
+    /// later pass deleted first-hand evidence and its media instead: one fabricated
+    /// record per sync eroded the log, bypassing R3-4 at exactly this boundary.
+    func testTheNewestRowBeingTheOnlyMirrorStillEvictsTheMirror() {
+        let mirror = UUID()
+        var rows: [EventStore.EvictionRow] = [.init(id: mirror, isSynced: true, isMirrored: true)]
+        rows += (0..<3).map { _ in .init(id: UUID(), isSynced: true) }   // first-hand, cloud-backed
+        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, cap: 3), [mirror],
+                       "the mirror itself goes — a copy the cloud still holds — never first-hand evidence")
+    }
+
     /// Fourth-pass R3-4, the eviction half: mirrors are copies — the capturing device and
     /// the cloud still hold them, and a re-fetch brings them back — so they evict before
     /// ANY first-hand class. Without this, bulk-inserted future-dated mirrors at cap pushed
@@ -414,6 +488,91 @@ final class EventTests: XCTestCase {
     /// The journal's contract in two pure functions: an event encodes to exactly one line
     /// (compact JSON never emits a raw newline — the invariant line-splitting rests on),
     /// and lines decode back losslessly by id.
+    /// Ext-review #3 (2026-08-31): checkpoint coalescing REPLACED the pending id set, so
+    /// an event persisted in snapshot A then evicted before snapshot B landed (inside the
+    /// 50 ms debounce) kept its journal birth line forever — and every relaunch "recovered"
+    /// the intentionally evicted event, evicting another row to make room. The union keeps
+    /// every id that any successful persist of the burst contained, so the line retires.
+    func testCheckpointCoalescingUnionsTheBurstsPersistedIDs() {
+        let kept = UUID(), evicted = UUID(), added = UUID()
+        XCTAssertEqual(EventStore.coalescedCheckpointIDs(pending: nil, newlyPersisted: [kept]),
+                       [kept], "first schedule of the burst")
+        XCTAssertEqual(EventStore.coalescedCheckpointIDs(pending: [kept, evicted],
+                                                         newlyPersisted: [kept, added]),
+                       [kept, evicted, added],
+                       "an id persisted earlier in the burst then evicted STAYS retirable — replacing it orphaned its journal line and resurrected the event every launch")
+    }
+
+    /// Ext-review #3's second path: a journal line whose event the cap immediately
+    /// re-evicts at recovery survived EVERY checkpoint — each launch resurrected it,
+    /// evicted it again, and left the line standing: churn forever and an ever-growing
+    /// journal. (The suite's own shared container demonstrated it live: orphaned lines
+    /// accumulated across runs until every store init paid a visible recover-and-prune
+    /// tax.) The persist that durably records the eviction now retires the line too.
+    @MainActor
+    func testRecoveryRetiresTheLineOfAnEventTheCapImmediatelyEvicts() async throws {
+        // Fill the log to cap with fresh events so anything older is evicted on sight.
+        let filler = EventStore()
+        let base = Date()
+        for i in 0..<(EventStore.maxEvents + 1) {
+            filler.add(Event(startDate: base.addingTimeInterval(Double(i)),
+                             endDate: base.addingTimeInterval(Double(i)),
+                             triggeredSensors: [.motion]))
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)   // let the burst's write tail settle
+        // Seed an orphan line: an OLD event whose metadata write "never landed".
+        let old = Event(startDate: base.addingTimeInterval(-86_400),
+                        endDate: base.addingTimeInterval(-86_400), triggeredSensors: [.motion])
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let journal = docs.appendingPathComponent("MalinoisEvents/events.journal")
+        var seeded = (try? Data(contentsOf: journal)) ?? Data()
+        seeded.append(try XCTUnwrap(EventStore.journalLine(for: old)))
+        try seeded.write(to: journal)
+
+        // A relaunch: recovery resurrects the old event, the cap evicts it again…
+        let store = EventStore()
+        XCTAssertFalse(store.events.contains { $0.id == old.id },
+                       "the recovered old event is over-cap — evicted immediately")
+        // …and the line must now RETIRE once the persist lands (poll past the async tail).
+        var lineGone = false
+        for _ in 0..<20 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let data = (try? Data(contentsOf: journal)) ?? Data()
+            if !EventStore.journaledEvents(in: data).contains(where: { $0.id == old.id }) {
+                lineGone = true
+                break
+            }
+        }
+        XCTAssertTrue(lineGone,
+                      "the evicted-at-recovery event's journal line retires — it must not resurrect at every launch")
+    }
+
+    /// BACKLOG 53: every birth-line append is full-synced before `add` returns — the barrier
+    /// that turns "survives a kill" into "survives a power cut" — and the lines retire only
+    /// behind a full sync of the log that supersedes them, so the guarantee cannot leak
+    /// through the retirement itself.
+    @MainActor
+    func testEveryJournalAppendIsFullySyncedBeforeAddReturns() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MalinoisJournalSync-" + UUID().uuidString, isDirectory: true)
+        EventStore.rootOverrideForTesting = root
+        defer {
+            EventStore.rootOverrideForTesting = nil
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = EventStore()
+        for i in 1...3 {
+            store.add(Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion]))
+            XCTAssertEqual(store.journalFullSyncsForTesting, i, "append \(i) was synced before add returned")
+        }
+        let journal = root.appendingPathComponent("events.journal")
+        for _ in 0..<100 where FileManager.default.fileExists(atPath: journal.path) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path), "every line retired once the log persisted")
+        XCTAssertGreaterThanOrEqual(store.logFullSyncsForTesting, 1, "and the log was synced before they went")
+    }
+
     func testJournalLinesRoundTripOneEventPerLine() throws {
         let birth = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion, .power])
         let audit = Event(startDate: Date(), endDate: Date(), triggeredSensors: [],

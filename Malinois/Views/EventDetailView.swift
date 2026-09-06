@@ -17,6 +17,9 @@ struct EventDetailView: View {
     @State private var showShare = false
     @State private var downloading = false
     @State private var downloadFoundNothing = false
+    /// A download ran but some iCloud slots went unchecked (R3-3) — keeps the download
+    /// section up for a retry even after a capture landed.
+    @State private var downloadIncomplete = false
 
     /// The live copy from the store — the view renders THIS, so a download that attaches
     /// media (34.B1) reflows the screen the moment the store updates. Falls back to the
@@ -58,7 +61,7 @@ struct EventDetailView: View {
         // The formatted value already carries its own "at" ("Aug 3, 2026 at 2:15 PM"), so the
         // sentence takes "on" — otherwise it reads "tampering at … at …".
         let timestamp = current.startDate.formatted(date: .abbreviated, time: .shortened)
-        var text = "Malinois detected tampering on \(timestamp) — \(current.sensorSummary) triggered."
+        var text = "Malinois detected tampering on \(timestamp) - \(current.sensorSummary) triggered."
         if !current.durationSummary.isEmpty { text += " Recording: \(current.durationSummary)." }
         var items: [Any] = [text]
         // Share BOTH captures for a "Both" event — the secondary is often the face shot
@@ -95,11 +98,23 @@ struct EventDetailView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
+            // Item 54: a capture that produced nothing says why — and a photo attached by the
+            // one bounded retry after an interruption says it is the second attempt.
+            if let why = current.captureFailureSummary {
+                let hasMedia = current.mediaFilename != nil || current.thumbnailData != nil
+                Label(hasMedia ? "The first capture failed - \(why). This photo was taken when the camera came back."
+                               : "No photo or clip - \(why).",
+                      systemImage: "camera.badge.ellipsis")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
             // The retrieval half of the Pro backup promise (34.B1): a restored or
             // byte-pruned event has no local media, but its full capture may still be in
             // iCloud — reachable by deterministic record ID, so this needs no schema work.
-            if current.mediaFilename == nil, !current.isStateChange, entitlements.proActive,
-               current.mediaDiscarded != true {
+            // An INCOMPLETE download (R3-3: some slots went unchecked) keeps the section
+            // up even after a capture landed, so the owner can retry for the rest.
+            if current.mediaFilename == nil || downloadIncomplete, !current.isStateChange,
+               entitlements.proActive, current.mediaDiscarded != true {
                 downloadSection
             }
         }
@@ -118,9 +133,11 @@ struct EventDetailView: View {
                     Task {
                         downloading = true
                         downloadFoundNothing = false
-                        let landed = await engine.downloadFullEvidence(for: current.id)
+                        downloadIncomplete = false
+                        let outcome = await engine.downloadFullEvidence(for: current.id)
                         downloading = false
-                        downloadFoundNothing = !landed
+                        downloadFoundNothing = !outcome.landed
+                        downloadIncomplete = !outcome.complete
                     }
                 } label: {
                     Label("Download full evidence from iCloud", systemImage: "icloud.and.arrow.down")
@@ -128,7 +145,13 @@ struct EventDetailView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 if downloadFoundNothing {
-                    Text("Nothing came back — the full capture may not be in iCloud, or iCloud isn't reachable.")
+                    Text("Nothing came back - the full capture may not be in iCloud, or iCloud isn't reachable.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else if downloadIncomplete {
+                    // Landed something, but a slot went unchecked (R3-3): say so instead
+                    // of presenting a partial download as the whole story.
+                    Text("A capture downloaded, but not everything could be checked - try again for the rest.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
@@ -254,7 +277,7 @@ struct EvidenceMediaView: View {
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottom) {
-                        Text("Thumbnail only — full media not on this device")
+                        Text("Thumbnail only - full media not on this device")
                             .font(.caption2)
                             .padding(6)
                             .background(.ultraThinMaterial)

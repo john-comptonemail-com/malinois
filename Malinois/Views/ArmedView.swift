@@ -84,7 +84,11 @@ struct ArmedView: View {
             // press-and-hold to disarm still works underneath it. An escalation
             // (jamming blackout / tamper flood) shows its own aggressive warning.
             if engine.alertActive && !engine.disarmEntryActive {
-                AlertMessageView(message: engine.escalation?.message ?? settings.alertMessage)
+                // Clamped at the render (R1-L4, the deviceLabel rule): bounded and
+                // never blank, whatever the stored value or decode admitted.
+                AlertMessageView(message: MonitoringEngine.sanitizedAlertMessage(
+                    engine.escalation?.message ?? settings.alertMessage,
+                    fallback: AppSettings.defaultAlertMessage))
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }

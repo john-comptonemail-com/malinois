@@ -163,7 +163,9 @@ struct PINSetupView: View {
                 .accessibilityLabel("Malinois")
             Text(stage == .create ? "Create a PIN" : "Confirm your PIN")
                 .font(.title2.weight(.semibold))
-            Text("4–6 digits. Required to disarm Malinois and to view captured evidence.")
+            // R1-L1 + R2 convergence: two reviews independently asked for a 6-digit nudge.
+            // Copy only — 4 stays allowed; lockout remains the real defense (SECURITY.md).
+            Text("4–6 digits (6 recommended). Required to disarm Malinois and to view captured evidence.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -237,7 +239,7 @@ struct PINRecoveryView: View {
         case .lostHash:
             return "Your Malinois PIN can't be read on this device. Authenticate with your device passcode to set a new one."
         case .lostSetupFlag:
-            return "Malinois didn't finish saving its setup. Your PIN and your recorded evidence are intact — authenticate with your device passcode to restore access."
+            return "Malinois didn't finish saving its setup. Your PIN and your recorded evidence are intact - authenticate with your device passcode to restore access."
         }
     }
 
@@ -254,7 +256,7 @@ struct PINRecoveryView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             if guidedAccessBlocked {
-                Text("End Guided Access first (triple-click the side button) — iOS won't show the verification screen while it's on. Then tap Try Again.")
+                Text("End Guided Access first (triple-click the side button) - iOS won't show the verification screen while it's on. Then tap Try Again.")
                     .font(.footnote)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
@@ -358,7 +360,7 @@ struct PINEntryView: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
             } else if biometricsVetoedByGuidedAccess {
-                Text("Face ID is unavailable during Guided Access — enter your PIN.")
+                Text("Face ID is unavailable during Guided Access - enter your PIN.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)

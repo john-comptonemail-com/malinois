@@ -279,4 +279,18 @@ final class KeychainServiceTests: XCTestCase {
         XCTAssertTrue(KeychainService.verify("4821"))
         KeychainService.resetAttempts()
     }
+
+    /// Early-Access (BACKLOG 66): the membership marker round-trips, survives the PIN wipe a
+    /// reinstall performs, and is only ever cleared by the test seam.
+    func testEarlyAccessMarkerRoundTripsAndSurvivesThePINWipe() throws {
+        KeychainService.clearEarlyAccessMemberForTesting()
+        XCTAssertFalse(KeychainService.earlyAccessMember)
+        try XCTSkipUnless(KeychainService.markEarlyAccessMember(),
+                          "Keychain unavailable in this build — round-trip skipped")
+        defer { KeychainService.clearEarlyAccessMemberForTesting() }
+        XCTAssertTrue(KeychainService.earlyAccessMember)
+        XCTAssertTrue(KeychainService.markEarlyAccessMember(), "marking twice is a no-op, not a failure")
+        KeychainService.wipeStalePINData()
+        XCTAssertTrue(KeychainService.earlyAccessMember, "the promise survives a reinstall's PIN wipe")
+    }
 }

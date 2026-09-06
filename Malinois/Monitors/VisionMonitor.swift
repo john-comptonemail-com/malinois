@@ -133,11 +133,11 @@ final class VisionMonitor: SensorMonitor {
                 // the tap not delivering, "needs the camera warm" would be a wrong answer to
                 // the owner's real question.
                 return SensorReading(value: "Not running",
-                                     detail: "the camera can't run this tripwire in its current setup — see the arming screen",
+                                     detail: "the camera can't run this tripwire in its current setup - see the arming screen",
                                      level: 0, hot: false)
             }
             return SensorReading(value: "No frames",
-                                 detail: "needs the camera warm — plugged in (Auto) or Instant mode",
+                                 detail: "needs the camera warm - plugged in (Auto) or Instant mode",
                                  level: 0, hot: false)
         }
         return SensorReading(

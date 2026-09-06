@@ -74,11 +74,13 @@ final class SirenPlayer {
         return activationExhausted
     }
 
-    /// Test-only: latches the exhaustion flag, standing in for an activation run failing
-    /// against a held audio session (the real path needs audio contention timed against
-    /// activation — not unit-constructible, see BACKLOG 42's device-leg note), so SR-1's
-    /// consume-once rule can be regression-tested.
+    #if DEBUG
+    /// Test-only (Debug-only, ninth review R2-F2's class): latches the exhaustion flag,
+    /// standing in for an activation run failing against a held audio session (the real
+    /// path needs audio contention timed against activation — not unit-constructible, see
+    /// BACKLOG 42's device-leg note), so SR-1's consume-once rule can be regression-tested.
     func setActivationExhaustedForTesting() { activationExhausted = true }
+    #endif
 
     /// Pure (unit-tested): whether a fresh activation attempt is owed — the alarm should be
     /// sounding and isn't. Extending the alert window is fresh evidence the incident is
@@ -165,7 +167,7 @@ final class SirenPlayer {
                 // OSStatus 561017449 ('!pri', insufficientPriority) means something else owns
                 // the audio session — most often a still-running capture session holding the
                 // microphone for clip recording.
-                Log.siren.fault("Failed to start the alarm after \(attempt) attempt(s): \(String(describing: error), privacy: .public)")
+                Log.siren.fault("Failed to start the alarm after \(attempt) attempt(s): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationRetryDelay) { [weak self] in

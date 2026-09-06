@@ -21,9 +21,12 @@ trying to power it off before the evidence escapes.
   guarantee below applies in full.
 - **Tier 2 — someone holding one of the owner's credentials.** Bounded outcomes: a PIN
   holder can stop *future* monitoring but deletes nothing and is photographed doing it;
-  a Guided Access passcode holder can close the app, which is logged and alerted; iCloud
-  credentials can wholesale-delete the cloud copy but never edit it — and a suddenly
-  empty cloud log beside a surviving local one is itself loud.
+  a Guided Access passcode holder can close the app, which is logged and alerted — and,
+  with the device in hand and unlocked, can wholesale-delete the cloud copy from iOS
+  Settings, as can anyone holding the iCloud credentials; neither can edit it. The local
+  log survives; the loss is total rather than selective, and it surfaces when the cloud
+  copy is next consulted — on a restore, or from another device — not as a real-time alert
+  (the one exception, an encrypted-data reset, the app detects and repairs by re-uploading).
 - **Tier 3 — professionals (spyware, device forensics).** The core objective survives:
   the tripwires still fire, and the record exists — usually off-device (Pro) — before
   any toolchain can finish. What ends is the vault, not the tripwire: a compromised OS
@@ -97,17 +100,33 @@ something specific and leaves something behind (details in
 [Non-goals](#non-goals--known-limitations)):
 - **Malinois PIN:** can disarm — stopping *future* monitoring — but cannot delete anything,
   and the disarm itself becomes an undeletable, timestamped record. Detection continues
-  during PIN entry, so even the disarm is photographed.
+  during PIN entry, so even the disarm is photographed, and on Pro with cross-device
+  alerts on, the disarm is pushed to the owner's other devices the moment it happens — a
+  PIN-holder's disarm is quiet on this device only.
 - **Guided Access passcode:** can kill the app; the kill is logged as "Monitoring
-  interrupted" on the next launch and alerts the owner's other devices (Pro). Evidence
-  already pushed has already escaped.
+  interrupted — the app was closed or crashed while armed" on the next launch and alerts
+  the owner's other devices (Pro). Evidence already pushed has already escaped. It also
+  opens the one on-device path to the cloud copy: with Guided Access ended and the device
+  unlocked, iOS Settings → iCloud → Manage Account Storage offers **Delete Data from
+  iCloud** for this app, with no Apple ID password asked (verified on device).
+  That deletion is the same wholesale, undetected loss described under iCloud credentials
+  below — total, never selective, visible on the next restore — and it does not reach the
+  other devices' local copies of what they had already mirrored, nor this device's own log.
 - **iCloud credentials:** cannot *browse* the log — Apple exposes no web or Settings UI for
   a third-party app's CloudKit records (verified against Apple's iCloud.com feature list and
   data-export documentation), and signing in on a new device additionally requires defeating
-  two-factor. What they can do is **wholesale-delete** the app's iCloud data (Settings →
-  Manage Storage → Delete Data from iCloud). There is no selective-edit or single-record
-  path — and a suddenly-empty cloud log beside a surviving local log is itself loud
-  evidence. **Absence of evidence is evidence.** They can also **insert** fabricated
+  two-factor. What they can do is **wholesale-delete** the app's iCloud data — by resetting
+  the
+  account's encrypted data (the one form the app detects: a Home notice, and every first-hand
+  event this device holds is re-uploaded), or through the per-app **Delete Data from iCloud**
+  in iOS Settings — which needs only the unlocked device, not the password (see the Guided
+  Access bullet above). There is no selective-edit or single-record path. The app does
+  **not** detect the storage-settings form: it writes to the default zone, which such a
+  deletion empties but does not remove, so later uploads succeed and the local rows keep
+  their synced state. The loss is total and therefore self-evident — but only to someone who
+  consults the cloud copy afterwards: a restore, or a device that never held the rows, comes
+  back empty. **Absence of evidence is evidence, when it is looked for.** They can also
+  **insert** fabricated
   records — but this device merges those only as clamped, labeled mirrors: never
   superseding first-hand evidence, timestamps believed at most a day ahead of the
   record's own server stamp, and always first against the retention cap. Insertion buys
@@ -138,11 +157,15 @@ lines fall:
   reads everything the phone can read — the log, the media, app memory — and with full
   control could in principle edit the local record. The cloud copy (Pro) stays beyond its
   reach either way: there is no selective-delete path into the private database, only the
-  tier-2 wholesale delete, which is loud. No app defends a compromised OS, and this one
+  tier-2 wholesale delete, which is total rather than selective — and visible on the next
+  restore, not signalled in real time (see the Guided Access and iCloud-credentials bullets).
+  No app defends a
+  compromised OS, and this one
   doesn't claim to.
 - **Credential theft feeds tier 2, not a new tier.** Pretexting and phishing — the
   private investigator's actual toolkit — yield at most the tier-2 outcomes above:
-  wholesale-visible destruction, never silent editing.
+  wholesale destruction — self-evident on the next restore, not signalled — never silent
+  editing.
 - **Where the data technically lives** (stated descriptively, not as advocacy): the
   on-device log is readable only on the unlocked device — Apple states it cannot extract
   data from a locked modern iPhone. In iCloud, media assets are encrypted toward keys held
@@ -159,8 +182,10 @@ lines fall:
 
 *(A security-relevant invariant, not just a billing detail.)*
 
-Malinois is monetized (a one-time Pro unlock, 30-day trial from first launch), and the
-split is drawn so that **the paywall never silently reduces protection**:
+Malinois is monetized (a one-time Pro unlock, 30-day trial from first launch — though during
+**Early-Access**, 1.3 onward until the owner closes it, every install has Pro free and
+permanently, and the trial applies only to installs after that; ADR 0009), and the split is
+drawn so that **the paywall never silently reduces protection**:
 
 - **Always free:** all core detection (motion / power / proximity / touch tripwires),
   on-device capture, the PIN-gated local event log, the brute-force lockout, Guided
@@ -295,6 +320,15 @@ Two consequences matter for the threat model:
   reconnaissance the Settings gate exists to deny — so gating the log and Settings while
   leaving it open would have been an inconsistency worth nothing to the owner and quite a lot
   to a snoop holding the disarmed device.
+- **Design note — the outbound links.** The app's only links to the outside —
+  Help & FAQ, the privacy policy, and the public source — sit at the foot of Settings,
+  behind the PIN and reachable only while disarmed, so following one is harmless. Nothing on
+  the armed screen can leave the app: under Guided Access that is precisely what the
+  single-app lock exists to prevent, and a link there would be a door. The three
+  destinations live in one place in the code (`AppLinks`), HTTPS on two pinned hosts, so
+  they cannot drift from the App Store Connect entries or be quietly repointed; under
+  Guided Access the section says that a tap will do nothing and offers copy-the-address
+  instead.
 - **Design note — why there is no hash chain.** A tamper-evident chain over the log was built and then
   removed: within this threat model there is no path for an attacker to delete an
   *individual* record. The app exposes no delete affordance, `CloudExfiltrator` never
@@ -302,8 +336,11 @@ Two consequences matter for the threat model:
   full-media retention policy, which cannot touch anything newer than 30 days), the
   CloudKit console cannot see private databases,
   and editing `events.json` needs a jailbreak or the device passcode — both out of scope.
-  What an iCloud-credential holder *can* do is wholesale-delete, which is self-evident
-  (the log is simply gone) and needs no cryptography to notice. A chain would therefore have
+  What an iCloud-credential holder — or a Guided Access passcode holder with the unlocked
+  device in hand — *can* do is wholesale-delete, which is self-evident
+  to anyone who consults the cloud copy afterwards (the log is simply gone) and needs no
+  cryptography to notice — though the app itself raises no alarm at the time. A
+  chain would therefore have
   detected only out-of-scope attacks while staying silent on the in-scope one — at the cost
   of false "tampering detected" warnings, which teach the owner to distrust the log and so
   damage the very thing it protects.
@@ -430,7 +467,7 @@ Two consequences matter for the threat model:
   jamming and sensor floods go to full volume immediately, and an escalation arriving
   mid-ramp overtakes it, and the alert window is extended to cover the whole ramp **plus** a
   period at full volume — otherwise the alarm would be stopped before it was ever loud. The
-  ramp can be turned off (*Settings → When triggered*) for instant maximum volume.
+  ramp can be turned off (*Settings → Tripwire Response*) for instant maximum volume.
   **In Siren mode every trigger is photographed, not filmed — from the first one, before any
   alarm is sounding** (F4), and the arming screen says so before you commit. Recording a clip needs the
   microphone, and a capture session holding a mic input takes the app's audio session — so a
@@ -537,8 +574,8 @@ rather than jumpy:
   re-pushed (metadata-first), so it escapes the moment the jam lifts or the device
   is carried back into signal. Events captured during a blackout are flagged
   (`capturedOffline`) so the record shows the adversary's sophistication. The
-  cross-device push subscription is also re-established on reconnect — if it failed
-  to set up at arm (the network was briefly down then), the owner's other devices
+  cross-device push subscriptions (tamper, and since 1.3 disarm) are also re-established on
+  reconnect — if either failed to set up at arm (the network was briefly down then), the owner's other devices
   would otherwise get no alert for the whole session. Caveat: subscription setup is a
   background task started at arm, so a tamper in the very first moments of the *first*
   arm of a session can beat it and miss the *proactive* push (the evidence record still
@@ -563,12 +600,16 @@ survive a device wipe.
   app-level record ownership/signature validation is needed. The cross-device push
   subscription only ever fires on the owner's own records.
 - **Evidence comes back, not just up (1.1).** After a reinstall — or on another of the
-  owner's devices — pull-to-refresh restores the log's facts and thumbnails, and each
+  owner's devices — the log's facts and thumbnails are restored at launch (1.3: everything the
+  local cap allows when the log is empty, one page otherwise) and on pull-to-refresh, and each
   event's full photo/clip can be **downloaded on demand** from its detail view. Retrieval
   fetches the photo records by their deterministic record names (no query, no schema
   dependency — ADR 0002), and a downloaded capture gets the same at-rest protection as a
   fresh one. This closes the loop on the Pro promise: evidence that survived the device
-  can be *recovered*, not merely proven to exist.
+  can be *recovered*, not merely proven to exist. Retrieval and restore never confuse
+  failure with absence (ninth review, R3-3): "iCloud holds nothing" is claimed only when
+  every slot actually answered, and a fetch that couldn't check everything says so and
+  offers a retry instead of presenting a partial result as the whole story.
 - **Full-media retention is the owner's policy, floored for safety (1.2).** A Settings
   picker keeps full-resolution cloud media forever, prunes it manually, or auto-deletes
   it past 1–12 months (default 12). Only photo records are ever deleted — facts,
@@ -576,13 +617,18 @@ survive a device wipe.
   have media deleted in any mode, by anyone: the floor lives inside the purge entry point
   itself, so no caller can violate it. (Precisely: eligibility keys on the event's age —
   a photo record that finished uploading late for an old event follows its event's age,
-  which is the anti-tamper direction; eighth review, L2.)
+  which is the anti-tamper direction; eighth review, L2.) A purge whose walk couldn't
+  read every candidate record reports failure rather than "Deleted" — under-deletion
+  stays the safe direction, but observably so (ninth review, R3-3).
 - **Notification health is surfaced, not assumed (34.H7).** The cross-device alert fires
   server-side, so the *sending* device needs no notification permission — but a device
   with Notifications denied for Malinois, or a failed push registration, cannot **show**
   the alert. That state used to be invisible behind a green "iCloud ready"; Home now says
   plainly that alerts from other devices won't appear on this one, re-checked on every
-  foreground because a toggle flipped in iOS Settings is unobservable while suspended.
+  foreground because a toggle flipped in iOS Settings is unobservable while suspended. Since
+  1.3 (40) the permission itself is asked in context on the receiving side — Home's "Allow
+  notifications" line (shown only once another device's evidence has arrived, hideable, mirrored
+  under Settings → iCloud), or the Cross-device alerts switch — never at launch.
 - **An encrypted-data reset is recovered, not looped on (34.H13).** If the owner resets
   their iCloud encrypted data, Apple purges the app's records and saves start answering
   `zoneNotFound`. That is classified as a refusal (never a siren — ADR 0001), and the
@@ -615,7 +661,11 @@ survive a device wipe.
   stay visible to the platform regardless of ADP: a record's **creation timestamp**, its
   **record name** (which embeds the event UUID), and the fact that the record exists at all.
   So the existence, count and timing of tamper records remain observable — at best what is
-  hidden is *what* each one says. Assets are also unencrypted *fields* (a `CKAsset` cannot be
+  hidden is *what* each one says. Since 1.3 that includes which state-change records are
+  disarms: the "disarmed" push rides a separate, tiny record type (`TamperEventDisarmV2`)
+  whose fields are encrypted like the rest, but whose *existence* is visible — the price of a
+  subscription that cannot read an encrypted field, paid deliberately instead of decrypting
+  one. Assets are also unencrypted *fields* (a `CKAsset` cannot be
   an encrypted value); their content is encrypted toward the owner's keys by the private
   database, which is why the media was never the exposed part. Note also that iCloud **Backup** includes the app's local
   container per Apple's documentation, so "on-device only" describes where the app writes,
@@ -643,17 +693,26 @@ survive a device wipe.
   cold-start delay on the first frame. This is the single largest limit on covert operation,
   it is not defeatable from inside the app, and it is not meant to be: the alternative was
   not shipping.
-- **The intended configuration, not enforced by default.** Guided Access is what the armed
+- **The intended configuration, enforced by default.** Guided Access is what the armed
   threat model assumes; without it the app can be swiped away or force-quit and monitoring
-  stops. *Settings → Require Guided Access* makes the app **refuse to arm** while it is off —
-  the owner holding themselves to that configuration rather than the app deciding for them. It ships **off**,
-  so a first run works without configuring iOS accessibility first; turning it on is an
-  explicit choice. Two deliberate carve-outs: the blocked arming screen offers both remedies
+  stops — and, found on device, even the side-button press of a force-restart
+  backgrounds the session first. *Require Guided Access* makes the app **refuse to arm**
+  while it is off. It shipped **off** through 1.2 so a first run worked without configuring
+  iOS accessibility first; from 1.3 it ships **on** (owner ruling, 2026-09-02), because the
+  one-arm lift below makes the strict default humane. The **first arm on a fresh install
+  auto-applies that lift** (owner ruling, 2026-09-04, ADR 0010): a brand-new user reaches the
+  countdown with no tap and no accessibility setup, the lift is logged like any other so the
+  first session's record is honest about having run without the requirement, and every arm
+  after the first enforces it — the post-session nudge teaches Guided Access with context. A
+  first arm made with Guided Access already on gets no lift and no record. Turning the requirement off for good is an explicit choice
+  in Settings. Two deliberate carve-outs: the blocked arming screen offers both remedies
   inline (enable Guided Access, or lift the requirement **for that one arm** — the stored
   setting never changes from the arming screen, the lift expires with the arming screen or
-  session, and every lift is logged and pushed as an audit record, so it cannot be a silent
-  permanent downgrade by whoever holds the unlocked phone; eighth review, M2) so it never
-  dead-ends, and
+  session, and a lift is logged and pushed as an audit record, so it cannot be a silent
+  permanent downgrade by whoever holds the unlocked phone; eighth review, M2. Repeat taps
+  with no arm in between coalesce into that one record — ninth review, R3-8 — so the
+  "someone poked at it" signal stands without handing the holder a mint-records-forever
+  primitive) so it never dead-ends, and
   **crash-recovery re-arm ignores the requirement** — a crash can end Guided Access, and
   refusing to re-arm there would leave the device silently unprotected, the exact failure the
   automatic re-arm exists to prevent. Exiting Guided Access mid-session does **not** disarm,
@@ -688,7 +747,10 @@ These are out of scope by design — Malinois does not claim to defend against t
   plain battery death. None can be prevented from inside an app, and all three end a session
   without a tripwire firing. What Malinois does instead: the next launch writes a
   "Monitoring interrupted" record and pushes a cross-device alert, so the gap is logged
-  rather than silent. A thermal sentinel that alarms on the way *up* — before the OS gives
+  rather than silent — and the record says whether the **device restarted** or only the
+  app ended (a boot-time stamp planted at arm is compared at relaunch), so a
+  battery death or an OS panic reads differently from a force-quit. After a restart the
+  record appears at first unlock, not at the restart: the app cannot run before then. A thermal sentinel that alarms on the way *up* — before the OS gives
   out — is tracked in the project's backlog. Related, found on device (iOS 26.6): triggering the
   five-press Emergency SOS flow under Guided Access froze the phone until a force-restart —
   for evidence purposes it behaves like the force-restart race, because five button presses
@@ -696,17 +758,23 @@ These are out of scope by design — Malinois does not claim to defend against t
 - **A compromised / jailbroken device.** With code execution, an attacker can read
   the Keychain-protected hash, the on-disk evidence, and app memory. Data Protection
   and PBKDF2 raise the cost but don't stop a rooted attacker.
-- **An attacker who has the iCloud credentials** can delete the off-device evidence
-  from the user's CloudKit database — that is the one credential that defeats the
-  *evidence* itself. The **Malinois PIN** and the **Guided Access passcode** do **not**:
-  the app exposes no way to delete an event, and cloud deletion is limited to the
-  owner's retention policy over **old full-resolution media only** — facts, thumbnails
-  and audit records have no deletion path at all, and nothing newer than **30 days** can
-  be deleted in any mode (the floor is enforced inside the purge itself, not the UI). So
-  neither credential can erase evidence that already escaped, and a PIN-holder cannot
-  use "free up iCloud space" to destroy the evidence of what they just did. What they defeat is narrower — the PIN stops *future* monitoring and silences
-  the response; the GA passcode unlocks the single-app lock (and exiting it is itself
-  captured). Detection continues during disarm, so even a PIN-holder's handling is
+- **An attacker who can reach the cloud copy** can delete the off-device evidence from
+  the user's CloudKit database — with the iCloud credentials from anywhere, or, on the
+  unlocked device itself, from iOS Settings (Manage Account Storage → Delete Data from
+  iCloud, no password asked), which a **Guided Access passcode** holder can
+  reach once they end Guided Access. That is what defeats the *evidence* itself, and (an
+  encrypted-data reset aside) it does so without the app noticing; the on-device log is
+  untouched by it, and so are the copies other devices had already mirrored. The
+  **Malinois PIN** on its own does **not**: the app exposes no way to delete an event, and
+  its own cloud deletion is limited to the owner's retention policy over **old
+  full-resolution media only** — facts, thumbnails and audit records have no deletion
+  path inside the app, and nothing newer than **30 days** can be deleted in any mode (the
+  floor is enforced inside the purge itself, not the UI). So a PIN-holder cannot use "free
+  up iCloud space" to destroy the evidence of what they just did. What the PIN defeats is
+  narrower — it stops *future* monitoring and silences the response; the GA passcode
+  unlocks the single-app lock (and exiting it is itself captured, with the alert to the
+  owner's other devices on its way before any Settings deletion could begin). Detection
+  continues during disarm, so even a PIN-holder's handling is
   photographed and pushed (flagged owner-attributed, not redacted). And every arm and
   disarm is now written to the log as an explicit, non-deletable **"Monitoring
   armed"/"disarmed"** record, so a PIN-holder who turns protection off leaves proof of
@@ -777,7 +845,16 @@ These are out of scope by design — Malinois does not claim to defend against t
   launch's crash recovery logs a **"Monitoring interrupted"** event and pushes it, so the
   interruption leaves a local record and alerts the owner's other devices. This is recorded
   *before* the crash-loop guard runs, so even when a rapid series of kills correctly stops
-  the auto-re-arm (to avoid re-arming into a loop), each one still alerts the owner.
+  the auto-re-arm (to avoid re-arming into a loop), each one still alerts the owner. The
+  record also says **what ended the session**: the kernel's boot time is stored
+  beside the armed marker, and at the next launch a pure, unit-tested rule compares it with
+  the current one — a jump of more than 30 s, or uptime that shrank, means the device
+  restarted; otherwise the app alone was closed or crashed. Sending an active session to the
+  background is its own cause. A marker from a build before the stamp stays a bare
+  "interrupted" rather than a guess. The one thing that can mislead the rule is a manual
+  clock change of more than 30 s between arm and relaunch, which Guided Access rules out
+  while armed; after a restart the record appears at first unlock, since the app cannot run
+  before then.
 - **The disarm PIN pad never reveals the stored PIN length** (no placeholder dots; an
   explicit submit), and Keychain writes update-in-place so a failed write can't destroy
   the PIN or reset the brute-force counter. The brute-force lockout is enforced inside
@@ -792,8 +869,29 @@ These are out of scope by design — Malinois does not claim to defend against t
   landed. A force-quit, Voice Control "Close application", or OOM kill in that window used
   to erase the record entirely on the free tier; now the journal line survives the process,
   a successful full write retires it, and a torn final line (the kill arriving mid-append)
-  is skipped without voiding the rest. A hard power cut in the same instant remains the
-  cloud fact push's race to win (ADR 0005).
+  is skipped without voiding the rest. A completed write survives the *process*, but it sits
+  in OS caches until the kernel flushes — an undocumented interval that can be tens of
+  seconds — so **every append is followed by a full disk sync before anything else
+  proceeds** (about 4 ms on device): a forced power-off can no longer lose a
+  recorded line at all — and a line is retired only after the full log that supersedes it
+  has itself been synced, so the guarantee does not leak through the retirement. The sync
+  costs are logged so they can be re-read on a device (ADR 0005, as amended).
+- **A capture that produced nothing says why** (ADR 0008). The record carries the
+  reason — permission denied, the camera would not start or did not start in time, the shot
+  or clip failed, the session was interrupted (with the system's reason: the app left the
+  foreground, another app took the camera or the microphone, iOS shed the camera under
+  pressure), the file could not be written, or the owner disarmed while the capture was in
+  flight — and the event's detail view reads it out.
+  An interruption-class failure gets **one bounded retry**: when the interruption ends — or
+  at once, if it ended while the shot was still failing — if the session is still armed, the
+  event is recent and still without media, and no other capture owns the camera, a single
+  still is taken and attached, labelled as the second attempt; the slot is cleared before
+  the attempt, so it is one try, never a loop. A camera
+  session killed by a runtime error — previously down and unlogged until the next trigger
+  (32.R9) — leaves a "camera session failed" audit record, is surfaced on Home, and is
+  re-warmed per the readiness policy, at most once per minute so a storm of errors cannot
+  become a storm of records. In until-clear mode, a trip that extends the recording is now
+  folded into the record's sensor list rather than only into the clip's length.
 - **App updates end an armed session like any other process kill** (owner-observed on the
   2026-08-30 TestFlight pair). The interruption is logged and the recovery re-arm runs at
   the next launch, exactly as for a force-quit — but nothing resumes until the app is

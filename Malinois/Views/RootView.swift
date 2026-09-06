@@ -11,6 +11,7 @@ import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var engine: MonitoringEngine
+    @EnvironmentObject private var entitlements: ProEntitlements
     @Environment(\.scenePhase) private var scenePhase
     @State private var needsPINSetup = KeychainService.pinPresence == .absent
     // The Keychain and the local setup flag disagree. Either direction must go behind device
@@ -25,10 +26,13 @@ struct RootView: View {
     // the judgment re-run once the Keychain can actually answer.
     @State private var pinStateUnresolved = KeychainService.pinPresence == .sealedByLock
 
-    /// One-time trial explainer, shown between setup and Home. The trial starts at first launch,
-    /// so without this the first experience silently *is* Pro and the eventual lapse reads as
-    /// features being taken away. Only for genuine first-time setup — a returning owner coming
-    /// through PIN recovery has seen it, and the flag survives in UserDefaults.
+    /// One-time trial explainer, shown between setup and Home — and only when there is a trial
+    /// to explain. The trial starts at first launch, so without it the first experience silently
+    /// *is* Pro and the eventual lapse reads as features being taken away. During Early-Access
+    /// (BACKLOG 66) and for a purchase nothing expires, so setup goes straight to Home: as little
+    /// friction as possible before the first arm (owner, 2026-09-04). Only for genuine first-time
+    /// setup — a returning owner coming through PIN recovery has seen it, and the flag survives
+    /// in UserDefaults.
     @State private var showTrialWelcome = false
 
     /// One-time Guided Access nudge, evaluated when a session ends (see `maybePromptGuidedAccess`).
@@ -41,7 +45,7 @@ struct RootView: View {
             } else if needsPINSetup {
                 PINSetupView {
                     needsPINSetup = false
-                    showTrialWelcome = !OnboardingState.hasSeenTrialWelcome
+                    showTrialWelcome = !OnboardingState.hasSeenTrialWelcome && entitlements.status == .trial
                 }
             } else {
                 switch engine.state {

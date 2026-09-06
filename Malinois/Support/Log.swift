@@ -7,8 +7,13 @@
 //  a field issue be debugged from a user's device without a debugger attached.
 //
 //  Privacy rule: nothing that reaches a log may identify evidence, the PIN, or CloudKit
-//  record contents. Error descriptions, sensor names, counts and filenames (UUID-based) are
-//  marked public so they survive redaction; everything else stays at OSLog's private default.
+//  record contents. Sensor names, counts and filenames (UUID-based) are marked public so
+//  they survive redaction; everything else stays at OSLog's private default. Error text is
+//  split (ninth review, R1-L3): `Log.ref` (domain#code) is public — always diagnosable —
+//  while the full description is `.private`, because CKError text can embed record/zone
+//  IDs carrying event UUIDs, which would otherwise reach any sysdiagnose. Private text is
+//  still visible live in Xcode's console, so the on-device incident workflow (ADR 0004's
+//  diagnosis) keeps working during development.
 //
 
 import Foundation
@@ -30,4 +35,13 @@ enum Log {
     /// Camera session plumbing — in particular the vision tap, whose failure mode is
     /// silence (frames simply never arrive), so it has to say what happened out loud.
     static let camera = Logger(subsystem: subsystem, category: "camera")
+
+    /// Pure (unit-tested): the public, identifier-free half of an error log line —
+    /// "domain#code" (e.g. "CKErrorDomain#4"). Log this `.public` and the description
+    /// `.private` (R1-L3): the code alone classifies the failure in any sysdiagnose,
+    /// while identifier-bearing text stays redacted.
+    static func ref(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.domain)#\(ns.code)"
+    }
 }

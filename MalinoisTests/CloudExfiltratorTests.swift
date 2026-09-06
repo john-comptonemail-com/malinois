@@ -456,6 +456,29 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNil(plain?.interrupted, "absent stays absent rather than defaulting to false")
     }
 
+    /// BACKLOG 53: the interruption cause rides the blob and is allow-listed on the way in —
+    /// a value this build does not know is dropped, and the record stays "interrupted".
+    func testRecoversTheInterruptionCauseFromTheJSONBlobAllowListed() {
+        let known = CloudExfiltrator.event(from: metaRecord(metadataJSON: #"{"interrupted":true,"interruptionCause":"rebooted"}"#))
+        XCTAssertEqual(known?.interruptionCause, "rebooted")
+        let unknown = CloudExfiltrator.event(from: metaRecord(metadataJSON: #"{"interrupted":true,"interruptionCause":"teleported"}"#))
+        XCTAssertEqual(unknown?.interrupted, true)
+        XCTAssertNil(unknown?.interruptionCause, "an unknown cause is dropped, never displayed")
+        XCTAssertNil(CloudExfiltrator.event(from: metaRecord())?.interruptionCause)
+    }
+
+    /// Item 54: the capture-failure reason rides the blob, allow-listed on the way in, and the
+    /// camera-error audit kind is one the state decoder accepts.
+    func testRecoversTheCaptureFailureFromTheJSONBlobAllowListed() {
+        let known = CloudExfiltrator.event(from: metaRecord(metadataJSON: #"{"captureFailure":"interruptedByAnotherApp"}"#))
+        XCTAssertEqual(known?.captureFailure, "interruptedByAnotherApp")
+        let unknown = CloudExfiltrator.event(from: metaRecord(metadataJSON: #"{"captureFailure":"lensCapOn"}"#))
+        XCTAssertNotNil(unknown)
+        XCTAssertNil(unknown?.captureFailure, "an unknown reason is dropped, never displayed")
+        XCTAssertNotNil(CloudExfiltrator.stateEvent(from: stateRecord(kind: "cameraError")), "the audit kind mirrors")
+        XCTAssertNil(CloudExfiltrator.stateEvent(from: stateRecord(kind: "lensCapOn")), "an unknown kind still drops")
+    }
+
     // MARK: - Arm/disarm audit records (BACKLOG 8)
 
     private func stateRecord(id: UUID = UUID(),
@@ -619,6 +642,67 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertEqual(decoded?.sourceDevice, "John's iPhone")
     }
 
+    /// BACKLOG 59: the disarm signal is the record the "disarmed" push subscribes to. It
+    /// carries nothing in the clear — the type's existence is the whole leak, and that is
+    /// documented — and it never collides with the audit record it accompanies.
+    func testTheDisarmSignalIsEncryptedAndDistinctFromTheAuditRecord() {
+        let id = UUID()
+        let event = Event(id: id,
+                          startDate: Date(timeIntervalSince1970: 1_700_000_000),
+                          endDate: Date(timeIntervalSince1970: 1_700_000_000),
+                          triggeredSensors: [],
+                          stateChange: "disarmed")
+        let signal = CloudExfiltrator.makeDisarmSignalRecord(event, deviceName: "John's iPhone")
+        XCTAssertEqual(signal.recordType, CloudExfiltrator.disarmSignalRecordTypeV2)
+        for key in ["eventID", "startDate", "deviceName"] {
+            XCTAssertNil(signal[key], "\(key) must not be readable in the clear")
+            XCTAssertNotNil(signal.encryptedValues[key], "\(key) must be carried, encrypted")
+        }
+        let audit = CloudExfiltrator.makeStateRecord(event, kind: "disarmed", deviceName: "John's iPhone")
+        XCTAssertNotEqual(signal.recordID.recordName, audit.recordID.recordName,
+                          "a CKRecord.ID is unique per zone, not per type — the two must not collide")
+        XCTAssertNotEqual(CloudExfiltrator.disarmSignalRecordTypeV2, CloudExfiltrator.stateRecordTypeV2)
+    }
+
+    func testOnlyADisarmGetsTheSignal() {
+        XCTAssertTrue(CloudExfiltrator.disarmSignalWanted(kind: "disarmed"))
+        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "armed"), "arming stays silent")
+        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "gaLifted"))
+    }
+
+    /// The two subscriptions differ only in what they watch and what they say; everything
+    /// else — match-everything predicate, fire on creation, sound, the content-available wake
+    /// that pulls the record into the other device's log — is shared shape.
+    func testTheDisarmSubscriptionWatchesTheSignalTypeWithItsOwnStaticBody() {
+        let tamper = CloudExfiltrator.makeTamperSubscription()
+        let disarm = CloudExfiltrator.makeDisarmSubscription()
+        XCTAssertEqual(tamper.recordType, CloudExfiltrator.metaRecordTypeV2)
+        XCTAssertEqual(disarm.recordType, CloudExfiltrator.disarmSignalRecordTypeV2)
+        XCTAssertNotEqual(tamper.subscriptionID, disarm.subscriptionID)
+        XCTAssertEqual(tamper.notificationInfo?.alertBody, "Tamper detected on your device.")
+        XCTAssertEqual(disarm.notificationInfo?.alertBody, "Malinois was disarmed on one of your devices.")
+        for sub in [tamper, disarm] {
+            XCTAssertEqual(sub.predicate.predicateFormat, "TRUEPREDICATE")
+            XCTAssertTrue(sub.querySubscriptionOptions.contains(.firesOnRecordCreation))
+            XCTAssertEqual(sub.notificationInfo?.title, "Malinois")
+            XCTAssertEqual(sub.notificationInfo?.soundName, "default")
+            XCTAssertEqual(sub.notificationInfo?.shouldSendContentAvailable, true)
+        }
+    }
+
+    /// Ensure establishes only what the account is missing, tamper first; the OFF flip must
+    /// name every ID this app has ever created, the 1.0 one included.
+    func testEnsureFillsOnlyTheGapsAndRemoveNamesEveryIDEverCreated() {
+        let tamperID = CloudExfiltrator.makeTamperSubscription().subscriptionID
+        let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToEnsure(existingIDs: []).map(\.subscriptionID),
+                       [tamperID, disarmID])
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToEnsure(existingIDs: [tamperID]).map(\.subscriptionID),
+                       [disarmID], "an account that predates 1.3 gains the disarm subscription on its next ensure")
+        XCTAssertTrue(CloudExfiltrator.subscriptionsToEnsure(existingIDs: [tamperID, disarmID]).isEmpty)
+        XCTAssertEqual(Set(CloudExfiltrator.subscriptionIDsToRemove), [tamperID, disarmID, "malinois-tamper-meta-sub"])
+    }
+
     func testAPhotoRecordEncryptsItsMetadataButNotTheMedia() throws {
         let record = CloudExfiltrator.makePhotoRecord(sampleEvent(),
                                                       mediaURL: try tempFile("full.jpg"),
@@ -639,7 +723,8 @@ final class CloudExfiltratorTests: XCTestCase {
         let v2Names = [
             CloudExfiltrator.makeMetaRecord(event, deviceName: "d", thumbnailURL: nil).recordID.recordName,
             CloudExfiltrator.makeStateRecord(event, kind: "armed", deviceName: "d").recordID.recordName,
-            CloudExfiltrator.makePhotoRecord(event, mediaURL: try tempFile("m.jpg"), suffix: "photo-front").recordID.recordName
+            CloudExfiltrator.makePhotoRecord(event, mediaURL: try tempFile("m.jpg"), suffix: "photo-front").recordID.recordName,
+            CloudExfiltrator.makeDisarmSignalRecord(event, deviceName: "d").recordID.recordName
         ]
         let legacyNames = ["meta-" + id.uuidString,
                            "state-" + id.uuidString,
@@ -647,7 +732,7 @@ final class CloudExfiltratorTests: XCTestCase {
         for name in v2Names {
             XCTAssertFalse(legacyNames.contains(name), "\(name) collides with a 1.0 record name")
         }
-        XCTAssertEqual(Set(v2Names).count, 3, "and the three V2 records must not collide with each other")
+        XCTAssertEqual(Set(v2Names).count, 4, "and the four V2 records must not collide with each other")
     }
 
     /// Guards the typo that would make the "new" types silently be the old ones — which would
@@ -941,6 +1026,43 @@ final class CloudExfiltratorTests: XCTestCase {
 
     private func rid(_ n: Int) -> CKRecord.ID { CKRecord.ID(recordName: "r\(n)") }
 
+    // MARK: - Per-record READ failures are not absence (ninth review, R3-3)
+
+    /// The read-side twin of `deleteFailed`: a query match that individually FAILED is a
+    /// record that was NOT checked — reporting the page as clean made a broken restore
+    /// look identical to a complete one, and let a purge walk claim "Deleted" while the
+    /// events it couldn't read kept their media.
+    func testQueryPageSawFailureFlagsAnyPerRecordFailure() {
+        let good: (CKRecord.ID, Result<CKRecord, any Error>) =
+            (rid(1), .success(CKRecord(recordType: "meta", recordID: rid(1))))
+        let bad: (CKRecord.ID, Result<CKRecord, any Error>) =
+            (rid(2), .failure(CKError(.networkFailure)))
+
+        XCTAssertFalse(CloudExfiltrator.queryPageSawFailure([]), "an empty page is clean")
+        XCTAssertFalse(CloudExfiltrator.queryPageSawFailure([good]), "all-success is clean")
+        XCTAssertTrue(CloudExfiltrator.queryPageSawFailure([good, bad]),
+                      "one failed match dirties the page — that record was not checked")
+    }
+
+    /// fetchFullMedia's per-ID results: `.unknownItem` is absence (the record is not there —
+    /// that IS the answer); any other per-ID failure means the fetch was not authoritative
+    /// and the UI must not claim "iCloud holds nothing".
+    func testMediaFetchIncompleteSeparatesAbsenceFromFailure() {
+        let record = CKRecord(recordType: "photo", recordID: rid(1))
+
+        XCTAssertFalse(CloudExfiltrator.mediaFetchIncomplete([:]),
+                       "no candidate slots, nothing unchecked")
+        XCTAssertFalse(CloudExfiltrator.mediaFetchIncomplete([rid(1): .success(record)]))
+        XCTAssertFalse(CloudExfiltrator.mediaFetchIncomplete([rid(2): .failure(CKError(.unknownItem))]),
+                       "unknownItem IS the answer: the record does not exist")
+        XCTAssertTrue(CloudExfiltrator.mediaFetchIncomplete(
+            [rid(1): .success(record), rid(2): .failure(CKError(.networkFailure))]),
+                      "a non-unknownItem per-ID failure means a slot went unchecked")
+        XCTAssertTrue(CloudExfiltrator.mediaFetchIncomplete(
+            [rid(1): .failure(NSError(domain: "x", code: 1))]),
+                      "a non-CloudKit error is unchecked too, never absence")
+    }
+
     /// A purge may claim success ONLY when every expected record is individually confirmed
     /// absent. The old rule mapped .partialFailure to success and dropped per-record errors,
     /// so Settings said "Deleted" while media remained.
@@ -987,6 +1109,21 @@ final class CloudExfiltratorTests: XCTestCase {
 
     /// One unlucky kill inside the probe window must cost one launch, not the whole build;
     /// only repeated deaths - the entitlement-crash signature - reach the latch limit.
+    /// R3-6: CFBundleVersion alone collided across release lines — main sat at 1.3 (28)
+    /// while a future archive could legitimately claim 28 again, inheriting a dev build's
+    /// strikes. The pair identity is unique per archive; old bare-build markers never
+    /// match it, so an updated install gets one clean re-attempt (the safe direction).
+    func testProbeIdentityPairsMarketingVersionWithBuild() {
+        XCTAssertEqual(CloudExfiltrator.probeIdentity(marketingVersion: "1.3", build: "28"), "1.3+28")
+        XCTAssertEqual(CloudExfiltrator.probeIdentity(marketingVersion: nil, build: nil), "0+0")
+        XCTAssertNotEqual(CloudExfiltrator.probeIdentity(marketingVersion: "1.3", build: "28"),
+                          CloudExfiltrator.probeIdentity(marketingVersion: "1.4", build: "28"),
+                          "same build number on different release lines must not share strikes")
+        XCTAssertEqual(CloudExfiltrator.probeStrikes(
+            recorded: "28|2", build: CloudExfiltrator.probeIdentity(marketingVersion: "1.3", build: "28")), 0,
+                       "a legacy bare-CFBundleVersion marker never matches a pair identity")
+    }
+
     func testProbeStrikesCountPerBuildAndTolerateOneOffKills() {
         XCTAssertEqual(CloudExfiltrator.probeStrikes(recorded: nil, build: "28"), 0)
         XCTAssertEqual(CloudExfiltrator.probeStrikes(recorded: "28|1", build: "28"), 1,

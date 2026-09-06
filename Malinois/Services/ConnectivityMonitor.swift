@@ -22,6 +22,17 @@ final class ConnectivityMonitor: ObservableObject {
     /// True while any usable network path exists.
     @Published private(set) var isOnline = true
 
+    /// The snapshot-safe reading (R1-L2): connectivity that has actually been OBSERVED.
+    /// `isOnline` deliberately defaults optimistic for live behavior, but an arm-time
+    /// snapshot taken before NWPath's first report (the crash-recovery re-arm at launch is
+    /// the realistic window) must read offline — otherwise an offline arm records "had a
+    /// path", and a later offline trigger force-sirens in Stealth on a false jamming call.
+    var observedOnline: Bool { hasFirstReport && isOnline }
+
+    /// Whether NWPath has reported at least once — set before the change-only guard below,
+    /// because the first report is informative even when it matches the optimistic default.
+    private(set) var hasFirstReport = false
+
     /// Fired on every online↔offline transition (true == a usable path exists).
     var onChange: ((Bool) -> Void)?
 
@@ -35,7 +46,9 @@ final class ConnectivityMonitor: ObservableObject {
         monitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
             Task { @MainActor in
-                guard let self, self.isOnline != online else { return }
+                guard let self else { return }
+                self.hasFirstReport = true
+                guard self.isOnline != online else { return }
                 self.isOnline = online
                 self.onChange?(online)
             }

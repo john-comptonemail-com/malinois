@@ -14,8 +14,8 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(s.illumination, .auto)
         XCTAssertTrue(s.notifyOtherDevices)
         XCTAssertEqual(s.captureMode, .clip3, "video is the default capture")
-        XCTAssertEqual(s.cameraPosition, .auto,
-                       "Front pointed the camera at the desk whenever the phone was placed face down")
+        XCTAssertEqual(s.cameraPosition, .front,
+                       "the lens facing whoever handles the phone (ADR 0012); Rear/Auto serve the Vision setup")
         XCTAssertTrue(s.jammingResponse, "go-loud-if-jammed is on by default")
         XCTAssertEqual(s.responseMode, .alert, "alert message is the default response")
         XCTAssertEqual(s.alertMessage, AppSettings.defaultAlertMessage)
@@ -24,6 +24,17 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(s.cameraReadiness, .auto, "Auto (warm while charging) is the default battery mode")
         XCTAssertFalse(s.scramblePINPad, "PIN-pad scrambling is opt-in, off by default")
         XCTAssertFalse(s.biometricUnlock, "Face ID unlock is opt-in, off by default — two doors make the weaker one the boundary")
+        XCTAssertFalse(s.clipAudio, "clips are video only until the owner adds sound (item 69)")
+    }
+
+    /// Item 69: the setting is off for new installs; an install from before it existed keeps
+    /// the audio it had — the migration reads the microphone permission it already gave.
+    func testClipAudioMigratesFromTheMicrophonePermissionOnlyWhenUnstored() {
+        XCTAssertTrue(AppSettings.migratedClipAudio(stored: nil, micGranted: true))
+        XCTAssertFalse(AppSettings.migratedClipAudio(stored: nil, micGranted: false))
+        XCTAssertFalse(AppSettings.migratedClipAudio(stored: false, micGranted: true), "a stored choice wins")
+        XCTAssertTrue(AppSettings.migratedClipAudio(stored: true, micGranted: false),
+                      "a stored choice wins even with the mic since revoked; the arm-time notice covers that")
     }
 
     /// F-23: arming is inert with no tripwire enabled — the flag the UI warns on.
@@ -118,6 +129,48 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(CaptureMode(rawValue: "clip"), .clip3, "old '3-second clip' raw value migrates")
     }
 
+    /// Owner ruling 2026-09-02 (with item 53): Guided Access is required by default from 1.3 —
+    /// and, owner ruling 2026-09-04 (item 65, finding 6), for EXISTING installs too: 1.2 always
+    /// stored the switch, off, so the new default alone never reached them. A blob without the
+    /// migration marker turns the switch on once and gains the marker; a blob that carries the
+    /// marker keeps whatever the owner chose after that.
+    func testRequireGuidedAccessIsOnByDefaultAndMigratesExistingInstallsOnce() throws {
+        XCTAssertTrue(AppSettings().requireGuidedAccess, "fresh install requires Guided Access")
+        let withoutKey = Data("""
+        {"enabledSensors":["motion"],"sensitivities":[],"triggerMode":"any",\
+        "gracePeriodSeconds":15,"captureMode":"photo"}
+        """.utf8)
+        XCTAssertTrue(try JSONDecoder().decode(AppSettings.self, from: withoutKey).requireGuidedAccess,
+                      "a blob from before the key gets the new default")
+        let storedOffBy12 = Data("""
+        {"enabledSensors":["motion"],"sensitivities":[],"triggerMode":"any",\
+        "gracePeriodSeconds":15,"captureMode":"photo","requireGuidedAccess":false}
+        """.utf8)
+        XCTAssertTrue(try JSONDecoder().decode(AppSettings.self, from: storedOffBy12).requireGuidedAccess,
+                      "1.2 stored the switch off without anyone choosing it — the migration turns it on")
+        let optedOutAfterMigration = Data("""
+        {"enabledSensors":["motion"],"sensitivities":[],"triggerMode":"any",\
+        "gracePeriodSeconds":15,"captureMode":"photo","requireGuidedAccess":false,\
+        "guidedAccessDefaultMigration":1}
+        """.utf8)
+        XCTAssertFalse(try JSONDecoder().decode(AppSettings.self, from: optedOutAfterMigration).requireGuidedAccess,
+                       "a choice made after the migration is respected")
+        // An owner who turns it off keeps it off: the marker travels with the blob.
+        let s = AppSettings()
+        s.requireGuidedAccess = false
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertFalse(decoded.requireGuidedAccess, "the owner's own opt-out survives a save/load")
+    }
+
+    /// The migration rule itself (item 65, finding 6).
+    func testMigratedRequireGuidedAccessRule() {
+        XCTAssertTrue(AppSettings.migratedRequireGuidedAccess(stored: false, migration: 0), "a 1.2 'off' was never chosen")
+        XCTAssertTrue(AppSettings.migratedRequireGuidedAccess(stored: nil, migration: 0))
+        XCTAssertFalse(AppSettings.migratedRequireGuidedAccess(stored: false, migration: 1), "a post-migration choice stands")
+        XCTAssertTrue(AppSettings.migratedRequireGuidedAccess(stored: true, migration: 1))
+        XCTAssertTrue(AppSettings.migratedRequireGuidedAccess(stored: nil, migration: 1), "no value at all is the 1.3 default")
+    }
+
     func testDecodeAppliesDefaultsForMissingNewKeys() throws {
         // Also covers backward compatibility: the JSON still carries the removed
         // `requireGuidedAccess` key, which must now be ignored rather than fail.
@@ -128,7 +181,7 @@ final class AppSettingsTests: XCTestCase {
         let d = try JSONDecoder().decode(AppSettings.self, from: json)
         XCTAssertEqual(d.illumination, .auto)
         XCTAssertTrue(d.notifyOtherDevices)
-        XCTAssertEqual(d.cameraPosition, .auto,
+        XCTAssertEqual(d.cameraPosition, .front,
                        "the decode fallback has to agree with the initialiser's default")
         XCTAssertEqual(d.cameraReadiness, .auto, "settings saved before battery mode existed default to Auto")
         XCTAssertFalse(d.scramblePINPad, "PIN-pad scrambling is off by default and for pre-existing settings")
@@ -215,6 +268,32 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(ProEntitlements.trialActive(start: start, now: start.addingTimeInterval(-10 * 86_400)))
     }
 
+    /// Early-Access (BACKLOG 66): a purchase wins; a member is Pro for good, program open or
+    /// closed; while the program is open anyone is; after it closes a newcomer gets the trial,
+    /// then free. And 1.3 ships with the program open (owner ruling 2026-09-04).
+    @MainActor
+    func testResolvedStatusDuringAndAfterEarlyAccess() {
+        let now = Date()
+        let fresh = now.addingTimeInterval(-86_400)
+        let lapsed = now.addingTimeInterval(-40 * 86_400)
+        XCTAssertEqual(ProEntitlements.resolvedStatus(purchased: true, member: true, programOpen: true,
+                                                      trialStart: nil, now: now), .pro)
+        XCTAssertEqual(ProEntitlements.resolvedStatus(purchased: false, member: true, programOpen: false,
+                                                      trialStart: lapsed, now: now), .earlyAccess,
+                       "a member keeps Pro after the program closes, however old the install")
+        XCTAssertEqual(ProEntitlements.resolvedStatus(purchased: false, member: false, programOpen: true,
+                                                      trialStart: lapsed, now: now), .earlyAccess,
+                       "while the program is open everyone has Pro — even a 1.2 install whose trial ran out")
+        XCTAssertEqual(ProEntitlements.resolvedStatus(purchased: false, member: false, programOpen: false,
+                                                      trialStart: fresh, now: now), .trial,
+                       "after the program closes a newcomer gets the trial")
+        XCTAssertEqual(ProEntitlements.resolvedStatus(purchased: false, member: false, programOpen: false,
+                                                      trialStart: lapsed, now: now), .free)
+        XCTAssertTrue(ProEntitlements.earlyAccessProgramOpen, "1.3 ships with Early-Access open")
+        XCTAssertTrue(ProEntitlements(resolvedAs: .earlyAccess).proActive, "Early-Access is Pro for every gate")
+        XCTAssertNil(ProEntitlements(resolvedAs: .earlyAccess).trialDaysRemaining, "and it has no clock")
+    }
+
     // MARK: - Onboarding
 
     /// The Guided Access nudge is deliberately narrow: once, only after a session that actually
@@ -267,13 +346,17 @@ final class AppSettingsTests: XCTestCase {
                        "no recorded start means the trial was never begun, not that it lapsed")
     }
 
-    /// Front-as-default pointed the camera at the desk whenever the phone was placed face
-    /// down — a natural covert placement, since the screen is hidden — so captures came back
-    /// black and the vision tripwire saw nothing, with no indication either way. Auto resolves
-    /// face-down → rear and is re-resolved at every capture, so it is never worse: face up it
-    /// picks front regardless.
-    func testCameraDefaultsToAutoSoAFaceDownPhoneStillSees() {
-        XCTAssertEqual(AppSettings().cameraPosition, .auto)
+    /// ADR 0012 (owner ruling 2026-09-05): Front is the default — it faces whoever handles the
+    /// phone — and Rear/Auto serve the Vision tripwire's watching-the-room setup, so they are
+    /// kept only while Vision is on and clamp to Front otherwise; Both keeps the front lens.
+    func testCameraDefaultsToFrontAndRearOrAutoNeedVision() {
+        XCTAssertEqual(AppSettings().cameraPosition, .front)
+        XCTAssertEqual(AppSettings.cameraChoice(.auto, visionOn: false), .front)
+        XCTAssertEqual(AppSettings.cameraChoice(.rear, visionOn: false), .front)
+        XCTAssertEqual(AppSettings.cameraChoice(.auto, visionOn: true), .auto)
+        XCTAssertEqual(AppSettings.cameraChoice(.both, visionOn: false), .both, "Both includes the front lens; not gated")
+        XCTAssertEqual(AppSettings.effectiveCamera(.rear, pro: true, visionOn: false), .front)
+        XCTAssertEqual(AppSettings.effectiveCamera(.rear, pro: true, visionOn: true), .rear)
     }
 
     // MARK: - A corrupt settings blob must not silently reset everything (review finding 16)

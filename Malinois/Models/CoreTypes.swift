@@ -44,8 +44,8 @@ enum SensorType: String, Codable, CaseIterable, Identifiable {
         case .motion:    return "The phone itself is moved, tilted or bumped."
         case .power:     return "The charging cable is pulled or plugged in."
         case .proximity: return "Something comes close to the front of the phone."
-        case .audio:     return "Footsteps or handling noise nearby."
-        case .vision:    return "Movement seen by the camera — only while the camera is warm (plugged in on Auto, or Instant)."
+        case .audio:     return "A sudden sound nearby, louder than the room's usual level."
+        case .vision:    return "Movement seen by the camera - only while the camera is warm (plugged in on Auto, or Instant)."
         case .camera:    return "Capture photo or video evidence when a tripwire fires."
         case .touch:     return "The screen is tapped or swiped."
         }
@@ -68,9 +68,9 @@ enum SensorType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .motion:    return "Bump or lift the phone, or tilt it."
         case .power:     return "Plug in or unplug the charging cable."
-        case .proximity: return "Cover the top of the phone near the front camera. The screen turns off while it's covered — that IS the sensor working; you'll see the count go up when you uncover."
+        case .proximity: return "Cover the top of the phone near the front camera. The screen turns off while it's covered - that IS the sensor working; you'll see the count go up when you uncover."
         case .audio:     return "Clap or speak close to the phone."
-        case .vision:    return "Wave a hand in front of the camera. Needs the camera warm — plug in (Auto) or use Instant mode; on battery it shows \"No frames\"."
+        case .vision:    return "Wave a hand in front of the camera. Needs the camera warm - plug in (Auto) or use Instant mode; on battery it shows \"No frames\"."
         case .camera:    return "Captures evidence on any trigger."
         case .touch:     return "Tap the pad below."
         }

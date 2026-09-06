@@ -8,6 +8,7 @@
 
 import Foundation
 import Combine
+import AVFoundation
 
 /// What the camera captures on a trigger.
 enum CaptureMode: String, Codable, CaseIterable, Identifiable {
@@ -53,10 +54,15 @@ enum CameraChoice: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .front: return "Front (face-up)"
         case .rear:  return "Rear (face-down)"
-        case .auto:  return "Auto (by orientation)"
+        case .auto:  return "Auto (Rear when face down)"
         case .both:  return "Both (multi-cam)"
         }
     }
+
+    /// Rear and Auto are for a phone that lies face down with the Vision tripwire watching the
+    /// room (owner ruling 2026-09-05, ADR 0012); without Vision the front lens is the useful
+    /// one, and these two are not offered.
+    var needsVision: Bool { self == .rear || self == .auto }
 }
 
 /// How the device reacts when a tamper is detected (after capturing evidence).
@@ -113,7 +119,7 @@ enum CameraReadiness: String, Codable, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .instant:
-            return "Camera stays ready for instant capture. Highest battery use — best when charging."
+            return "Camera stays ready for instant capture. Highest battery use - best when charging."
         case .auto:
             return "Instant while charging; on battery the camera starts on a trigger (~1–2s to the first shot). Recommended."
         case .batterySaver:
@@ -189,6 +195,15 @@ final class AppSettings: ObservableObject, Codable {
     /// least visible option that still yields usable evidence.
     @Published var illumination: IlluminationMode
 
+    /// Whether a clip session attaches the microphone (owner ruling, 2026-09-05; item 69):
+    /// off by default, so a new install's clips are video only until the owner turns this on,
+    /// which is also when iOS asks for microphone access. Installs from before the setting
+    /// existed keep the audio they had: the migration reads the permission they already gave.
+    @Published var clipAudio: Bool
+    nonisolated static func migratedClipAudio(stored: Bool?, micGranted: Bool) -> Bool {
+        stored ?? micGranted
+    }
+
     /// Push an alert to the user's OTHER devices signed into the same iCloud
     /// account the moment a tamper event is recorded (via a CloudKit subscription).
     @Published var notifyOtherDevices: Bool
@@ -213,13 +228,38 @@ final class AppSettings: ObservableObject, Codable {
 
     /// Refuse to arm unless Guided Access is on. Guided Access is what makes the covert
     /// screen a real defense — it blocks app-switching and the soft power-off, routes calls
-    /// to voicemail, and disables Siri — so without it a snoop can simply swipe the app away.
-    /// **Off by default** so that a first run can arm without the owner having to configure
-    /// an iOS accessibility feature before seeing the app work at all — the arming screen
-    /// coaches Guided Access either way. (It also lets an App Store reviewer exercise the app
-    /// without that setup, which is a consequence of the default, not the reason for it.)
-    /// Turning it on trades that first-run convenience for a hard guarantee.
+    /// to voicemail, and disables Siri — so without it a snoop can simply swipe the app away
+    /// (and, found on device in item 53, even a force-restart's side-button press backgrounds
+    /// the session first). **On by default since 1.3** (owner ruling, 2026-09-02): it shipped
+    /// off through 1.2 so a first run could arm without configuring an iOS accessibility
+    /// feature first, and the one-arm lift on the arming screen — logged and pushed as an
+    /// audit record — now gives that first run the same convenience without the silent
+    /// weakness. Turning it off here is the explicit, permanent choice; an App Store reviewer
+    /// uses the lift (review notes say so).
     @Published var requireGuidedAccess: Bool
+
+    /// Item 61's default flip reaches EXISTING installs too (owner ruling 2026-09-04, item 65
+    /// finding 6): 1.2 always stored the switch, off, so a new default alone never touched
+    /// them. A saved blob without this marker is migrated once on load — the switch turns on,
+    /// and the marker is written with the next save — and from then on the stored value is the
+    /// owner's own choice. Fresh installs start migrated.
+    var guidedAccessDefaultMigration: Int
+    nonisolated static let guidedAccessMigrationVersion = 1
+
+    /// Pure (unit-tested; item 65, finding 6). What a loaded blob's Require Guided Access reads
+    /// as: a blob from before the migration marker turns the switch ON regardless of what 1.2
+    /// stored (nobody chose that off); a migrated blob keeps its stored value; no value at all
+    /// means the 1.3 default, on.
+    nonisolated static func migratedRequireGuidedAccess(stored: Bool?, migration: Int) -> Bool {
+        migration < guidedAccessMigrationVersion ? true : (stored ?? true)
+    }
+
+    /// Pure (unit-tested). The camera choice that is allowed with the Vision tripwire in its
+    /// current state (ADR 0012): Rear and Auto only while Vision is on; Front otherwise. Applied
+    /// when the settings load, when Vision is switched off, and defensively at arm.
+    nonisolated static func cameraChoice(_ choice: CameraChoice, visionOn: Bool) -> CameraChoice {
+        (visionOn || !choice.needsVision) ? choice : .front
+    }
 
     /// Randomize the disarm/gate PIN pad's digit positions on each presentation, so an
     /// observer can't learn the PIN from finger positions (shoulder-surf / smudge / thermal
@@ -236,7 +276,7 @@ final class AppSettings: ObservableObject, Codable {
 
     // "Recording" is named explicitly (2.5.14 — indication owed "to all parties"): the person
     // handling the device is told a recording exists, not just that access was noticed.
-    static let defaultAlertMessage = "Recording in progress. This device is protected — unauthorized access has been logged."
+    static let defaultAlertMessage = "Recording in progress. This device is protected. Unauthorized access has been logged."
 
     /// Auto-persist: any change is saved (debounced ~400 ms), so a kill while a settings
     /// screen is open loses at most the last moments of edits — not the session's worth the
@@ -252,21 +292,23 @@ final class AppSettings: ObservableObject, Codable {
         triggerMode = .any
         gracePeriodSeconds = 15
         captureMode = .clip3   // video default: 90 frames beat 1 for catching a face
-        // Auto, not Front: it resolves face-down → rear and everything else → front, and is
-        // re-resolved at every capture. Front-as-default meant a phone placed face down — a
-        // natural covert placement, screen hidden — pointed its camera at the desk, so captures
-        // came back black and the vision tripwire saw nothing, with no indication either way.
-        // Auto is never worse: face up it picks front regardless.
-        cameraPosition = .auto
+        // Front (owner ruling 2026-09-05, ADR 0012): the lens facing whoever handles the phone.
+        // Rear and Auto exist for the Vision tripwire's watching-the-room setup and are offered
+        // only while Vision is on. Auto was the default from 1.2 to 1.3 (40) so a face-down
+        // phone did not photograph the desk; with the default 3-second clip the front lens
+        // sweeps up to the face as the phone is flipped, so Front is not worse in the common case.
+        cameraPosition = .front
         cameraReadiness = .auto   // instant while charging, cold-start on battery
         deviceLabel = ""
         illumination = .auto
+        clipAudio = false   // video only until the owner adds sound (item 69)
         notifyOtherDevices = true
         cloudRetention = .months12
         jammingResponse = true
         responseMode = .alert
         alertMessage = AppSettings.defaultAlertMessage
-        requireGuidedAccess = false
+        requireGuidedAccess = true
+        guidedAccessDefaultMigration = AppSettings.guidedAccessMigrationVersion
         sirenRampUp = true
         scramblePINPad = false
         biometricUnlock = false
@@ -302,14 +344,15 @@ final class AppSettings: ObservableObject, Codable {
         case enabledSensors, sensitivities, triggerMode
         case gracePeriodSeconds, captureMode, cameraPosition, cameraReadiness
         case deviceLabel
-        case illumination, notifyOtherDevices, cloudRetention, jammingResponse
+        case illumination, notifyOtherDevices, cloudRetention, jammingResponse, clipAudio
         case responseMode, alertMessage, scramblePINPad, requireGuidedAccess, sirenRampUp
-        case biometricUnlock
+        case biometricUnlock, guidedAccessDefaultMigration
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        enabledSensors = try c.decode(Set<SensorType>.self, forKey: .enabledSensors)
+        let sensors = try c.decode(Set<SensorType>.self, forKey: .enabledSensors)
+        enabledSensors = sensors
         sensitivities = try c.decode([SensorType: Sensitivity].self, forKey: .sensitivities)
         // Lenient on purpose. `decodeIfPresent` is NOT enough here: a key that's *present*
         // with a raw value this build no longer knows (e.g. the removed "motionCorroborated")
@@ -320,11 +363,18 @@ final class AppSettings: ObservableObject, Codable {
         gracePeriodSeconds = try c.decode(Int.self, forKey: .gracePeriodSeconds)
         captureMode = try c.decodeIfPresent(CaptureMode.self, forKey: .captureMode) ?? .photo
         // Defaults for settings saved before these options existed.
-        cameraPosition = try c.decodeIfPresent(CameraChoice.self, forKey: .cameraPosition) ?? .auto
+        // Front is the default (ADR 0012); a stored Rear/Auto from before the gate is kept only
+        // while the Vision tripwire is on, because that is the only setup they serve.
+        cameraPosition = AppSettings.cameraChoice(
+            try c.decodeIfPresent(CameraChoice.self, forKey: .cameraPosition) ?? .front,
+            visionOn: sensors.contains(.vision))
         cameraReadiness = try c.decodeIfPresent(CameraReadiness.self, forKey: .cameraReadiness) ?? .auto
         deviceLabel = try c.decodeIfPresent(String.self, forKey: .deviceLabel) ?? ""
         // Default Auto when unset (also for anyone upgrading from the old bool).
         illumination = try c.decodeIfPresent(IlluminationMode.self, forKey: .illumination) ?? .auto
+        clipAudio = AppSettings.migratedClipAudio(
+            stored: try c.decodeIfPresent(Bool.self, forKey: .clipAudio),
+            micGranted: AVAudioApplication.shared.recordPermission == .granted)
         notifyOtherDevices = try c.decodeIfPresent(Bool.self, forKey: .notifyOtherDevices) ?? true
         // `try?`, like triggerMode: a future build retiring a case must not reset every setting.
         cloudRetention = (try? c.decodeIfPresent(CloudRetention.self, forKey: .cloudRetention)) ?? .months12
@@ -333,7 +383,10 @@ final class AppSettings: ObservableObject, Codable {
         alertMessage = try c.decodeIfPresent(String.self, forKey: .alertMessage) ?? AppSettings.defaultAlertMessage
         scramblePINPad = try c.decodeIfPresent(Bool.self, forKey: .scramblePINPad) ?? false
         biometricUnlock = try c.decodeIfPresent(Bool.self, forKey: .biometricUnlock) ?? false
-        requireGuidedAccess = try c.decodeIfPresent(Bool.self, forKey: .requireGuidedAccess) ?? false
+        let storedRequirement = try c.decodeIfPresent(Bool.self, forKey: .requireGuidedAccess)
+        let migration = try c.decodeIfPresent(Int.self, forKey: .guidedAccessDefaultMigration) ?? 0
+        requireGuidedAccess = AppSettings.migratedRequireGuidedAccess(stored: storedRequirement, migration: migration)
+        guidedAccessDefaultMigration = AppSettings.guidedAccessMigrationVersion
         sirenRampUp = try c.decodeIfPresent(Bool.self, forKey: .sirenRampUp) ?? true
         setupAutosave()   // begin after decode so loading doesn't trigger a save
     }
@@ -349,6 +402,7 @@ final class AppSettings: ObservableObject, Codable {
         try c.encode(cameraReadiness, forKey: .cameraReadiness)
         try c.encode(deviceLabel, forKey: .deviceLabel)
         try c.encode(illumination, forKey: .illumination)
+        try c.encode(clipAudio, forKey: .clipAudio)
         try c.encode(notifyOtherDevices, forKey: .notifyOtherDevices)
         try c.encode(cloudRetention, forKey: .cloudRetention)
         try c.encode(jammingResponse, forKey: .jammingResponse)
@@ -357,6 +411,7 @@ final class AppSettings: ObservableObject, Codable {
         try c.encode(scramblePINPad, forKey: .scramblePINPad)
         try c.encode(biometricUnlock, forKey: .biometricUnlock)
         try c.encode(requireGuidedAccess, forKey: .requireGuidedAccess)
+        try c.encode(guidedAccessDefaultMigration, forKey: .guidedAccessDefaultMigration)
         try c.encode(sirenRampUp, forKey: .sirenRampUp)
     }
 
@@ -394,7 +449,7 @@ final class AppSettings: ObservableObject, Codable {
             UserDefaults.standard.set(data, forKey: stash)
             UserDefaults.standard.removeObject(forKey: storeKey)
             loadWasReset = true
-            Log.store.fault("Settings could not be decoded; preserved as \(stash, privacy: .public) and reset to defaults: \(String(describing: error), privacy: .public)")
+            Log.store.fault("Settings could not be decoded; preserved as \(stash, privacy: .public) and reset to defaults: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
             return AppSettings()
         }
     }

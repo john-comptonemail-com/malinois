@@ -53,14 +53,22 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertEqual(engine.state, .disarmed)
     }
 
-    /// Guided Access is recommended, not enforced — confirming always starts the
-    /// grace countdown, even with Guided Access off (as it is in the test host).
-    func testConfirmingStartsGrace() {
-        let engine = makeEngine()
-        engine.beginArming()
-        engine.confirmGuidedAccessAndStartGrace()
-        XCTAssertEqual(engine.state, .arming, "grace countdown begins")
-        engine.disarm()   // cancels the grace timer
+    /// With the requirement turned off, confirming always starts the grace countdown — even
+    /// with Guided Access off, as it is in the test host. With the requirement on — the
+    /// default since 1.3 (owner ruling 2026-09-02) — the same confirm is refused: the state
+    /// stays at the check, where the arming screen offers the steps and the one-arm lift.
+    func testConfirmingStartsGraceOnlyWhenGuidedAccessIsNotRequired() {
+        let relaxed = makeEngine { $0.requireGuidedAccess = false }
+        relaxed.beginArming()
+        relaxed.confirmGuidedAccessAndStartGrace()
+        XCTAssertEqual(relaxed.state, .arming, "grace countdown begins")
+        relaxed.disarm()   // cancels the grace timer
+
+        let strict = makeEngine()   // default settings: Guided Access required
+        strict.beginArming()
+        strict.confirmGuidedAccessAndStartGrace()
+        XCTAssertEqual(strict.state, .guidedAccessCheck, "refused without Guided Access — the default holds at the engine")
+        strict.cancelArming()
     }
 
     func testDisarmReturnsToDisarmed() {
@@ -166,20 +174,20 @@ final class MonitoringEngineTests: XCTestCase {
         let grace: TimeInterval = 20
 
         // Never typed → not entry in progress, even though the pad is open.
-        XCTAssertFalse(MonitoringEngine.entryIsActive(lastKeypress: nil, now: now, grace: grace),
+        XCTAssertFalse(DisarmEntryCoordinator.entryIsActive(lastKeypress: nil, now: now, grace: grace),
                        "an open pad with no keypress must not suppress the response")
         // Typing right now → the owner is mid-entry.
-        XCTAssertTrue(MonitoringEngine.entryIsActive(lastKeypress: now, now: now, grace: grace))
+        XCTAssertTrue(DisarmEntryCoordinator.entryIsActive(lastKeypress: now, now: now, grace: grace))
         // Still within the grace: slow owner reading a dim screen between digits.
-        XCTAssertTrue(MonitoringEngine.entryIsActive(lastKeypress: now.addingTimeInterval(-19),
+        XCTAssertTrue(DisarmEntryCoordinator.entryIsActive(lastKeypress: now.addingTimeInterval(-19),
                                                      now: now, grace: grace))
         // Idle past the grace: the pad is open but nobody is entering a PIN.
-        XCTAssertFalse(MonitoringEngine.entryIsActive(lastKeypress: now.addingTimeInterval(-21),
+        XCTAssertFalse(DisarmEntryCoordinator.entryIsActive(lastKeypress: now.addingTimeInterval(-21),
                                                       now: now, grace: grace),
                        "an abandoned open pad must stop suppressing once the grace lapses")
         // The pad's own 150 s worst-case lifetime far outlives the suppression grace — that
         // gap is the point of the fix.
-        XCTAssertFalse(MonitoringEngine.entryIsActive(lastKeypress: now.addingTimeInterval(-150),
+        XCTAssertFalse(DisarmEntryCoordinator.entryIsActive(lastKeypress: now.addingTimeInterval(-150),
                                                       now: now, grace: grace))
     }
 
@@ -223,6 +231,24 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertTrue(MonitoringEngine.armingBlocked(requireGuidedAccess: true,
                                                      guidedAccessOn: false, liftedThisArm: false),
                       "with the lift expired, the same configuration blocks again")
+    }
+
+    /// BACKLOG 68: the first arm on a fresh install auto-lifts the requirement, but only when it
+    /// would otherwise block. A user who already turned Guided Access on gets no lift and no
+    /// record; a second arm never auto-lifts.
+    func testFirstArmAutoLiftDecision() {
+        XCTAssertTrue(MonitoringEngine.shouldAutoLiftGuidedAccessOnFirstArm(
+            hasArmedOnce: false, requireGuidedAccess: true, guidedAccessOn: false),
+            "first arm, requirement on, Guided Access off: lift so the first run has no friction")
+        XCTAssertFalse(MonitoringEngine.shouldAutoLiftGuidedAccessOnFirstArm(
+            hasArmedOnce: false, requireGuidedAccess: true, guidedAccessOn: true),
+            "Guided Access already on: nothing to lift, no spurious record")
+        XCTAssertFalse(MonitoringEngine.shouldAutoLiftGuidedAccessOnFirstArm(
+            hasArmedOnce: true, requireGuidedAccess: true, guidedAccessOn: false),
+            "only the first arm")
+        XCTAssertFalse(MonitoringEngine.shouldAutoLiftGuidedAccessOnFirstArm(
+            hasArmedOnce: false, requireGuidedAccess: false, guidedAccessOn: false),
+            "no requirement, nothing to lift")
     }
 
     /// Eighth review M1 (option A): Settings is a WRITE surface — it must never open by
@@ -361,6 +387,93 @@ final class MonitoringEngineTests: XCTestCase {
     }
 
     // MARK: - Jamming blackout escalation decision
+
+    /// Ext-review #2 (2026-08-31): downloaded captures were assigned to the first empty
+    /// positional slot in dictionary-arrival order while keeping existing camera labels —
+    /// rear bytes could sit under a "Front" label, and a retry after a partial download
+    /// (reachable since R3-3 kept the button up) could duplicate the already-held camera
+    /// into the missing slot. Placement is by identity, never order.
+    func testDownloadedMediaLandsBySlotIdentityNeverArrivalOrder() {
+        XCTAssertEqual(MonitoringEngine.mediaPlacement(itemCamera: "rear", itemSlot: "rear",
+                                                       primaryFilled: false, secondaryFilled: false,
+                                                       primaryCamera: "front", secondaryCamera: "rear"),
+                       .secondary(setLabel: false),
+                       "rear bytes must never sit under the Front label just because they arrived first")
+        XCTAssertEqual(MonitoringEngine.mediaPlacement(itemCamera: "front", itemSlot: "front",
+                                                       primaryFilled: true, secondaryFilled: false,
+                                                       primaryCamera: "front", secondaryCamera: nil),
+                       .skip,
+                       "retry with front already held: no duplicate — the slot stays open for the real rear")
+        XCTAssertEqual(MonitoringEngine.mediaPlacement(itemCamera: "rear", itemSlot: "rear",
+                                                       primaryFilled: true, secondaryFilled: false,
+                                                       primaryCamera: "front", secondaryCamera: nil),
+                       .secondary(setLabel: true),
+                       "the missing rear fills the open slot on that same retry, labeled")
+        XCTAssertEqual(MonitoringEngine.mediaPlacement(itemCamera: "front", itemSlot: "front",
+                                                       primaryFilled: false, secondaryFilled: false,
+                                                       primaryCamera: nil, secondaryCamera: nil),
+                       .primary(setLabel: true),
+                       "an unlabeled event takes the first capture as primary and labels it")
+        XCTAssertEqual(MonitoringEngine.mediaPlacement(itemCamera: nil, itemSlot: "secondary",
+                                                       primaryFilled: false, secondaryFilled: false,
+                                                       primaryCamera: nil, secondaryCamera: nil),
+                       .secondary(setLabel: false),
+                       "a legacy 'secondary' record carries a position — it must not squat in primary")
+    }
+
+    /// R1-L4: the tamper warning is owner-authored free text rendered full-screen at
+    /// trigger time — bounded at the render like the device label ("store intent, clamp
+    /// at use"), and blank falls back to the default so a cleared field can't blank the
+    /// tamper screen.
+    func testAlertMessageIsBoundedAndNeverBlankAtRender() {
+        let fallback = "default warning"
+        XCTAssertEqual(MonitoringEngine.sanitizedAlertMessage("  Back off.  ", fallback: fallback),
+                       "Back off.", "trimmed, kept")
+        XCTAssertEqual(MonitoringEngine.sanitizedAlertMessage("   \n ", fallback: fallback),
+                       fallback, "blank falls back — the tamper screen never renders empty")
+        let long = String(repeating: "x", count: 5_000)
+        XCTAssertEqual(MonitoringEngine.sanitizedAlertMessage(long, fallback: fallback).count, 300,
+                       "bounded at the render, whatever decode admitted")
+    }
+
+    /// R3-8: the lift button re-arms on leave-and-return, and every unauthenticated tap
+    /// minted a fresh pushed audit record — repeatable without consequence. Coalesced:
+    /// one `gaLifted` record per unconsumed spree; an arm consumes the spree, so the
+    /// next lift is a new fact worth a new record. The "someone poked at it" signal
+    /// survives — only the repetition is deduplicated.
+    func testRepeatedUnconsumedGALiftsCoalesceToOneRecord() {
+        let engine = makeEngine { $0.requireGuidedAccess = true }
+        // Deltas, not absolutes: the test host's store persists across runs (house rule).
+        func gaLiftCount() -> Int {
+            engine.eventStore.events.filter { $0.stateChange == "gaLifted" }.count
+        }
+        let baseline = gaLiftCount()
+        engine.liftGuidedAccessRequirementForThisArm()
+        XCTAssertEqual(gaLiftCount(), baseline + 1, "the first lift is the signal — logged")
+        engine.clearGuidedAccessLift()                     // leave the arming screen…
+        engine.liftGuidedAccessRequirementForThisArm()     // …return and poke again
+        engine.clearGuidedAccessLift()
+        engine.liftGuidedAccessRequirementForThisArm()
+        XCTAssertEqual(gaLiftCount(), baseline + 1,
+                       "an unconsumed spree coalesces to one record (R3-8)")
+        engine.beginArming()                               // an arm consumes the spree
+        engine.disarm()
+        engine.liftGuidedAccessRequirementForThisArm()
+        XCTAssertEqual(gaLiftCount(), baseline + 2,
+                       "after an arm, a fresh lift is worth a fresh record")
+    }
+
+    /// R1-L2: `isOnline` deliberately defaults optimistic, but an arm snapshot taken before
+    /// NWPath's first report (the crash-recovery re-arm at launch) must NOT record "had a
+    /// path" — that false snapshot later turns an offline trigger into a false jamming
+    /// escalation, force-sirening in Stealth. `observedOnline` is the snapshot-safe reading:
+    /// false until connectivity has actually been observed.
+    func testFreshMonitorNeverClaimsObservedConnectivity() {
+        let monitor = ConnectivityMonitor()
+        XCTAssertTrue(monitor.isOnline, "the optimistic live default stands — quiet is its safe direction")
+        XCTAssertFalse(monitor.observedOnline,
+                       "no path report yet: an arm snapshot must read offline (R1-L2)")
+    }
 
     func testBlackoutEscalatesOnlyWhenEveryConditionHolds() {
         // Happy path: armed, on, offline now, had a path at arm, stationary, fresh.
@@ -538,12 +651,12 @@ final class MonitoringEngineTests: XCTestCase {
     /// operation it exists to cut); the second assertion is the test that matters — the
     /// timeout must return promptly even though the operation never does.
     func testWithDeadlineReturnsFastResultsAndCutsHungOperations() async {
-        let value = try? await MonitoringEngine.withDeadline(1.0) { 42 }
+        let value = try? await EvidenceCapturePipeline.withDeadline(1.0) { 42 }
         XCTAssertEqual(value, 42, "a prompt operation passes through untouched")
 
         let started = Date()
         do {
-            _ = try await MonitoringEngine.withDeadline(0.05) { () -> Int in
+            _ = try await EvidenceCapturePipeline.withDeadline(0.05) { () -> Int in
                 try? await Task.sleep(nanoseconds: 5_000_000_000)   // a warm-up that hangs
                 return 0
             }
@@ -750,6 +863,52 @@ final class MonitoringEngineTests: XCTestCase {
                        "an offline audit row goes red like the media row beside it — never parked on Syncing… forever")
     }
 
+    // MARK: - The camera ask under Guided Access (item 69, leg 11 on 40)
+
+    func testTheCameraAskIsReportedBlockedOnlyUnderGuidedAccessWhenNeededAndNeverAsked() {
+        typealias Engine = MonitoringEngine
+        XCTAssertTrue(Engine.cameraAskBlocked(guidedAccessOn: true, cameraNeeded: true, undetermined: true))
+        XCTAssertFalse(Engine.cameraAskBlocked(guidedAccessOn: false, cameraNeeded: true, undetermined: true), "the ARM tap asked")
+        XCTAssertFalse(Engine.cameraAskBlocked(guidedAccessOn: true, cameraNeeded: false, undetermined: true), "nothing needs the camera")
+        XCTAssertFalse(Engine.cameraAskBlocked(guidedAccessOn: true, cameraNeeded: true, undetermined: false), "already answered")
+    }
+
+    // MARK: - Brightness after a watch (item 69, leg 3 on 40)
+
+    func testARestoreNeverLeavesTheScreenBelowTheFloor() {
+        XCTAssertEqual(MonitoringEngine.restoredBrightness(previous: 0.1), 0.4, "a dim pre-arm level is floored")
+        XCTAssertEqual(MonitoringEngine.restoredBrightness(previous: 0.4), 0.4)
+        XCTAssertEqual(MonitoringEngine.restoredBrightness(previous: 0.85), 0.85, "a bright level is kept")
+    }
+
+    // MARK: - The camera prompt on the ARM tap (item 69)
+
+    func testTheCameraPromptIsDueOnlyWhenNeededNeverAskedAndNotUnderGuidedAccess() {
+        XCTAssertTrue(CameraController.cameraPromptIsDue(cameraNeeded: true, undetermined: true, guidedAccessOn: false))
+        XCTAssertFalse(CameraController.cameraPromptIsDue(cameraNeeded: true, undetermined: false, guidedAccessOn: false), "already answered")
+        XCTAssertFalse(CameraController.cameraPromptIsDue(cameraNeeded: false, undetermined: true, guidedAccessOn: false), "capture and Vision both off")
+        XCTAssertFalse(CameraController.cameraPromptIsDue(cameraNeeded: true, undetermined: true, guidedAccessOn: true),
+                       "under Guided Access iOS cannot show the alert and counts the request as a refusal (42, leg 7)")
+    }
+
+    // MARK: - The lens a trigger uses (item 69)
+
+    /// Auto follows orientation, Rear switches to the front lens on a screen touch, Front and
+    /// Both are as set.
+    func testResolvedCaptureCameraFollowsOrientationForAutoAndTouchForRear() {
+        typealias Engine = MonitoringEngine
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .auto, faceDown: true, touched: false), .rear)
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .auto, faceDown: false, touched: false), .front)
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .auto, faceDown: true, touched: true), .rear,
+                       "a face-down phone cannot be touched; orientation decides for Auto")
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .rear, faceDown: false, touched: false), .rear)
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .rear, faceDown: true, touched: false), .rear)
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .rear, faceDown: false, touched: true), .front,
+                       "a touched screen faces the toucher")
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .front, faceDown: true, touched: false), .front)
+        XCTAssertEqual(Engine.resolvedCaptureCamera(choice: .both, faceDown: true, touched: true), .both)
+    }
+
     // MARK: - Microphone-warning scope (34-review H12)
 
     /// The mic-denied warning must fire for clip capture too, not only for the Sound
@@ -773,6 +932,46 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertFalse(MonitoringEngine.micPermissionMatters(audioSensorOn: false,
                                                              cameraOn: false, captureIsClip: true),
                        "no camera, no clip — nothing to warn about")
+        XCTAssertFalse(MonitoringEngine.micPermissionMatters(audioSensorOn: false, cameraOn: true,
+                                                             captureIsClip: true, clipAudioOn: false),
+                       "clips without audio never need the microphone (item 69)")
+        XCTAssertTrue(MonitoringEngine.clipAudioAllowed(setting: true, micGranted: true))
+        XCTAssertFalse(MonitoringEngine.clipAudioAllowed(setting: true, micGranted: false),
+                       "the setting alone never attaches an unauthorized mic")
+        XCTAssertFalse(MonitoringEngine.clipAudioAllowed(setting: false, micGranted: true))
+    }
+
+    /// The 1.3 (41) crash: a clip session with the mic had no capture output at all, so the
+    /// first `startRecording` threw. The shape is pure now: every clip session carries the movie
+    /// output, the mic only rides along, and a stills session carries the photo output only.
+    func testAClipSessionAlwaysCarriesTheMovieOutputWithOrWithoutTheMic() {
+        let withMic = CameraController.sessionShape(forClips: true, wantsMic: true)
+        XCTAssertEqual(withMic, .init(movieOutput: true, micInput: true, photoOutput: false))
+        let silent = CameraController.sessionShape(forClips: true, wantsMic: false)
+        XCTAssertEqual(silent, .init(movieOutput: true, micInput: false, photoOutput: false),
+                       "no mic is never no output")
+        let stills = CameraController.sessionShape(forClips: false, wantsMic: true)
+        XCTAssertEqual(stills, .init(movieOutput: false, micInput: false, photoOutput: true),
+                       "a stills session never carries the mic")
+    }
+
+    /// Item 69: a clip session may exist without the mic now, so the mic dimension of the
+    /// reconfiguration decision is its own; the legacy callers (mic follows clips) still agree.
+    func testReconfigurationFollowsTheMicDimensionSeparatelyFromClips() {
+        XCTAssertTrue(CameraController.needsReconfiguration(isConfigured: true,
+                                                            configuredPosition: .front, wantPosition: .front,
+                                                            configuredForClips: true, wantClips: true,
+                                                            configuredVision: false, wantVision: false,
+                                                            micDropped: false,
+                                                            configuredWithMic: false, wantMic: true),
+                      "clip audio switched on since the session was built → rebuild with the mic")
+        XCTAssertFalse(CameraController.needsReconfiguration(isConfigured: true,
+                                                             configuredPosition: .front, wantPosition: .front,
+                                                             configuredForClips: true, wantClips: true,
+                                                             configuredVision: false, wantVision: false,
+                                                             micDropped: true,
+                                                             configuredWithMic: false, wantMic: false),
+                       "a dropped mic that nobody wants back is no reason to rebuild")
     }
 
     // MARK: - Cadence-capture ownership (34-review H10)
@@ -823,6 +1022,24 @@ final class MonitoringEngineTests: XCTestCase {
 
     /// A device that cannot SHOW the cross-device alert must say so — but only when the
     /// feature is in play: the sending side needs no notification permission at all.
+    /// Item 69: the prompt is offered only on a device that would show the alert, and only
+    /// while iOS has never been asked.
+    func testTheNotificationsPromptIsOfferedOnlyToAReceivingDeviceNeverAsked() {
+        typealias Engine = MonitoringEngine
+        func due(auth: Bool = true, alerts: Bool = true, pro: Bool = true, cloud: Bool = true,
+                 other: Bool = true, hidden: Bool = false) -> Bool {
+            Engine.notificationAskIsDue(authUndetermined: auth, notifyOtherDevices: alerts, pro: pro,
+                                        cloudReady: cloud, otherDeviceSeen: other, hidden: hidden)
+        }
+        XCTAssertTrue(due())
+        XCTAssertFalse(due(auth: false), "already answered")
+        XCTAssertFalse(due(alerts: false), "alerts off")
+        XCTAssertFalse(due(pro: false), "no Pro, no alerts")
+        XCTAssertFalse(due(cloud: false), "no iCloud, nothing to receive")
+        XCTAssertFalse(due(other: false), "no other device's evidence has arrived — the single-device majority never sees the ask")
+        XCTAssertFalse(due(hidden: true), "the owner tapped Hide; Settings → iCloud keeps the ask")
+    }
+
     func testNotificationNoticeFiresOnlyWhenAlertsAreInPlayAndBroken() {
         XCTAssertNotNil(MonitoringEngine.notificationNotice(
             authDenied: true, registrationFailed: false, notifyOtherDevices: true, pro: true))
@@ -845,11 +1062,29 @@ final class MonitoringEngineTests: XCTestCase {
 
     // MARK: - Cloud-retention cadence (32.R2)
 
-    func testAutoPurgeRunsAtMostDaily() {
+    /// R3-9: success keeps the ~daily cadence, but a FAILED attempt retries after a short
+    /// backoff instead of waiting the full day — the old single stamp was written before
+    /// the purge and discarded the result, so one transient failure suppressed retries
+    /// ~20 h against the owner's policy intent. Never a hot loop: every attempt backs off.
+    func testAutoPurgeCadenceSeparatesSuccessFromAttempt() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        XCTAssertTrue(MonitoringEngine.autoPurgeDue(lastRun: nil, now: now), "first run is due")
-        XCTAssertFalse(MonitoringEngine.autoPurgeDue(lastRun: now.addingTimeInterval(-3600), now: now))
-        XCTAssertTrue(MonitoringEngine.autoPurgeDue(lastRun: now.addingTimeInterval(-21 * 3600), now: now))
+        XCTAssertTrue(MonitoringEngine.autoPurgeDue(lastSuccess: nil, lastAttempt: nil, now: now),
+                      "first run is due")
+        XCTAssertFalse(MonitoringEngine.autoPurgeDue(lastSuccess: now.addingTimeInterval(-3600),
+                                                     lastAttempt: now.addingTimeInterval(-3600), now: now),
+                       "succeeded an hour ago — the daily cadence holds")
+        XCTAssertTrue(MonitoringEngine.autoPurgeDue(lastSuccess: now.addingTimeInterval(-21 * 3600),
+                                                    lastAttempt: now.addingTimeInterval(-21 * 3600), now: now),
+                      "a day since success — due")
+        XCTAssertFalse(MonitoringEngine.autoPurgeDue(lastSuccess: now.addingTimeInterval(-21 * 3600),
+                                                     lastAttempt: now.addingTimeInterval(-300), now: now),
+                       "failed five minutes ago — backed off, never a hot loop")
+        XCTAssertTrue(MonitoringEngine.autoPurgeDue(lastSuccess: now.addingTimeInterval(-21 * 3600),
+                                                    lastAttempt: now.addingTimeInterval(-2 * 3600), now: now),
+                      "failed two hours ago — retry due; a failure must not cost the full day")
+        XCTAssertFalse(MonitoringEngine.autoPurgeDue(lastSuccess: nil,
+                                                     lastAttempt: now.addingTimeInterval(-300), now: now),
+                       "even with no success ever, a fresh attempt backs off")
     }
 
     // MARK: - Dry-run entitlement snapshot (32.R3)
@@ -865,6 +1100,99 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertTrue(engine.armedPro, "the dry run runs with the session's real entitlement")
         engine.stopDryRun()
         XCTAssertFalse(engine.armedPro, "the Pro snapshot must not outlive the dry run")
+    }
+
+    // MARK: - Interruption cause (BACKLOG 53)
+
+    private static let armedMarkerKey = "com.malinois.armedSession.brightness"
+    private static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
+    private static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
+
+    private static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
+
+    /// Launches a fresh engine against an armed marker left by a "previous" session and
+    /// returns the interruption record it logs. `stamp` is what that session planted beside
+    /// the marker; nil is a marker from a build before the stamp existed. `lapseLogged` is
+    /// the session having already logged a background lapse before it ended.
+    private func relaunchAfterInterruption(stamp: BootStamp?, lapseLogged: Bool = false) -> Event? {
+        clearRecoveryDefaults()
+        let defaults = UserDefaults.standard
+        defaults.set(0.5, forKey: Self.armedMarkerKey)
+        if lapseLogged { defaults.set(true, forKey: Self.backgroundLapseLoggedKey) }
+        if let stamp {
+            defaults.set(stamp.bootTime, forKey: Self.armedBootTimeKey)
+            defaults.set(stamp.takenAt, forKey: Self.armedBootStampAtKey)
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MalinoisInterruption-" + UUID().uuidString, isDirectory: true)
+        EventStore.rootOverrideForTesting = root
+        defer {
+            EventStore.rootOverrideForTesting = nil
+            try? FileManager.default.removeItem(at: root)
+            defaults.removeObject(forKey: Self.armedMarkerKey)
+            defaults.removeObject(forKey: Self.backgroundLapseLoggedKey)
+            clearRecoveryDefaults()
+        }
+        let store = EventStore()
+        let engine = MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
+                                      camera: FakeCamera(), entitlements: ProEntitlements.unresolvedForTesting())
+        XCTAssertEqual(engine.state, .disarmed, "the owed re-arm defers behind the entitlement gate")
+        XCTAssertNil(defaults.object(forKey: Self.armedBootTimeKey), "the stamp is consumed with the marker")
+        XCTAssertNil(defaults.object(forKey: Self.armedBootStampAtKey))
+        return store.events.first { $0.interrupted == true }
+    }
+
+    /// A marker whose stamp belongs to another boot — here one that had already been up for
+    /// 399 days, so neither its boot time nor its uptime can be this boot's — reads as the
+    /// device having restarted while armed.
+    func testCrashRecoveryNamesARestartWhenTheStampIsFromAnotherBoot() throws {
+        let now = Date().timeIntervalSince1970
+        let anotherBoot = BootStamp(bootTime: now - 400 * 86_400, takenAt: now - 86_400)
+        let record = try XCTUnwrap(relaunchAfterInterruption(stamp: anotherBoot))
+        XCTAssertEqual(record.interruptionCause, InterruptionCause.rebooted.rawValue)
+    }
+
+    /// A marker stamped on THIS boot means the app alone was ended.
+    func testCrashRecoveryNamesAnAppEndingWhenTheStampIsFromThisBoot() throws {
+        let record = try XCTUnwrap(relaunchAfterInterruption(stamp: BootStamp.current()))
+        XCTAssertEqual(record.interruptionCause, InterruptionCause.terminated.rawValue)
+    }
+
+    /// Found on the Air (item 53, leg 1, 2026-09-02): without Guided Access, the force-restart's
+    /// side-button press backgrounds the session first, so a lapse record is written — and the
+    /// launch-time rule that suppresses "the same lapse's tail" swallowed the restart with it.
+    /// A restart is new information the lapse record cannot carry; it is recorded regardless.
+    func testARestartIsRecordedEvenAfterABackgroundLapse() throws {
+        let now = Date().timeIntervalSince1970
+        let anotherBoot = BootStamp(bootTime: now - 400 * 86_400, takenAt: now - 86_400)
+        let record = try XCTUnwrap(relaunchAfterInterruption(stamp: anotherBoot, lapseLogged: true),
+                                   "the restart must be recorded even though the lapse already was")
+        XCTAssertEqual(record.interruptionCause, InterruptionCause.rebooted.rawValue)
+    }
+
+    /// The suppression itself stays: a lapse followed by the app simply being ended is one
+    /// interruption, one record (32.R6) — the launch writes nothing.
+    func testAnAppEndingAfterABackgroundLapseStaysOneRecord() {
+        XCTAssertNil(relaunchAfterInterruption(stamp: BootStamp.current(), lapseLogged: true),
+                     "the same lapse's tail is not a second record")
+        XCTAssertNil(relaunchAfterInterruption(stamp: nil, lapseLogged: true),
+                     "nor is an unclassified ending")
+    }
+
+    /// The pure rule behind both, as a truth table.
+    func testRelaunchInterruptionRule() {
+        XCTAssertTrue(MonitoringEngine.shouldLogRelaunchInterruption(cause: nil, lapseAlreadyLogged: false))
+        XCTAssertTrue(MonitoringEngine.shouldLogRelaunchInterruption(cause: .terminated, lapseAlreadyLogged: false))
+        XCTAssertTrue(MonitoringEngine.shouldLogRelaunchInterruption(cause: .rebooted, lapseAlreadyLogged: true))
+        XCTAssertFalse(MonitoringEngine.shouldLogRelaunchInterruption(cause: .terminated, lapseAlreadyLogged: true))
+        XCTAssertFalse(MonitoringEngine.shouldLogRelaunchInterruption(cause: nil, lapseAlreadyLogged: true))
+    }
+
+    /// A marker with no stamp — left by a build before 53 — stays a bare interruption.
+    func testCrashRecoveryLeavesAPreStampMarkerUnclassified() throws {
+        let record = try XCTUnwrap(relaunchAfterInterruption(stamp: nil))
+        XCTAssertEqual(record.interrupted, true)
+        XCTAssertNil(record.interruptionCause)
     }
 
     // MARK: - The entitlement-resolution hook (fifth review, round 3)
@@ -957,5 +1285,14 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertFalse(MonitoringEngine.enforcesCovertBrightness(.arming),
                        "the grace countdown is the owner's cancel window (V-04)")
         XCTAssertFalse(MonitoringEngine.enforcesCovertBrightness(.calibrating))
+    }
+
+    /// The launch pull (owner, 2026-09-04): a fresh install asks iCloud for everything the local
+    /// cap allows; a log with anything in it asks for one page.
+    func testLaunchSyncLimitRestoresAnEmptyLogAndPagesOtherwise() {
+        XCTAssertEqual(MonitoringEngine.launchSyncLimit(localEventCount: 0, cap: 500, page: 100), 500,
+                       "empty: the records are in iCloud, not missing — fetch them all")
+        XCTAssertEqual(MonitoringEngine.launchSyncLimit(localEventCount: 1, cap: 500, page: 100), 100)
+        XCTAssertEqual(MonitoringEngine.launchSyncLimit(localEventCount: 499, cap: 500, page: 100), 100)
     }
 }

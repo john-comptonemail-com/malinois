@@ -68,6 +68,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// and alerting on. Optional so older events decode fine — treat nil as false.
     var interrupted: Bool?
 
+    /// Why an interruption record exists — an `InterruptionCause` raw value — or `nil` when
+    /// the launch could not tell (a record from before BACKLOG 53, or a marker with no boot
+    /// stamp). Stored as the raw string, like `stateChange`, so a value this build does not
+    /// know reads as "unclassified" instead of failing the whole record.
+    var interruptionCause: String?
+
     /// A monitoring state change — `"armed"` or `"disarmed"` — logged so protection turning
     /// on/off is an explicit, auditable record, not something the owner has to infer from
     /// remembering their arm time. Its point is the disarm case: an attacker who knows the
@@ -104,6 +110,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// evidentiary loss, and a later meta-only retry must not read as "everything made it".
     var mediaDiscarded: Bool?
 
+    /// Why this event has no capture — or why its first capture failed before the one
+    /// bounded retry attached a photo (item 54): a `CaptureFailureReason` raw value,
+    /// allow-listed on the way in from the cloud. `nil` when the capture worked, or the
+    /// camera tripwire was off.
+    var captureFailure: String?
+
     /// For a MIRRORED event: which camera tokens the capturing device says it uploaded
     /// full-media records under (the payload's manifest, 34's metadataJSON item + B1's
     /// robustness note). Retrieval then fetches exactly what exists instead of probing every
@@ -115,6 +127,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// Whether this event came from another device via iCloud rather than this device's own
     /// sensors. Only ever true for merged copies.
     var isMirrored: Bool { sourceDevice != nil }
+
+    /// The capture failure in the owner's words (item 54); nil when there was none, or the
+    /// raw value is one this build does not know.
+    var captureFailureSummary: String? {
+        captureFailure.flatMap(CaptureFailureReason.init(rawValue:))?.summary
+    }
 
     init(id: UUID = UUID(),
          startDate: Date,
@@ -135,10 +153,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
          sustainedCount: Int? = nil,
          ownerAttributed: Bool? = nil,
          interrupted: Bool? = nil,
+         interruptionCause: String? = nil,
          stateChange: String? = nil,
          sourceDevice: String? = nil,
          cloudRevision: Int? = nil,
          mediaDiscarded: Bool? = nil,
+         captureFailure: String? = nil,
          cloudMediaManifest: [String]? = nil) {
         self.id = id
         self.startDate = startDate
@@ -159,10 +179,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         self.sustainedCount = sustainedCount
         self.ownerAttributed = ownerAttributed
         self.interrupted = interrupted
+        self.interruptionCause = interruptionCause
         self.stateChange = stateChange
         self.sourceDevice = sourceDevice
         self.cloudRevision = cloudRevision
         self.mediaDiscarded = mediaDiscarded
+        self.captureFailure = captureFailure
         self.cloudMediaManifest = cloudMediaManifest
     }
 
@@ -203,13 +225,23 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "armed":    return "Monitoring armed"
         case "disarmed": return "Monitoring disarmed"
         case "gaLifted": return "Guided Access requirement lifted for one arm"
+        case "cameraError": return "Camera session failed while armed"
         default:         break
         }
-        if interrupted == true { return "Monitoring interrupted — the app closed before a clean disarm" }
+        if interrupted == true {
+            // BACKLOG 53: say what the launch could tell; a cause this build does not know,
+            // or none at all (older records, a marker with no stamp), keeps the bare sentence.
+            switch interruptionCause.flatMap(InterruptionCause.init(rawValue:)) {
+            case .rebooted:     return "Monitoring interrupted: the device restarted while armed"
+            case .terminated:   return "Monitoring interrupted: the app was closed or crashed while armed"
+            case .backgrounded: return "Monitoring interrupted: the app was sent to the background while armed"
+            case nil:           return "Monitoring interrupted: the app closed before a clean disarm"
+            }
+        }
         // A sensorless event is a connectivity-blackout ("possible jamming") capture.
         let base = triggeredSensors.isEmpty ? "Signal loss"
             : triggeredSensors.map { $0.displayName }.joined(separator: ", ")
-        if let n = sustainedCount, n > 1 { return "\(base) — sustained ×\(n)" }
+        if let n = sustainedCount, n > 1 { return "\(base), sustained ×\(n)" }
         return base
     }
 
@@ -239,15 +271,30 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             "interrupted": interrupted ?? false
         ]
         if let n = sustainedCount { payload["sustainedCount"] = n }
+        if let cause = interruptionCause { payload["interruptionCause"] = cause }
         if let camera = primaryCamera { payload["primaryCamera"] = camera }
         if let d = primaryDuration { payload["primaryDuration"] = d }
         if let camera = secondaryCamera { payload["secondaryCamera"] = camera }
         if let d = secondaryDuration { payload["secondaryDuration"] = d }
         if mediaDiscarded == true { payload["mediaDiscarded"] = true }
+        if let reason = captureFailure { payload["captureFailure"] = reason }
         let manifest = mediaManifest
         if !manifest.isEmpty { payload["media"] = manifest }
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
+}
+
+/// What ended an armed session without a clean disarm (BACKLOG 53). Rides
+/// `Event.interruptionCause` as its raw value; `BootStamp.classify` tells the first two apart.
+enum InterruptionCause: String, CaseIterable, Sendable {
+    /// The device restarted while armed — a force-restart, a dead battery, an OS panic. The
+    /// record appears at the next launch, which after a restart means after first unlock.
+    case rebooted
+    /// The app alone was ended while armed: force-quit, Voice Control "Close application",
+    /// an OOM or app crash, or Guided Access ending with the app closed.
+    case terminated
+    /// An active session was sent to the background, where iOS stops the watch (32.R6).
+    case backgrounded
 }
 
 enum DeviceInfo {

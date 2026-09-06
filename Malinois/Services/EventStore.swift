@@ -81,8 +81,22 @@ final class EventStore: ObservableObject {
         return FileManager.default.fileExists(atPath: file.path)
     }
 
+    #if DEBUG
+    /// Test-only (the isolation seam, 1.3 step 3): redirects the store's whole on-disk
+    /// footprint — log, journal, media — to a directory the test owns. Static because the path
+    /// resolvers are; set it before building an `EventStore`, clear it in tearDown. Compiled
+    /// out of Release, so no shipped path can ever consult it.
+    nonisolated(unsafe) static var rootOverrideForTesting: URL?
+    #endif
+
     /// ~/Documents/MalinoisEvents/
     nonisolated private static func rootDirectoryURL() -> URL {
+        #if DEBUG
+        if let override = rootOverrideForTesting {
+            try? FileManager.default.createDirectory(at: override, withIntermediateDirectories: true)
+            return override
+        }
+        #endif
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("MalinoisEvents", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
@@ -292,14 +306,23 @@ final class EventStore: ObservableObject {
     /// what a paced attacker generating ordinary-looking events wants pushed over the
     /// boundary.
     ///
-    /// **The newest event is exempt from every pass** (39.R1.6). Retention exists to shed the
-    /// OLDEST, but the flood-first pass used to walk all the way to the front — so at cap,
-    /// with no older flood rows retained (the steady state; flood rows always evict first),
-    /// the just-added coalesced flood record evicted ITSELF at birth: the onset vanished,
-    /// every later count update no-oped against a missing id, and each cadence still wrote a
-    /// Media file nothing referenced. The record of the incident in progress outranks even an
-    /// audit row in the degenerate everything-else-exhausted corner; the bound therefore
-    /// holds at max(cap, 1), which at the real cap (500) is the same hard bound.
+    /// **The newest event is exempt from every FIRST-HAND pass** (39.R1.6). Retention exists
+    /// to shed the OLDEST, but the flood-first pass used to walk all the way to the front —
+    /// so at cap, with no older flood rows retained (the steady state; flood rows always
+    /// evict first), the just-added coalesced flood record evicted ITSELF at birth: the
+    /// onset vanished, every later count update no-oped against a missing id, and each
+    /// cadence still wrote a Media file nothing referenced. The record of the incident in
+    /// progress outranks even an audit row in the degenerate everything-else-exhausted
+    /// corner; the bound therefore holds at max(cap, 1), which at the real cap (500) is the
+    /// same hard bound.
+    ///
+    /// The MIRROR pass is the one exception (ext-review #1, 2026-08-31): the exemption's
+    /// rationale is first-hand-only — a mirror is never "the incident in progress" on this
+    /// device — and shielding a newest mirror let one merged record per sync slip past the
+    /// mirror pass and push first-hand evidence (and its media) out instead, bypassing
+    /// R3-4 at exactly the one-newest-mirror boundary. A newest mirror evicting itself
+    /// just means "the cloud row didn't fit"; a re-fetch re-attempts it, nothing owned is
+    /// lost, and the max(cap, 1) bound still holds (an all-mirror store prunes to cap).
     /// One event's eviction-relevant facts — a struct rather than a tuple since the mirror
     /// class (R3-4) took the field count to five.
     struct EvictionRow {
@@ -315,8 +338,11 @@ final class EventStore: ObservableObject {
         guard overflow > 0 else { return [] }
         var out: [UUID] = []
         var taken = Set<UUID>()
-        func pass(_ matches: (EvictionRow) -> Bool) {
-            for e in events.dropFirst().reversed() {   // newest-first input → oldest-first here, newest exempt
+        func pass(includeNewest: Bool = false, _ matches: (EvictionRow) -> Bool) {
+            // Newest-first input → oldest-first scan; the newest row is exempt from
+            // first-hand passes only (see the doc comment — the mirror pass includes it).
+            let rows: [EvictionRow] = includeNewest ? events.reversed() : events.dropFirst().reversed()
+            for e in rows {
                 guard overflow > 0 else { return }
                 if matches(e), !taken.contains(e.id) {
                     out.append(e.id)
@@ -331,7 +357,7 @@ final class EventStore: ObservableObject {
         // bulk-inserted future-dated mirrors at cap evicted first-hand events and their
         // local media: cloud credentials reaching on-device evidence, the exact thing
         // tier-2 promises they cannot do (ADR 0006, extended to eviction).
-        pass { $0.isMirrored }
+        pass(includeNewest: true) { $0.isMirrored }
         pass { $0.isFlood }
         pass { !$0.isAudit && $0.isSynced }
         pass { !$0.isAudit }
@@ -554,31 +580,68 @@ final class EventStore: ObservableObject {
     /// One log line per process for a failing journal — it degrades to the old behavior
     /// (in-memory + async persist), and a locked launch fails EVERY append until unlock.
     private var journalFailureLogged = false
+    #if DEBUG
+    /// Journal full syncs that have landed this process — one per append, before `add`
+    /// returns. The sync itself is invisible from a test; that it happens is the net (53).
+    private(set) var journalFullSyncsForTesting = 0
+    /// Full-log syncs that preceded a checkpoint's retirement of journal lines (53).
+    private(set) var logFullSyncsForTesting = 0
+    #endif
 
     /// Appends the event's birth line BEFORE the caller proceeds — the point (H4/31.F3):
     /// `persist()` is an async full-file write, so a kill between detection and that write
     /// used to erase the event entirely, and the free tier has no cloud copy to survive it.
-    /// A sub-millisecond append is the price of "the record exists first" being literally
-    /// true. Deliberately not fsynced: a completed write survives process death — the
-    /// force-quit / Voice Control close / OOM kills this app actually meets — and a hard
-    /// power cut is the cloud fact push's race to win, not worth 10–100 ms on the trigger
-    /// path (ADR 0005).
+    /// The append is followed, still before the caller proceeds, by a full sync through to the
+    /// storage medium (`F_FULLFSYNC`): a completed write survives process death — the
+    /// force-quit / Voice Control close / OOM kills this app actually meets — but sits in OS
+    /// caches until the kernel flushes, an undocumented interval that can be tens of seconds,
+    /// and a forced power-off inside that window lost what a kill could not. The sync costs
+    /// the trigger path about 4 ms (measured on an iPhone Air, 2026-09-02, BACKLOG 53) — the
+    /// price of "the record exists first" being true on the medium, not just in memory. Its
+    /// cost is logged per event so it can be re-read on a device (ADR 0005, as amended).
     private func appendToJournal(_ event: Event) {
         guard let line = Self.journalLine(for: event) else { return }
         let url = Self.journalURL()
         var appended = false
+        var sync: (synced: Bool, errno: Int32, elapsed: Duration)?
         if let handle = try? FileHandle(forWritingTo: url) {
             appended = ((try? handle.seekToEnd()) != nil) && ((try? handle.write(contentsOf: line)) != nil)
-            try? handle.close()
+            if appended { sync = Self.fullSync(handle) } else { try? handle.close() }
         } else {
             appended = (try? line.write(to: url, options: [.completeFileProtectionUnlessOpen])) != nil
+            // First line of a fresh file: the write created it; reopen for the barrier.
+            if appended, let handle = try? FileHandle(forWritingTo: url) { sync = Self.fullSync(handle) }
         }
         if appended {
             journalHasEntries = true
+            if let sync, sync.synced {
+                #if DEBUG
+                journalFullSyncsForTesting += 1
+                #endif
+                let ms = sync.elapsed / .milliseconds(1)
+                Log.store.info("Journal full sync took \(ms, format: .fixed(precision: 2), privacy: .public) ms")
+            } else {
+                let failure = sync?.errno ?? -1
+                Log.store.error("Journal full sync failed (errno \(failure, privacy: .public)) — the line survives a kill, not a power cut")
+            }
         } else if !journalFailureLogged {
             journalFailureLogged = true
             Log.store.error("Journal append failed — birth records fall back to the async log write")
         }
+    }
+
+    /// `F_FULLFSYNC` on an open handle — through the drive's cache to the medium — timed, with
+    /// `errno` read on the spot. Closes the handle. Called on the main actor by the append
+    /// (the trigger path's ~4 ms) and on `ioQueue` by the checkpoint.
+    nonisolated private static func fullSync(_ handle: FileHandle) -> (synced: Bool, errno: Int32, elapsed: Duration) {
+        var synced = false
+        var failure: Int32 = 0
+        let elapsed = ContinuousClock().measure {
+            synced = fcntl(handle.fileDescriptor, F_FULLFSYNC) != -1
+            if !synced { failure = errno }
+        }
+        try? handle.close()
+        return (synced, failure, elapsed)
     }
 
     /// Pure (unit-tested): one event, one line — compact JSON plus a trailing newline. The
@@ -612,25 +675,51 @@ final class EventStore: ObservableObject {
         let missing = Self.journaledEvents(in: data).filter { !known.contains($0.id) }
         guard !missing.isEmpty else { return }
         events = Self.merged(local: events, incoming: missing)
+        let recoveredIDs = Set(missing.map(\.id))
         let removedMedia = pruneToCountCap()
-        persist()
+        // A recovered line whose event the cap immediately re-evicts must still retire
+        // (ext-review #3's second path): it used to survive every checkpoint, so each
+        // launch resurrected it, evicted it again, and left the line — churn forever and
+        // an unbounded journal. Retired only via the SUCCESS path of the persist that
+        // durably records the absence; a failed persist keeps the line, the safe direction.
+        let evictedRecovered = recoveredIDs.subtracting(Set(events.map(\.id)))
+        persist(alsoRetiring: evictedRecovered)
         deleteMediaNames(removedMedia)
         Log.store.warning("Recovered \(missing.count, privacy: .public) event(s) from the journal — their log write never landed")
     }
 
-    /// The newest successfully-persisted snapshot's ids, waiting for one coalesced
-    /// checkpoint pass; nil when none is scheduled. Full-file writes are cumulative — the
-    /// latest snapshot supersedes every earlier one — so a checkpoint per persist would be
-    /// O(N²) busywork under a burst of adds (each pass re-reads the whole journal; the
-    /// 500-add retention tests made the storm visible as seconds of main-queue drain).
-    /// Retiring lines LATE is always safe — the journal only ever holds redundant extras.
+    /// The UNION of every successfully-persisted snapshot's ids in the current burst,
+    /// waiting for one coalesced checkpoint pass; nil when none is scheduled. One pass per
+    /// burst because a checkpoint per persist would be O(N²) busywork (each pass re-reads
+    /// the whole journal; the 500-add retention tests made the storm visible as seconds of
+    /// main-queue drain). The union — not the newest snapshot — because an id can be
+    /// persisted and then EVICTED inside the same burst, and its line must still retire
+    /// (ext-review #3): retiring a line is safe the moment ANY successful persist carried
+    /// its event; retiring late is safe only while the line's event is merely redundant,
+    /// not intentionally removed.
     private var pendingCheckpointIDs: Set<UUID>?
 
+    /// Pure (unit-tested): how a new successful snapshot's ids join a pending checkpoint
+    /// (ext-review #3, 2026-08-31). REPLACING lost ids across the debounce: persist-with-X
+    /// succeeds → X is evicted inside the 50 ms window → persist-without-X succeeds and its
+    /// smaller set superseded the first — X's birth line was never retired, and every
+    /// relaunch "recovered" the intentionally evicted event (evicting another row to make
+    /// room, then re-pruning X with its line STILL standing: churn forever, against media
+    /// deleted long ago). UNION is safe by construction: an id enters this set only via a
+    /// persist that SUCCEEDED, so its journal line is redundant either way — the event is
+    /// in the log file, or it was deliberately removed after being safely on disk.
+    nonisolated static func coalescedCheckpointIDs(pending: Set<UUID>?,
+                                                   newlyPersisted: Set<UUID>) -> Set<UUID> {
+        (pending ?? []).union(newlyPersisted)
+    }
+
     /// Coalesces checkpoint requests: a burst of persist successes becomes one pass over
-    /// the journal with the newest snapshot, after a short debounce lets the burst land.
+    /// the journal with the union of the burst's successfully-persisted ids, after a short
+    /// debounce lets the burst land.
     private func scheduleJournalCheckpoint(persistedIDs: Set<UUID>) {
         let alreadyScheduled = pendingCheckpointIDs != nil
-        pendingCheckpointIDs = persistedIDs          // the newest snapshot supersedes
+        pendingCheckpointIDs = Self.coalescedCheckpointIDs(pending: pendingCheckpointIDs,
+                                                           newlyPersisted: persistedIDs)
         guard !alreadyScheduled else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 50_000_000)
@@ -641,11 +730,44 @@ final class EventStore: ObservableObject {
         }
     }
 
-    /// A metadata write reached disk: every journal line whose event is in that snapshot is
-    /// redundant — rewrite the journal without them (usually: remove it). Entries born after
-    /// the snapshot was taken keep their lines, so a mid-persist `add` loses nothing; a
-    /// rewrite also sheds any torn tail, self-healing the file.
+    /// A metadata write reached the OS: every journal line whose event is in that snapshot is
+    /// redundant — but only once the full log is on the *medium*, or a power cut between the
+    /// line's retirement and the kernel's flush of the log could lose the event through the
+    /// retirement itself (BACKLOG 53). So the pass first full-syncs the log on `ioQueue` —
+    /// one flush per checkpoint pass, which is one per burst — and retires on return.
     private func journalCheckpoint(persistedIDs: Set<UUID>) {
+        guard journalHasEntries else { return }
+        let logURL = metadataURL
+        ioQueue.async { [weak self] in
+            var synced = false
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                let result = Self.fullSync(handle)
+                synced = result.synced
+                let ms = result.elapsed / .milliseconds(1)
+                if synced {
+                    Log.store.info("Full log sync landed in \(ms, format: .fixed(precision: 2), privacy: .public) ms before retiring journal lines")
+                } else {
+                    Log.store.error("Full log sync failed (errno \(result.errno, privacy: .public)) — journal lines are kept")
+                }
+            } else {
+                Log.store.error("Full log sync could not open the log — journal lines are kept")
+            }
+            // A sync that did not land keeps the lines: the journal stays the net (the same
+            // safe direction as a failed persist). They retire on the next successful pass.
+            guard synced else { return }
+            Task { @MainActor in
+                #if DEBUG
+                self?.logFullSyncsForTesting += 1
+                #endif
+                self?.retireJournalLines(persistedIDs: persistedIDs)
+            }
+        }
+    }
+
+    /// Rewrites the journal without the retired lines (usually: removes it). Entries born
+    /// after the snapshot was taken keep their lines, so a mid-persist `add` loses nothing; a
+    /// rewrite also sheds any torn tail, self-healing the file.
+    private func retireJournalLines(persistedIDs: Set<UUID>) {
         guard journalHasEntries else { return }
         let url = Self.journalURL()
         guard let data = try? Data(contentsOf: url) else { return }
@@ -701,6 +823,19 @@ final class EventStore: ObservableObject {
     /// Pure (unit-tested): `.synced` is terminal except to itself.
     nonisolated static func mayTransitionSyncState(from: CloudSyncState, to: CloudSyncState) -> Bool {
         from != .synced || to == .synced
+    }
+
+    /// Reopens one `.synced` event for upload (item 65, finding 3): the one bounded retry
+    /// (item 54) attaches media to a record that was already `.synced` WITHOUT any — its meta had
+    /// landed and there was nothing else to send — so the record now carries something the cloud
+    /// copy lacks, and a failed upload of it must be retried like any other. The monotonic guard
+    /// would refuse the walk back; this is the second sanctioned path around it, beside
+    /// `requeueAllForReupload`, for the same reason: "synced" has stopped being true.
+    func reopenForReupload(_ id: UUID) {
+        guard let idx = events.firstIndex(where: { $0.id == id }),
+              events[idx].cloudSyncState == .synced else { return }
+        events[idx].cloudSyncState = .pending
+        persist()
     }
 
     /// Requeues every synced event for re-upload after an iCloud encrypted-data reset
@@ -807,7 +942,7 @@ final class EventStore: ObservableObject {
                     }
                     cont.resume(returning: StoredMedia(filename: name, thumbnail: thumbnail))
                 } catch {
-                    Log.store.error("Failed to store media \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+                    Log.store.error("Failed to store media \(name, privacy: .public): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                     cont.resume(returning: nil)
                 }
             }
@@ -844,8 +979,13 @@ final class EventStore: ObservableObject {
 
     /// Encodes and writes the metadata off the main actor (the array — thumbnails
     /// inline — can be large). A snapshot + serial queue keep writes ordered and
-    /// race-free.
-    private func persist() {
+    /// race-free. `alsoRetiring` joins the checkpoint set on SUCCESS only: ids whose
+    /// journal lines this snapshot makes obsolete even though their events are NOT in it
+    /// (recovered-then-evicted, ext-review #3's second path) — once the file that omits
+    /// them is durably down, their absence is deliberate, and their lines must stop
+    /// resurrecting them at every launch. On failure nothing retires, so the journal
+    /// still recovers them — the safe direction.
+    private func persist(alsoRetiring: Set<UUID> = []) {
         guard !loadFailed, !awaitingUnlock else { return }   // never overwrite an un-backed-up (R-05) or still-encrypted (V-01) log
         let snapshot = events
         let url = metadataURL
@@ -861,10 +1001,10 @@ final class EventStore: ObservableObject {
                 }
                 // This snapshot is durably on disk — its events' journal lines are now
                 // redundant and can be retired (on the main actor, the journal's one writer).
-                let persistedIDs = Set(snapshot.map(\.id))
+                let persistedIDs = Set(snapshot.map(\.id)).union(alsoRetiring)
                 Task { @MainActor in self.scheduleJournalCheckpoint(persistedIDs: persistedIDs) }
             } catch {
-                Log.store.fault("Failed to persist event metadata: \(String(describing: error), privacy: .public)")
+                Log.store.fault("Failed to persist event metadata: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 if !self.persistFailedOnQueue {
                     self.persistFailedOnQueue = true
                     Task { @MainActor in self.persistDegraded = true }

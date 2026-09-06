@@ -38,7 +38,7 @@ struct DryRunView: View {
                             // be off the phone before the noise floor is learned.
                             HStack(spacing: 8) {
                                 Image(systemName: "hand.raised")
-                                Text("Set the phone down — calibrating in \(n)…")
+                                Text("Set the phone down. Calibrating in \(n)…")
                             }
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 8)
@@ -174,7 +174,7 @@ struct SensorReadingRow: View {
                         .foregroundStyle(.red)
                 }
                 Spacer()
-                Text(reading?.value ?? "—")
+                Text(reading?.value ?? "-")
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(tripped ? Color.red : .primary)
             }

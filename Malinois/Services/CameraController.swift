@@ -19,8 +19,69 @@
 //
 
 import Foundation
+import Combine
 @preconcurrency import AVFoundation
 import UIKit
+
+/// The engine's view of the camera — everything `MonitoringEngine` asks of the capture
+/// pipeline, and nothing else (1.3 consolidation, step 3: the first seam). `CameraController`
+/// is the only production conformer; tests stand in a fake so the trigger response, the
+/// until-clear loop, and the both-camera path can be driven on a simulator that has no
+/// camera at all. Behavior-neutral by construction: the engine calls the same methods with
+/// the same signatures, through a protocol instead of the concrete class.
+///
+/// `Sendable` because the engine hands the camera to unstructured tasks racing a deadline
+/// (`withDeadline`); the controller is `@unchecked Sendable` (session-queue confinement), and
+/// a fake must promise the same.
+protocol EvidenceCamera: AnyObject, Sendable {
+    /// Whether this device can capture both cameras at once.
+    var supportsMultiCam: Bool { get }
+    /// Whether a clip session attaches the microphone. The engine sets it at arm from the
+    /// owner's "Record audio in clips" setting AND the microphone permission; the controller
+    /// never attaches an unauthorized mic, so iOS never raises the permission prompt on its own.
+    var clipAudio: Bool { get set }
+    /// True while any capture session is live — the REC badge's source of truth.
+    var isRecordingActive: Bool { get }
+    /// `isRecordingActive` as a stream, so the engine can lift the covert screen on change.
+    var isRecordingActivePublisher: AnyPublisher<Bool, Never> { get }
+    /// Whether the vision tap is delivering after a warm-up: nil = cold, false = asked for
+    /// and not up, true = live.
+    var visionTapActive: Bool? { get }
+    /// Frames from the vision tap, delivered on the main actor.
+    var onVisionFrame: (@MainActor (VisionFrame) -> Void)? { get set }
+    func setVisionTapEnabled(_ enabled: Bool)
+    func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool
+    func warmUpMultiCam(forClips: Bool) async throws -> Bool
+    func shutDown()
+    func dropMicAndWait() async
+    func isLowLight() async -> Bool
+    func isLowLightFront() async -> Bool
+    func isLowLightRear() async -> Bool
+    func captureStill(hardwareFlash: Bool) async throws -> Data
+    func beginClip(torch: Bool)
+    func endClip() async throws -> URL
+    func captureBothStills(rearHardwareFlash: Bool) async throws -> (front: Data?, rear: Data?)
+    func beginBothClips(rearTorch: Bool)
+    func endBothClips() async throws -> (front: URL?, rear: URL?)
+    func clipWasInterrupted() async -> Bool
+    /// The session's life as the engine sees it — interruptions with the system's reason,
+    /// their end, and runtime errors (item 54). Delivered on the main actor.
+    var onSessionEvent: (@MainActor (CameraSessionEvent) -> Void)? { get set }
+    /// Why the session is interrupted right now — or, while a clip is in progress, why it
+    /// was interrupted since it began; nil when neither.
+    func interruptionReason() async -> CaptureInterruptionReason?
+    /// A new capture attempt begins (item 65, finding 5): clear the interruption latch a
+    /// previous clip left behind, so this attempt's failure is classified by what happens to
+    /// IT — never by an interruption from an earlier capture.
+    func beginCaptureAttempt()
+}
+
+extension CameraController: EvidenceCamera {
+    var supportsMultiCam: Bool { Self.supportsMultiCam }
+    /// The mic is attached only when the owner asked for clip audio AND iOS has granted it.
+    private var wantsMic: Bool { clipAudio && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
+    var isRecordingActivePublisher: AnyPublisher<Bool, Never> { $isRecordingActive.eraseToAnyPublisher() }
+}
 
 // @unchecked Sendable: all mutable state is confined to `sessionQueue`.
 final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
@@ -41,6 +102,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) private var videoDevice: AVCaptureDevice?
     nonisolated(unsafe) private var configuredPosition: AVCaptureDevice.Position = .front
     nonisolated(unsafe) private var configuredForClips = false
+    /// Whether the configured session carries the mic input (a clip session may not, item 69).
+    nonisolated(unsafe) private var configuredWithMic = false
+    /// See `EvidenceCamera.clipAudio`; the engine sets it at arm (item 69).
+    nonisolated(unsafe) var clipAudio = false
     nonisolated(unsafe) private var configuredVision = false
 
     // MARK: Vision tripwire tap (BACKLOG 16)
@@ -96,6 +161,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     }
     /// Receives downsampled frames on the main actor.
     nonisolated(unsafe) var onVisionFrame: (@MainActor (VisionFrame) -> Void)?
+    /// Item 54: the session's interruptions, their end, and runtime errors, for the engine.
+    nonisolated(unsafe) var onSessionEvent: (@MainActor (CameraSessionEvent) -> Void)?
     /// Photo continuations keyed by the capture's settings uniqueID, so a delegate
     /// callback always resumes exactly its own capture — even if an earlier still
     /// timed out and a new one started (no cross-wiring, no leaked continuation).
@@ -121,6 +188,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// Set when the active clip's session is interrupted, so the until-clear loop
     /// stops waiting on a dead session and finalizes the partial now.
     nonisolated(unsafe) private var clipInterrupted = false
+    /// Why the clip in progress was interrupted (item 54); reset with `clipInterrupted`.
+    nonisolated(unsafe) private var clipInterruptionReasonValue: CaptureInterruptionReason?
+    /// Why the session is interrupted right now — set on the interruption, cleared when it ends.
+    nonisolated(unsafe) private var currentInterruption: CaptureInterruptionReason?
 
     // MARK: Multi-cam session
     nonisolated(unsafe) private let mcSession = AVCaptureMultiCamSession()
@@ -171,8 +242,28 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         let nc = NotificationCenter.default
         for s in [session, mcSession] as [AVCaptureSession] {
             nc.addObserver(forName: AVCaptureSession.wasInterruptedNotification,
+                           object: s, queue: nil) { [weak self] note in
+                // Read the reason here, on the notification's thread — `Notification` does
+                // not cross into the session queue or the main actor.
+                let reason = Self.interruptionReason(fromUserInfo: note.userInfo)
+                self?.sessionQueue.async {
+                    self?.clipInterrupted = true
+                    self?.clipInterruptionReasonValue = reason
+                    self?.currentInterruption = reason
+                }
+                self?.deliverSessionEvent(.interrupted(reason))
+            }
+            // Item 54: the end of an interruption is the engine's cue to re-warm and to take
+            // its one bounded retry; a runtime error (32.R9) is its cue to say so and re-warm.
+            nc.addObserver(forName: AVCaptureSession.interruptionEndedNotification,
                            object: s, queue: nil) { [weak self] _ in
-                self?.sessionQueue.async { self?.clipInterrupted = true }
+                self?.sessionQueue.async { self?.currentInterruption = nil }
+                self?.deliverSessionEvent(.interruptionEnded)
+            }
+            nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification,
+                           object: s, queue: nil) { [weak self] note in
+                let error = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
+                self?.deliverSessionEvent(.runtimeError(error?.localizedDescription ?? "unknown error"))
             }
         }
         // Track live-ness for the recording indicator through every lifecycle edge the
@@ -197,12 +288,101 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Item 54: the current interruption's reason, else the reason that hit the clip in
+    /// progress, else nil.
+    nonisolated func interruptionReason() async -> CaptureInterruptionReason? {
+        await withCheckedContinuation { cont in
+            sessionQueue.async {
+                cont.resume(returning: self.currentInterruption
+                            ?? (self.clipInterrupted ? self.clipInterruptionReasonValue : nil))
+            }
+        }
+    }
+
+    /// Item 65, finding 5: the clip latch belongs to the clip that set it. A still attempted
+    /// later in a session that once saw an interruption used to inherit that reason — and park
+    /// a retry — for a failure that had nothing to do with it.
+    nonisolated func beginCaptureAttempt() {
+        sessionQueue.async {
+            self.clipInterrupted = false
+            self.clipInterruptionReasonValue = nil
+        }
+    }
+
+    #if DEBUG
+    /// Test-only: plant the latch a clip interruption leaves, so `beginCaptureAttempt` can be
+    /// shown to clear it. Debug-only, like the other seams.
+    nonisolated func latchClipInterruptionForTesting(_ reason: CaptureInterruptionReason) {
+        sessionQueue.sync {
+            self.clipInterrupted = true
+            self.clipInterruptionReasonValue = reason
+        }
+    }
+    #endif
+
+    /// Hands a session event to the engine on the main actor.
+    nonisolated private func deliverSessionEvent(_ event: CameraSessionEvent) {
+        guard let handler = onSessionEvent else { return }
+        Task { @MainActor in handler(event) }
+    }
+
+    /// Pure (unit-tested). The system's interruption reason, as this app names it. Two
+    /// system reasons — another client holds the video device, or several foreground apps
+    /// share the screen — read the same to the owner: another app has the camera.
+    nonisolated static func interruptionReason(fromUserInfo userInfo: [AnyHashable: Any]?) -> CaptureInterruptionReason {
+        guard let raw = userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int,
+              let reason = AVCaptureSession.InterruptionReason(rawValue: raw) else { return .unknown }
+        switch reason {
+        case .videoDeviceNotAvailableInBackground:               return .background
+        case .audioDeviceInUseByAnotherClient:                   return .audioClient
+        case .videoDeviceInUseByAnotherClient,
+             .videoDeviceNotAvailableWithMultipleForegroundApps: return .anotherApp
+        case .videoDeviceNotAvailableDueToSystemPressure:        return .systemPressure
+        @unknown default:                                        return .unknown
+        }
+    }
+
     // MARK: - Permissions
 
-    static func requestAccess() async -> Bool {
-        let camera = await AVCaptureDevice.requestAccess(for: .video)
-        _ = await AVCaptureDevice.requestAccess(for: .audio)   // for clip audio
-        return camera
+    /// The camera prompt, asked on the first ARM tap (item 69) rather than at launch — before
+    /// the arming screen, so it never has to appear under Guided Access. Returns whether the
+    /// camera is granted afterwards.
+    static func requestCameraAccessIfUndetermined() async -> Bool {
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined else {
+            return AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+        }
+        return await AVCaptureDevice.requestAccess(for: .video)
+    }
+
+    /// Pure (unit-tested): the ARM tap asks for the camera only when something needs it, iOS
+    /// has never been asked, and Guided Access is OFF. Under Guided Access iOS cannot show the
+    /// alert and records the blocked request as a refusal (1.3 (42), item 69 leg 7: Home read
+    /// "Camera access is denied" afterwards) — so the ask is skipped and the arming screen says
+    /// how to get it instead.
+    static func cameraPromptIsDue(cameraNeeded: Bool, undetermined: Bool, guidedAccessOn: Bool) -> Bool {
+        cameraNeeded && undetermined && !guidedAccessOn
+    }
+
+    static var cameraIsUndetermined: Bool { AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined }
+
+    enum MicrophonePermission { case undetermined, granted, denied }
+
+    /// The microphone permission as the Settings captions read it.
+    static var microphonePermission: MicrophonePermission {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return .granted
+        case .denied:  return .denied
+        default:       return .undetermined
+        }
+    }
+
+    /// The microphone prompt, asked when the Sound tripwire or clip audio is switched on
+    /// (item 69), never at launch. Returns whether the mic is granted afterwards.
+    static func requestMicrophoneAccessIfUndetermined() async -> Bool {
+        guard AVAudioApplication.shared.recordPermission == .undetermined else {
+            return AVAudioApplication.shared.recordPermission == .granted
+        }
+        return await AVAudioApplication.requestRecordPermission()
     }
 
     // MARK: - Single-camera warm-up
@@ -232,7 +412,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                         configuredPosition: self.configuredPosition, wantPosition: position,
                         configuredForClips: self.configuredForClips, wantClips: forClips,
                         configuredVision: self.configuredVision, wantVision: self.visionTapEnabled,
-                        micDropped: self.micDropped)
+                        micDropped: self.micDropped,
+                        configuredWithMic: self.configuredWithMic, wantMic: forClips && self.wantsMic)
                     if needsReconfig && wasRunning { self.session.stopRunning() }
                     let didReconfigure = try self.configure(forClips: forClips, position: position)
                     if !self.session.isRunning { self.session.startRunning() }
@@ -375,25 +556,49 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                                                  wantPosition: AVCaptureDevice.Position,
                                                  configuredForClips: Bool, wantClips: Bool,
                                                  configuredVision: Bool, wantVision: Bool,
-                                                 micDropped: Bool) -> Bool {
+                                                 micDropped: Bool,
+                                                 configuredWithMic: Bool? = nil, wantMic: Bool? = nil) -> Bool {
+        // Before item 69 a clip session always carried the mic, so the mic dimension defaults
+        // to the clip dimension; now the two can differ (clip audio off, or the mic not granted).
+        let configuredWithMic = configuredWithMic ?? configuredForClips
+        let wantMic = wantMic ?? wantClips
         guard isConfigured else { return true }
         if configuredPosition != wantPosition { return true }
         if configuredForClips != wantClips { return true }
+        if configuredWithMic != wantMic { return true }
         if configuredVision != wantVision { return true }
-        // Only clips need the mic back; a stills session never had one.
-        if micDropped && wantClips { return true }
+        // Only a session that wants the mic needs it back; a stills session never had one.
+        if micDropped && wantMic { return true }
         return false
     }
 
     /// Returns true if it actually (re)configured the session. Assumes the caller
     /// stopped the session first when switching.
+    /// What a capture session is built from. Pure (unit-tested) because 1.3 (41) crashed on
+    /// exactly this: a restructuring left the movie output inside the "clip without a mic"
+    /// branch, so a clip session WITH the mic had no capture output at all and the first
+    /// `startRecording` threw. A clip session always carries the movie output; the mic is an
+    /// addition to it, never a substitute; a stills session carries the photo output only.
+    struct SessionShape: Equatable {
+        let movieOutput: Bool
+        let micInput: Bool
+        let photoOutput: Bool
+    }
+
+    nonisolated static func sessionShape(forClips: Bool, wantsMic: Bool) -> SessionShape {
+        SessionShape(movieOutput: forClips, micInput: forClips && wantsMic, photoOutput: !forClips)
+    }
+
     @discardableResult
     private func configure(forClips: Bool, position: AVCaptureDevice.Position) throws -> Bool {
+        let shape = Self.sessionShape(forClips: forClips, wantsMic: wantsMic)
+        let attachMic = shape.micInput
         guard Self.needsReconfiguration(isConfigured: isConfigured,
                                         configuredPosition: configuredPosition, wantPosition: position,
                                         configuredForClips: configuredForClips, wantClips: forClips,
                                         configuredVision: configuredVision, wantVision: visionTapEnabled,
-                                        micDropped: micDropped) else { return false }
+                                        micDropped: micDropped,
+                                        configuredWithMic: configuredWithMic, wantMic: attachMic) else { return false }
 
         // Take the tap back from the multi-cam session before trying to add it here.
         if visionTapEnabled { releaseVisionOutput(from: mcSession) }
@@ -420,21 +625,28 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         session.addInput(input)
         videoDevice = device
 
-        if forClips {
-            if let mic = AVCaptureDevice.default(for: .audio),
-               let micInput = try? AVCaptureDeviceInput(device: mic),
-               session.canAddInput(micInput) {
-                session.addInput(micInput)
-                // Logged because the failure it guards is otherwise invisible: after a siren
-                // drops the mic, a clip session that is never rebuilt records silently, and
-                // nothing surfaces it until someone plays the evidence back (BACKLOG 17).
-                Log.camera.info("Mic attached for clip capture")
+        if shape.movieOutput {
+            if shape.micInput {
+                if let mic = AVCaptureDevice.default(for: .audio),
+                   let micInput = try? AVCaptureDeviceInput(device: mic),
+                   session.canAddInput(micInput) {
+                    session.addInput(micInput)
+                    // Logged because the failure it guards is otherwise invisible: after a siren
+                    // drops the mic, a clip session that is never rebuilt records silently, and
+                    // nothing surfaces it until someone plays the evidence back (BACKLOG 17).
+                    Log.camera.info("Mic attached for clip capture")
+                } else {
+                    Log.camera.error("Clip session configured WITHOUT a mic — clips will be silent")
+                }
             } else {
-                Log.camera.error("Clip session configured WITHOUT a mic — clips will be silent")
+                // By choice, not by accident: clip audio is off, or the mic was never granted —
+                // an unauthorized mic is never attached, so iOS never prompts from here (item 69).
+                Log.camera.info("Clip session built without a mic (clip audio off or not allowed)")
             }
             // A refused PRIMARY output must fail the configuration, not be shrugged off
             // (34.H12): accepting it marked the session configured while every capture on it
-            // was doomed to time out — "configured" must mean "can capture".
+            // was doomed to time out — "configured" must mean "can capture". The movie output
+            // is added for EVERY clip session, mic or not (the 41 crash, item 69).
             guard session.canAddOutput(movieOutput) else {
                 session.commitConfiguration()
                 Log.camera.error("Movie output refused — clip capture cannot run on this session")
@@ -494,6 +706,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         isConfigured = true
         configuredPosition = position
         configuredForClips = forClips
+        configuredWithMic = attachMic
         configuredVision = visionTapEnabled
         return true
     }
@@ -701,6 +914,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         sessionQueue.async {
             guard !self.movieOutput.isRecording else { return }
             self.clipInterrupted = false
+            self.clipInterruptionReasonValue = nil
             self.movieFinalizedURLs[.single] = nil
             if torch { self.setTorch(true, device: self.videoDevice) }
             let url = Self.tempMovieURL()
@@ -730,6 +944,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated func beginBothClips(rearTorch: Bool) {
         sessionQueue.async {
             self.clipInterrupted = false
+            self.clipInterruptionReasonValue = nil
             self.movieFinalizedURLs[.front] = nil
             self.movieFinalizedURLs[.rear] = nil
             if rearTorch { self.setTorch(true, device: self.rearDevice) }

@@ -119,6 +119,31 @@ enum KeychainService {
         write(Data("\(date.timeIntervalSince1970)".utf8), account: trialStartAccount)
     }
 
+    /// Early-Access membership (BACKLOG 66, owner ruling 2026-09-04): an install that first ran
+    /// while the program was open has Pro permanently. Kept in the Keychain so it survives
+    /// deletion, and — unlike the trial start — as a **synchronizable** item, so iCloud Keychain
+    /// carries it to the owner's next phone: the promise is to the person, not the device. If the
+    /// synchronizable write is refused (no iCloud Keychain, a managed profile), it falls back to
+    /// a device-only item so the promise at least holds here. Never cleared by
+    /// `wipeStalePINData`; never cleared at all outside tests — a promise, once made, is kept.
+    private static let earlyAccessAccount = "com.malinois.earlyAccess"
+    static var earlyAccessMember: Bool {
+        guard let data = readAny(account: earlyAccessAccount) else { return false }
+        return String(data: data, encoding: .utf8) == "1"
+    }
+    @discardableResult
+    static func markEarlyAccessMember() -> Bool {
+        let value = Data("1".utf8)
+        return writeSynchronizable(value, account: earlyAccessAccount) || write(value, account: earlyAccessAccount)
+    }
+    #if DEBUG
+    /// Test-only: the marker is never cleared by the app.
+    static func clearEarlyAccessMemberForTesting() {
+        delete(account: earlyAccessAccount, synchronizable: true)
+        delete(account: earlyAccessAccount)
+    }
+    #endif
+
     /// A launch state where the Keychain and the local setup flag disagree, and presenting an
     /// *unauthenticated* PIN setup would be wrong.
     enum RecoveryKind: Equatable {
@@ -183,7 +208,7 @@ enum KeychainService {
     }
 
     /// Removes all PIN-related Keychain items (hash, salt, length, brute-force counters). Does
-    /// NOT touch the trial start — that must persist across a reinstall.
+    /// NOT touch the trial start or the Early-Access marker — both must persist across a reinstall.
     static func wipeStalePINData() {
         delete(account: account)
         delete(account: account + ".salt")
@@ -413,6 +438,11 @@ enum KeychainService {
     private static func storeSalt(_ data: Data) -> Bool { write(data, account: account + ".salt") }
     private static func readSalt() -> Data? { read(account: account + ".salt") }
 
+    #if DEBUG
+    // Test seams: Debug-only so they don't ship in the Release binary (ninth review,
+    // R2-F2). XCTest builds the Debug configuration, so the live-Keychain regression
+    // tests keep compiling.
+
     /// Test-only: removes the salt item alone, constructing the partial-corruption state of
     /// seventh-review #2 (hash intact, salt gone) so the no-mint and recovery-routing rules
     /// can be regression-tested against a live Keychain.
@@ -431,6 +461,7 @@ enum KeychainService {
         hasher.update(data: Data(pin.utf8))
         return write(Data(hasher.finalize()), account: account)
     }
+    #endif
 
     @discardableResult
     private static func write(_ data: Data, account: String) -> Bool {
@@ -451,6 +482,42 @@ enum KeychainService {
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// A synchronizable item: iCloud Keychain carries it to the owner's other devices. Such an
+    /// item cannot be "this device only", so its accessibility is after-first-unlock — fine for
+    /// a one-bit membership flag, which is not a secret. Update in place, add only when absent:
+    /// the same discipline as `write`.
+    private static func writeSynchronizable(_ data: Data, account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: true
+        ]
+        let update = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+        var attrs = query
+        attrs[kSecValueData as String] = data
+        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// Reads an item whether or not it is synchronizable (the marker may be either, see
+    /// `markEarlyAccessMember`).
+    private static func readAny(account: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess ? result as? Data : nil
     }
 
     private static func read(account: String) -> Data? {
@@ -474,12 +541,13 @@ enum KeychainService {
         return (status, result as? Data)
     }
 
-    private static func delete(account: String) {
-        let query: [String: Any] = [
+    private static func delete(account: String, synchronizable: Bool = false) {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+        if synchronizable { query[kSecAttrSynchronizable as String] = true }
         SecItemDelete(query as CFDictionary)
     }
 }
