@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support — Malinois</title>
+<meta name="description" content="Help and contact for Malinois, a personal anti-theft and tamper-detection app for iPhone.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70;
+    --rule: #e3e3e6; --accent: #0a63d6; --card: #f6f6f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f11; --fg: #ececee; --muted: #9a9aa0;
+      --rule: #2a2a2e; --accent: #4c9bff; --card: #1a1a1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 4rem;
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .5rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.18rem; margin: 2.4rem 0 .6rem; letter-spacing: -0.01em;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.02rem; margin: 1.5rem 0 .35rem; }
+  p, li { margin: 0 0 .85rem; }
+  ul { padding-left: 1.25rem; }
+  a { color: var(--accent); }
+  strong { font-weight: 600; }
+  .tagline { color: var(--muted); margin-bottom: 1.75rem; }
+  .contact {
+    background: var(--card); border-radius: 12px;
+    padding: 1rem 1.15rem; margin: 0 0 1rem;
+  }
+  .contact p:last-child { margin-bottom: 0; }
+  footer {
+    margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+    color: var(--muted); font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>Malinois — Support</h1>
+  <p class="tagline">Personal device anti-tampering for iPhone.</p>
+
+  <div class="contact">
+    <p><strong>Email:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></p>
+    <p>One person answers this, usually within a couple of days. Telling me your iPhone model and
+    iOS version helps a lot.</p>
+  </div>
+
+  <h2>Common questions</h2>
+
+  <h3>The screen went black. Is it broken?</h3>
+  <p>No — that’s the point. While armed, Malinois blacks out the screen so the device looks
+  switched off. It’s still watching. To get back in, <strong>press and hold anywhere on the
+  screen for 5 seconds</strong>, then enter your PIN.</p>
+  <p>If your iPhone is plugged in you’ll see a dimmed screen carrying a red <strong>REC</strong>
+  badge rather than a fully black one. That’s expected — the next answer explains it.</p>
+
+  <h3>Why does my screen show a red REC badge while armed?</h3>
+  <p>Because the camera really is on. While the iPhone is charging, Malinois keeps the camera
+  ready so that evidence capture is instant instead of losing the first second or two to
+  starting the camera up. Whenever a camera session is live — warmed up or actually recording —
+  Malinois shows a pulsing red dot and the word <strong>REC</strong>, and lifts the screen out
+  of full black. <strong>That indicator cannot be switched off.</strong> It is there so anyone
+  in front of the device can tell the camera is running.</p>
+  <p>On battery the camera stays off until something trips a tripwire, so the screen is fully
+  black and the badge appears only for the few seconds of an actual capture.</p>
+  <p>You choose the behaviour under <em>Settings → Capture → Battery mode</em>:</p>
+  <ul>
+    <li><strong>Auto</strong> (the default) — camera ready while charging, off while on battery.</li>
+    <li><strong>Battery saver</strong> — camera always off until a trigger, so the screen stays
+    fully black the whole time. The first frame takes a moment longer to capture.</li>
+    <li><strong>Instant</strong> — camera always ready, so the badge always shows.</li>
+  </ul>
+  <p>If you want the darkest possible screen while plugged in, choose <strong>Battery
+  saver</strong>.</p>
+
+  <h3>How do I disarm it?</h3>
+  <p>Press and hold the black screen for 5 seconds until the keypad appears, then enter your
+  PIN. A quick tap won’t do it — a tap is logged as someone touching your device. If you’re also
+  using Guided Access, end that afterwards by triple-clicking the side button and entering your
+  Guided Access passcode.</p>
+
+  <h3>I’ve forgotten my PIN.</h3>
+  <p>There’s no way to recover the PIN itself — it’s never stored, only a hash of it. If the app
+  can’t read its stored PIN it will offer re-setup behind your device passcode or Face ID.
+  Otherwise, deleting and reinstalling the app lets you start fresh, but it also deletes the
+  evidence stored on the device.</p>
+
+  <h3>Why does it ask me to turn on Guided Access?</h3>
+  <p>Guided Access is an iOS feature that locks the device to one app. It’s what stops someone
+  swiping Malinois away or powering the device off before evidence uploads — and it also sends
+  incoming calls to voicemail and disables Siri. Malinois works without it, but it’s much harder
+  to defeat with it on. The arming screen walks you through the setup.</p>
+
+  <h3>Guided Access says it’s unavailable.</h3>
+  <p>An iOS 26 bug, not Malinois: after ending a Guided Access session, iOS can refuse to
+  start a new one for a few minutes (“Guided Access is unavailable”). Wait 3–5 minutes or
+  restart the phone. Reports suggest it happens more often when Face ID or Touch ID is
+  enabled as a way to end Guided Access.</p>
+
+  <h3>The alarm isn’t loud enough.</h3>
+  <p>iOS gives no app control over the hardware volume buttons, so the alarm plays at whatever
+  your media volume is set to. Two things help: turn the volume up before you arm, and in
+  <strong>Guided Access → Options</strong> turn <strong>Volume Buttons</strong> off so it can’t
+  be turned down while armed. By default the alarm also starts quiet and rises over about 20
+  seconds, so you can disarm your own device without a jolt — you can switch that off under
+  <em>Settings → Tripwire Response</em>.</p>
+
+  <h3>Does my evidence go to you?</h3>
+  <p>No. There is no server. Evidence stays on your device and, if you’re signed into iCloud, in
+  <em>your own</em> private iCloud storage, which I cannot access. See the
+  <a href="../privacy-policy/">privacy policy</a>.</p>
+  <p>You don’t have to take my word for it: the app’s source code is public, so anyone can check
+  that there is no server to send anything to —
+  <a href="https://github.com/john-comptonemail-com/malinois">read the source</a>.</p>
+
+  <h3>It triggered when nothing happened.</h3>
+  <p>Lower the sensitivity for the sensor that fired (<em>Settings → Sensitivity</em>), or turn
+  that tripwire off. Vibration-prone surfaces are the usual cause for Device motion, and the Sound
+  tripwire is the most false-positive-prone, which is why it’s off by default. <em>Test
+  sensors</em> on the main screen — behind your PIN, like the rest of the app’s settings — lets
+  you see each sensor react in real time without recording anything.</p>
+
+  <h3>What does Pro include?</h3>
+  <p>A one-time purchase that adds iCloud backup of evidence, alerts to your other Apple devices,
+  both cameras at once, longer clips, the Sound tripwire and the Vision tripwire. Everything
+  else — detection, capture, the local log, the alarm — is free and stays free. New installs get
+  a 30-day trial of everything.</p>
+
+  <h3>Why is the Vision tripwire off when I’m on battery?</h3>
+  <p>The Vision tripwire watches the camera’s view for movement, so it needs the camera to be
+  running — and a camera that is running costs battery and makes iOS show its recording
+  indicator. Malinois only holds the camera ready when the power question is already settled:
+  while you are plugged in (<em>Battery mode → Auto</em>) or if you have chosen <em>Instant</em>.
+  On battery the camera is cold, so this tripwire is simply off, and the arming screen says so
+  before you commit. Your other tripwires carry on as normal.</p>
+
+  <h3>Why is the camera set to “Auto”?</h3>
+  <p>Auto uses whichever camera can actually see: the rear one when the phone is face down, the
+  front one otherwise. A phone placed face down with the front camera selected is pointing its
+  lens at the table, which is worth avoiding by default. You can still pick Front, Rear, or —
+  with Pro — Both.</p>
+
+  <h3>I bought Pro but it’s not showing.</h3>
+  <p>Open the app, go to <em>Settings</em>, and tap the Pro row, then <strong>Restore
+  Purchases</strong>. Make sure you’re signed into the same Apple Account you bought it with.</p>
+
+  <h2>A note on responsible use</h2>
+  <p>Malinois is for protecting <strong>your own device</strong>. Because it records whoever
+  handles it, please use it lawfully where you live — it isn’t a tool for monitoring other
+  people.</p>
+
+  <h2>Privacy</h2>
+  <p>Full details in the <a href="../privacy-policy/">privacy policy</a>.</p>
+
+  <footer>Malinois — personal device anti-tampering for iPhone.</footer>
+
+</main>
+</body>
+</html>

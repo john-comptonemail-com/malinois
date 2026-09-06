@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Malinois</title>
+<meta name="description" content="Privacy policy for Malinois, a personal anti-theft and tamper-detection app for iPhone. No server, no analytics, no data collected by the developer.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70;
+    --rule: #e3e3e6; --accent: #0a63d6; --card: #f6f6f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f11; --fg: #ececee; --muted: #9a9aa0;
+      --rule: #2a2a2e; --accent: #4c9bff; --card: #1a1a1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 4rem;
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .35rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.18rem; margin: 2.4rem 0 .6rem; letter-spacing: -0.01em;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  p, li { margin: 0 0 .85rem; }
+  ul { padding-left: 1.25rem; }
+  a { color: var(--accent); }
+  strong { font-weight: 600; }
+  .meta { color: var(--muted); font-size: .95rem; margin-bottom: 2rem; }
+  .meta div { margin: .15rem 0; }
+  .lede {
+    background: var(--card); border-radius: 12px;
+    padding: 1rem 1.15rem; margin: 0 0 1.5rem;
+  }
+  .lede p:last-child { margin-bottom: 0; }
+  footer {
+    margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+    color: var(--muted); font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>Privacy Policy — Malinois</h1>
+  <div class="meta">
+    <!-- ⚠️ 1.1: bump this to the date 1.1 actually goes live before pasting into Sites. The
+         Vision paragraph below describes a build users do not have until then. -->
+    <div><strong>Effective date:</strong> 5 September 2026</div>
+    <div><strong>Developer:</strong> John Compton</div>
+    <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
+  </div>
+
+  <div class="lede">
+    <p>Malinois (“the app”) is a personal anti-theft and tamper-detection tool that runs on your
+    own iPhone. This policy explains what the app accesses, what it records, and where that
+    information goes.</p>
+    <p>The short version: <strong>the developer collects nothing, operates no server, and has no
+    access to anything the app records.</strong></p>
+  </div>
+
+  <h2>What the app accesses</h2>
+  <ul>
+    <li><strong>Camera</strong> — to capture a photo or short video clip as evidence when your
+    armed device is tampered with. While the device is charging, the camera session may be held
+    ready so that capture is immediate rather than losing the first seconds to starting the
+    camera. <strong>Whenever a camera session is live the app shows an on-screen recording
+    indicator that cannot be disabled.</strong> Nothing is recorded or stored while the camera is
+    merely held ready — images are written only when a tripwire fires.
+    <br><br>
+    If you turn on the optional <strong>Vision</strong> tripwire, the camera is also used to
+    <em>detect</em>, not only to record: while the camera is held ready, the app compares
+    successive frames in memory, a few times a second, to notice movement in the camera’s view.
+    Those frames are never written to storage, never leave the device, and are discarded as soon
+    as they are compared. As with every other tripwire, an image is saved only once something
+    trips. This tripwire is off unless you switch it on.</li>
+    <li><strong>Microphone</strong> — only if you turn on the Sound tripwire or <em>Record audio
+    in clips</em>; both are off by default, and the app asks for microphone access at that
+    moment, not at launch. It listens for sudden sounds nearby as a tamper tripwire, and records
+    audio in an evidence clip. (Clips recorded with the camera set to “Both” have no
+    sound: recording from both cameras at once leaves no room for the microphone. The app says
+    so in Settings and again before arming.)</li>
+    <li><strong>Motion sensors</strong> (accelerometer/gyroscope) — to detect the device being
+    moved or picked up. This is on-device sensor access and requires no permission prompt.</li>
+    <li><strong>Notifications</strong> — so your other Apple devices can be alerted when a tamper
+    is recorded.</li>
+  </ul>
+  <p>The app does <strong>not</strong> access your location, photo library, contacts, calendars,
+  health data, or any other personal information.</p>
+
+  <h2>What the app records, and when</h2>
+  <p>The app only records anything while you have <strong>armed</strong> it. When a tamper is
+  detected on your armed device, it saves:</p>
+  <ul>
+    <li>a photo or short video/audio clip captured by the device’s own cameras and microphone, and</li>
+    <li>event metadata (timestamp, which sensor triggered, and a device label you optionally set).</li>
+  </ul>
+
+  <h2>Where that information goes</h2>
+  <ul>
+    <li><strong>On your device.</strong> Evidence is stored locally, encrypted at rest using iOS
+    Data Protection.</li>
+    <li><strong>In your own private iCloud (optional).</strong> If you are signed into iCloud,
+    evidence is also saved to <strong>your</strong> private iCloud database (Apple CloudKit
+    private database) so it survives the device being switched off. This is your personal iCloud
+    storage, governed by <a href="https://www.apple.com/legal/privacy/">Apple’s Privacy
+    Policy</a>. <strong>The developer cannot access it.</strong> You can turn off cross-device
+    alerts and cloud use in the app’s settings.</li>
+    <li><strong>To your other devices (optional).</strong> If enabled, a “tamper detected” alert
+    — and, when the app is disarmed, a “disarmed” alert — is delivered to your other Apple
+    devices signed into the same iCloud account, via Apple’s push infrastructure.</li>
+  </ul>
+  <p><strong>There is no developer-operated server, database, or analytics endpoint.</strong> The
+  developer receives no copy of your evidence, metadata, or usage.</p>
+
+  <h2>Data the developer collects</h2>
+  <p>None. The app contains no analytics, no advertising, no tracking, and no third-party SDKs.
+  No data is collected by or transmitted to the developer, and nothing is used to track you
+  across apps or websites.</p>
+
+  <h2>Verifying this</h2>
+  <p>You do not have to take the above on trust. The app’s source code is published at
+  <a href="https://github.com/john-comptonemail-com/malinois">github.com/john-comptonemail-com/malinois</a>,
+  where the absence of any server, analytics endpoint, or third-party SDK can be checked
+  directly.</p>
+
+  <h2>Data retention and deletion</h2>
+  <ul>
+    <li>Evidence is retained locally up to the app’s storage limits, after which the oldest items
+    are pruned automatically. You can review and manage events in the app’s Event Log.</li>
+    <li>Deleting the app removes all locally stored evidence and settings.</li>
+    <li>Evidence in your private iCloud is yours to manage and delete through your iCloud storage.</li>
+  </ul>
+
+  <h2>Recording other people — your responsibility</h2>
+  <p>Because the app records whoever interacts with your device when it is armed, captured
+  evidence may include images or audio of other individuals. You are responsible for using the
+  app lawfully in your jurisdiction, including any laws that govern recording other people. Use
+  it to protect your own device — not to surveil others.</p>
+
+  <h2>Children</h2>
+  <p>The app is not directed to children and does not knowingly collect information from
+  children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If this policy changes, the updated version will be posted at this URL with a new effective
+  date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy:
+  <a href="mailto:support@comptonemail.com">support@comptonemail.com</a>.</p>
+
+  <footer>Malinois — personal device anti-tampering for iPhone.</footer>
+
+</main>
+</body>
+</html>
