@@ -210,6 +210,8 @@ enum KeychainService {
     /// Removes all PIN-related Keychain items (hash, salt, length, brute-force counters). Does
     /// NOT touch the trial start or the Early-Access marker — both must persist across a reinstall.
     static func wipeStalePINData() {
+        mirroredFailures = 0
+        mirroredLockout = nil
         delete(account: account)
         delete(account: account + ".salt")
         delete(account: lengthAccount)
@@ -315,9 +317,20 @@ enum KeychainService {
         let delay = lockoutDelay(forFailures: failures)
         guard delay > 0 else { return 0 }
         let uptime = ProcessInfo.processInfo.systemUptime
-        _ = write(Data("\(uptime + delay)|\(uptime)".utf8), account: lockoutAccount)
+        let deadline = "\(uptime + delay)|\(uptime)"
+        mirroredLockout = deadline   // held in-process whatever the Keychain accepts (item 73, R10)
+        _ = write(Data(deadline.utf8), account: lockoutAccount)
         return delay
     }
+
+    /// In-process mirror of the brute-force state (item 73, review 1 R10). A Keychain write
+    /// that fails leaves the stored count and deadline where they were, so a run of failed
+    /// guesses against a Keychain refusing writes never engaged the lockout — rate limiting
+    /// failed open on a storage fault. The mirror keeps the count and the deadline for the
+    /// life of the process; each read takes the stricter of the two, the Keychain stays the
+    /// durable copy, and a correct PIN clears both.
+    nonisolated(unsafe) private static var mirroredFailures = 0
+    nonisolated(unsafe) private static var mirroredLockout: String?
 
     /// Lockout backoff for a given cumulative failure count (pure; unit-tested).
     /// Zero below the threshold, then 30s doubling each further failure, capped at
@@ -333,6 +346,8 @@ enum KeychainService {
     }
 
     static func resetAttempts() {
+        mirroredFailures = 0
+        mirroredLockout = nil
         delete(account: attemptsAccount)
         delete(account: lockoutAccount)
     }
@@ -340,10 +355,13 @@ enum KeychainService {
     /// Seconds until PIN entry is allowed again (0 if not locked out). Pure decision
     /// extracted for testing; measured against the monotonic uptime clock (F-09).
     static func lockoutRemaining() -> TimeInterval {
-        guard let data = read(account: lockoutAccount),
-              let text = String(data: data, encoding: .utf8) else { return 0 }
-        return lockoutRemaining(stored: text, uptime: ProcessInfo.processInfo.systemUptime,
-                                wallNow: Date().timeIntervalSince1970)
+        let stored = read(account: lockoutAccount).flatMap { String(data: $0, encoding: .utf8) }
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let wallNow = Date().timeIntervalSince1970
+        // The stricter of the durable copy and the in-process mirror (item 73, R10).
+        return [stored, mirroredLockout].compactMap { $0 }
+            .map { lockoutRemaining(stored: $0, uptime: uptime, wallNow: wallNow) }
+            .max() ?? 0
     }
 
     /// Pure (unit-tested). New format is `deadlineUptime|setUptime`; if the current uptime
@@ -361,13 +379,15 @@ enum KeychainService {
     }
 
     private static var failedAttempts: Int {
-        guard let data = read(account: attemptsAccount),
-              let text = String(data: data, encoding: .utf8),
-              let n = Int(text) else { return 0 }
-        return n
+        let stored: Int
+        if let data = read(account: attemptsAccount),
+           let text = String(data: data, encoding: .utf8),
+           let n = Int(text) { stored = n } else { stored = 0 }
+        return max(stored, mirroredFailures)   // a refused write cannot lower the count (item 73, R10)
     }
 
     private static func setFailedAttempts(_ n: Int) {
+        mirroredFailures = n
         _ = write(Data(String(n).utf8), account: attemptsAccount)
     }
 
@@ -463,8 +483,17 @@ enum KeychainService {
     }
     #endif
 
+    #if DEBUG
+    /// Test-only: every Keychain write reports failure, constructing the partial-failure state
+    /// of item 73's R10 (reads fine, writes refused) against a live Keychain.
+    nonisolated(unsafe) static var failWritesForTesting = false
+    #endif
+
     @discardableResult
     private static func write(_ data: Data, account: String) -> Bool {
+        #if DEBUG
+        if failWritesForTesting { return false }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

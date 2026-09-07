@@ -61,10 +61,6 @@ final class MonitoringEngine: ObservableObject {
     }
     @Published private(set) var guidedAccessEnabled: Bool = UIAccessibility.isGuidedAccessEnabled
 
-    /// Guided Access was on when you last disarmed and is off now. Surfaced on the arming
-    /// screen, which already warns that GA is off — this adds the part that carries meaning,
-    /// that it was on when you walked away.
-    @Published private(set) var guidedAccessOffSinceDisarm = false
     @Published private(set) var graceRemaining: Int = 0
     @Published private(set) var calibrationProgress: Double = 0   // 0…1
     @Published private(set) var lastTriggerDate: Date?
@@ -348,7 +344,7 @@ final class MonitoringEngine: ObservableObject {
     /// abnormally — see `recoverInterruptedSessionIfNeeded`.
     private static let armedMarkerKey = "com.malinois.armedSession.brightness"
     /// The kernel boot time and the wall clock at the moment a persistent session marker was
-    /// planted (BACKLOG 53) — beside `armedMarkerKey` when covert engages, and beside
+    /// planted (BACKLOG 53) — beside `armedMarkerKey` when the watch goes live, and beside
     /// `recoveryInProgressKey` when a recovery countdown starts. Read back with the marker at
     /// the next launch so the interruption record can say whether the DEVICE restarted or only
     /// the app ended (`BootStamp.classify`); cleared with the markers on a clean disarm.
@@ -368,6 +364,10 @@ final class MonitoringEngine: ObservableObject {
     /// a second kill during grace/calibration left the next launch blind — no log entry, no
     /// re-arm. Cleared when covert engages (armedMarker takes over) or on a clean disarm.
     private static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
+    /// Planted when the grace countdown starts and consumed at go-live or cancel (review 3,
+    /// R3.2): one left behind at the next launch means the app ended mid-countdown. Named
+    /// there, never re-armed — see `recoverInterruptedSessionIfNeeded`.
+    private static let armingInProgressKey = "com.malinois.arming.inProgress"
 
     /// Guided Access state as of the last disarm, so the next arm can say whether it changed
     /// while nobody was watching (BACKLOG 24b). Deliberately narrow: the app cannot observe
@@ -376,7 +376,11 @@ final class MonitoringEngine: ObservableObject {
     /// session belongs to something else. Comparing across a disarm is the one question the
     /// code can actually answer, and it is the one that means something: it only fires when
     /// the current state contradicts the owner's own last configuration.
-    private static let guidedAccessAtDisarmKey = "com.malinois.guidedAccess.atLastDisarm"
+    /// Item 24 part B's memory, retired by item 70 (owner, 2026-09-06): the state was sampled
+    /// inside the disarm, before the owner's own exit from Guided Access, so the arming screen
+    /// told the person who had ended it "you didn't leave it this way" after every normal
+    /// cycle. A launch removes what a 1.3 (44) install left behind.
+    private static let retiredGuidedAccessAtDisarmKey = "com.malinois.guidedAccess.atLastDisarm"
 
     // MARK: - Init
 
@@ -419,6 +423,7 @@ final class MonitoringEngine: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshBrightness() }
         recoverInterruptedSessionIfNeeded()
+        UserDefaults.standard.removeObject(forKey: Self.retiredGuidedAccessAtDisarmKey)   // item 70
         // The launch-order hole (fifth review, round 3): this init runs inside the app's
         // synchronous construction chain, so the entitlement check CANNOT have resolved yet —
         // the recovery re-arm above always defers behind the 31.F2 gate, the scene-activation
@@ -456,7 +461,18 @@ final class MonitoringEngine: ObservableObject {
         // owed re-arm across the cold launch (M4).
         let reArmOwed = defaults.bool(forKey: Self.pendingReArmKey)
         let recoveryInterrupted = defaults.bool(forKey: Self.recoveryInProgressKey)
-        guard markerPresent || reArmOwed || recoveryInterrupted else { return }
+        // A countdown that never went live (review 3, R3.2): the marker `startGraceCountdown`
+        // plants is consumed at go-live and at cancel, so one left behind means the app ended
+        // mid-countdown — an OOM, a thermal kill, a force-quit. Say so; do NOT re-arm: a
+        // force-quit during the countdown is the owner's own abort far more often than an
+        // attack (review 1, F1 scope (b), declined by the owner). When a recovery path below
+        // applies it owns the launch — a recovery countdown plants this marker too.
+        let armingInterrupted = defaults.bool(forKey: Self.armingInProgressKey)
+        if armingInterrupted { defaults.removeObject(forKey: Self.armingInProgressKey) }
+        guard markerPresent || reArmOwed || recoveryInterrupted else {
+            if armingInterrupted { logStateChange("armingInterrupted") }
+            return
+        }
         if recoveryInterrupted { defaults.removeObject(forKey: Self.recoveryInProgressKey) }
 
         if markerPresent {
@@ -596,9 +612,13 @@ final class MonitoringEngine: ObservableObject {
     }
 
     /// Pure (unit-tested): two re-arm attempts inside the window mean arming is crash-looping.
+    /// A clock set back between attempts makes the delta negative — not "less than 90 seconds
+    /// later" but an unknowable gap; it reads as no loop, so a legitimate recovery is never
+    /// refused for an epoch that ran backwards (item 73, review 1 F2).
     nonisolated static func isCrashLoop(lastAttempt: TimeInterval, now: TimeInterval,
                                         window: TimeInterval = 90) -> Bool {
-        lastAttempt > 0 && (now - lastAttempt) < window
+        let delta = now - lastAttempt
+        return lastAttempt > 0 && delta >= 0 && delta < window
     }
 
     /// Records that the armed app was killed without a clean disarm, so the interruption
@@ -625,7 +645,15 @@ final class MonitoringEngine: ObservableObject {
         guard state.isActive else { return }
         UserDefaults.standard.set(true, forKey: Self.backgroundLapseLoggedKey)
         Log.engine.warning("Armed session sent to the background; monitoring has stopped")
-        logInterruptedSession(cause: .backgrounded)
+        logInterruptedSession(cause: Self.backgroundInterruptionCause(guidedAccessOn: guidedAccessEnabled))
+    }
+
+    /// Pure (unit-tested; review 3, R3.3): what sent an active session to the background.
+    /// Under Guided Access nothing but the lock button can — no app switcher, no Home, calls to
+    /// voicemail — so the lapse is named a lock; without it a swipe-away is as likely, and the
+    /// generic cause stands.
+    nonisolated static func backgroundInterruptionCause(guidedAccessOn: Bool) -> InterruptionCause {
+        guidedAccessOn ? .locked : .backgrounded
     }
 
     /// Logs the interruption record. `cause` is what could be told about the ending — a
@@ -764,23 +792,6 @@ final class MonitoringEngine: ObservableObject {
 
     func refreshGuidedAccess() {
         guidedAccessEnabled = UIAccessibility.isGuidedAccessEnabled
-        guidedAccessOffSinceDisarm = Self.guidedAccessWentOffWhileDisarmed(
-            atLastDisarm: storedGuidedAccessAtDisarm, now: guidedAccessEnabled)
-    }
-
-    /// True when Guided Access was on at the last disarm and is off now — someone, at some
-    /// point in between, turned it off. Only that direction is reported: OFF→ON is the owner
-    /// setting up protection, and a nil prior state (first run, or a disarm from before this
-    /// shipped) is not evidence of anything.
-    nonisolated static func guidedAccessWentOffWhileDisarmed(atLastDisarm: Bool?, now: Bool) -> Bool {
-        atLastDisarm == true && !now
-    }
-
-    /// `nil` when no disarm has been recorded yet — distinct from "was off", which is why
-    /// this reads `object(forKey:)` rather than `bool(forKey:)` (the latter turns a missing
-    /// key into `false` and would make every first arm look like a change).
-    private var storedGuidedAccessAtDisarm: Bool? {
-        UserDefaults.standard.object(forKey: Self.guidedAccessAtDisarmKey) as? Bool
     }
 
     // MARK: - Camera battery-readiness
@@ -819,7 +830,7 @@ final class MonitoringEngine: ObservableObject {
     /// otherwise this timer does, once nothing is capturing.
     private func scheduleCameraStandby() {
         cameraStandbyTimer?.invalidate()
-        cameraStandbyTimer = Timer.scheduledTimer(withTimeInterval: cameraStandbyDelay, repeats: false) { [weak self] _ in
+        cameraStandbyTimer = Timer.commonMode(interval: cameraStandbyDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.standByCameraIfIdle() }
         }
     }
@@ -949,7 +960,6 @@ final class MonitoringEngine: ObservableObject {
         camera.clipAudio = Self.clipAudioAllowed(setting: settings.clipAudio,
                                                  micGranted: AVAudioApplication.shared.recordPermission == .granted)
         recoveredInterruptedSession = false   // dismiss the recovery note once re-arming
-        unconsumedLiftLogged = false          // the arm consumes the lift spree (R3-8)
         cloudPushRefused = false              // a new watch gets a fresh verdict (32.R1)
         cloudResetNotice = nil                // the pending badges carry the story from here
         armWasAutoRecovered = false           // a manual arm is user-initiated (cancellable)
@@ -1066,6 +1076,7 @@ final class MonitoringEngine: ObservableObject {
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
                 visionTapUnavailable = (camera.visionTapActive == false)
+                refreshMicNotice()
             }
         } else {
             let warmCamera: CameraChoice
@@ -1080,6 +1091,7 @@ final class MonitoringEngine: ObservableObject {
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
                 visionTapUnavailable = (camera.visionTapActive == false)
+                refreshMicNotice()
             }
         }
     }
@@ -1133,6 +1145,14 @@ final class MonitoringEngine: ObservableObject {
         setting && micGranted
     }
 
+    /// After a warm-up (item 73, review 1 R7): a clip session that asked for the microphone and
+    /// could not attach it records silent clips although the owner asked for sound — the
+    /// denied-permission notice never covered this, and the console line reached nobody.
+    private func refreshMicNotice() {
+        guard camera.micUnavailableForClips else { return }
+        audioNotice = "The microphone couldn't be attached to the camera - video clips will have no sound."
+    }
+
     /// Surfaces a camera warm-up failure so the user isn't left "armed but blind".
     private func reportCameraWarmupFailure(_ error: Error) {
         let reason = (error as NSError).localizedDescription
@@ -1172,8 +1192,18 @@ final class MonitoringEngine: ObservableObject {
             notifyOtherDevices: settings.notifyOtherDevices,
             pro: entitlements.proActive,
             cloudReady: cloud.accountState.isReady,
-            otherDeviceSeen: eventStore.events.contains(where: \.isMirrored),
+            otherDeviceSeen: Self.otherDeviceSeen(events: eventStore.events, thisDevice: DeviceInfo.name),
             hidden: OnboardingState.notificationAskHidden)
+    }
+
+    /// Pure (unit-tested; item 69 leg 10, item 73): whether evidence from ANOTHER device on the
+    /// account has reached this log.
+    /// A device's own pre-reinstall records come back mirrored through the launch restore
+    /// (item 67), so "any mirrored record" showed the notifications line on a single-device
+    /// account after any reinstall (leg 10 on 43, fail-accepted). Only a record stamped with
+    /// another device's name counts; a relabelled device sees the line once, and Hide covers it.
+    nonisolated static func otherDeviceSeen(events: [Event], thisDevice: String) -> Bool {
+        events.contains { $0.isMirrored && $0.sourceDevice != thisDevice }
     }
 
     /// Home's Hide button (item 69): remembered per install; Settings → iCloud keeps the ask.
@@ -1193,8 +1223,8 @@ final class MonitoringEngine: ObservableObject {
     /// Pure (unit-tested). Whether Home should offer the notifications prompt (item 69): only
     /// a device that will RECEIVE cross-device alerts is asked — Pro, iCloud ready, Cross-device
     /// alerts on — only while iOS has never been asked, only once evidence from ANOTHER device
-    /// on this iCloud account has arrived in this device's log (a mirrored record: the receiving
-    /// device is exactly the one that sees the arming device's records; owner ask 2026-09-05 —
+    /// on this iCloud account has arrived in this device's log (a record stamped with another
+    /// device's name — `otherDeviceSeen`; owner ask 2026-09-05 —
     /// "that number will be very small for a while"), and not after the owner tapped Hide.
     nonisolated static func notificationAskIsDue(authUndetermined: Bool, notifyOtherDevices: Bool,
                                                  pro: Bool, cloudReady: Bool,
@@ -1245,8 +1275,11 @@ final class MonitoringEngine: ObservableObject {
     /// R3-8: leave-and-return re-arms the lift button, and every unauthenticated tap used
     /// to mint a fresh pushed audit record — repeatable without consequence. One record
     /// per unconsumed spree: this latches on the first logged lift and releases only when
-    /// an arm begins (consuming the spree), so the "someone poked at it" signal survives
-    /// while the repetition is deduplicated.
+    /// a watch goes LIVE (consuming the spree), so the "someone poked at it" signal survives
+    /// while the repetition is deduplicated. It used to release when an arm merely BEGAN, so
+    /// ARM → lift → Cancel minted a record per cycle — five hundred cycles filled the count
+    /// cap and evicted genuine evidence first (item 73, review 3 R3.4). Going live is out of
+    /// a snoop's reach: the countdown has to complete.
     private var unconsumedLiftLogged = false
 
     func liftGuidedAccessRequirementForThisArm() {
@@ -1309,6 +1342,7 @@ final class MonitoringEngine: ObservableObject {
 
     private func startGraceCountdown() {
         state = .arming
+        UserDefaults.standard.set(true, forKey: Self.armingInProgressKey)   // a kill from here to go-live leaves this behind (review 3, R3.2)
         let total = max(0, settings.gracePeriodSeconds)
         graceRemaining = total
         graceEndsAt = Date().addingTimeInterval(Double(total))
@@ -1372,7 +1406,8 @@ final class MonitoringEngine: ObservableObject {
         // is for the owner's benefit and must not be an unprotected gap. The sensors
         // run during the review; a tamper is handled (handleTrip allows it, and
         // fireTrigger goes covert first — see below). With no tamper, the screen goes
-        // covert after ~2s. The review card shows no Cancel button, so the covert step
+        // covert after the card's dwell (`timing.calibrationReview`, 6 s). The review card
+        // shows no Cancel button, so the covert step
         // isn't user-cancellable — but the guard below (still in the review + still
         // .calibrating) makes it a no-op if a disarm arrives from any path meanwhile.
         startWatching()
@@ -1427,7 +1462,9 @@ final class MonitoringEngine: ObservableObject {
         startRefractorySweep()
         if armedSince == nil {
             armedSince = Date()          // start of the watch
+            markWatchLive()              // recoverable from THIS moment, not from covert (review 1, F1)
             logStateChange("armed")      // explicit audit entry (only once per continuous watch)
+            unconsumedLiftLogged = false // the watch going live consumes the lift spree (R3-8, narrowed by item 73 R3.4)
             OnboardingState.hasArmedOnce = true   // the first-arm Guided Access auto-lift is now spent (68)
         }
         // Reconcile the camera to the readiness policy at go-live: charging may have
@@ -1557,6 +1594,13 @@ final class MonitoringEngine: ObservableObject {
             // owner happened to enter the arming flow, which is the one place that re-sampled.
             // A security app showing a stale security indicator is the wrong kind of wrong.
             refreshGuidedAccess()
+            // The tripwires missed whatever happened while the process was suspended — a
+            // Guided Access lock, an answered call — and iOS replays none of it. Let each
+            // running monitor compare the live state with its baseline (review 3, R3.3): the
+            // power monitor trips on a plug or unplug that spanned the lapse.
+            if state.isActive {
+                for (_, m) in monitors where m.isEnabled { m.resumeAfterSuspension() }
+            }
             // Enforce the automatic cloud-retention policy, at most daily (32.R2).
             Task { await enforceCloudRetentionIfDue() }
             // Notification permission may have changed in iOS Settings while suspended (34.H7).
@@ -1585,15 +1629,25 @@ final class MonitoringEngine: ObservableObject {
         state != .disarmed
     }
 
-    private func engageCovertScreen() {
-        // `previousBrightness` was captured at `beginArming` — deliberately not re-sampled
-        // here, where the display has already been dimmed by the ambient sensor.
-        // Mark the session armed (storing the pre-arm brightness) so a force-quit or
-        // crash can be detected and recovered at next launch.
+    /// The persistent side of going live (review 1, F1): the armed marker — storing the
+    /// pre-arm brightness the next launch restores — and the boot stamp beside it, so a
+    /// force-quit, a Voice Control close, or a crash is detected and classified at the next
+    /// launch. Planted the moment the watch is live, under the calibration card, not when the
+    /// screen goes black six seconds later: the sensors are live and "armed" is on the record
+    /// from the earlier moment, and a kill inside that window used to leave nothing behind.
+    /// `previousBrightness` was captured at `beginArming` — deliberately not re-sampled here,
+    /// where the display may already have been dimmed by the ambient sensor.
+    private func markWatchLive() {
         UserDefaults.standard.set(Double(previousBrightness), forKey: Self.armedMarkerKey)
         plantBootStamp()   // beside the marker: lets the next launch tell a restart from a kill (53)
         // The recovered watch is now protected; the armed marker covers it from here (F1).
         UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)
+        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // the armed marker takes over (R3.2)
+    }
+
+    /// The display side of going covert: keep the device awake and take the screen to black.
+    /// Nothing persistent happens here any more — see `markWatchLive`.
+    private func engageCovertScreen() {
         refreshIdleTimer()
         refreshBrightness()
     }
@@ -1603,6 +1657,7 @@ final class MonitoringEngine: ObservableObject {
         UIScreen.main.brightness = Self.restoredBrightness(previous: previousBrightness)   // the user's level, floored
         UserDefaults.standard.removeObject(forKey: Self.armedMarkerKey)   // clean exit
         UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)   // and no owed recovery (F1)
+        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // and no countdown in flight (R3.2)
         clearBootStamp()
     }
 
@@ -1708,7 +1763,7 @@ final class MonitoringEngine: ObservableObject {
             base: alertDuration,
             sirenRamping: settings.responseMode == .siren && settings.sirenRampUp,
             rampHold: SirenPlayer.rampHoldSeconds, rampFade: SirenPlayer.rampFadeSeconds)
-        alertDismissTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+        alertDismissTimer = Timer.commonMode(interval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.dismissAlert() }
         }
     }
@@ -1781,6 +1836,10 @@ final class MonitoringEngine: ObservableObject {
             // The owner may have disarmed during the wait — don't resurrect the alarm.
             guard alertActive else { return }
             if fullVolume { siren.goFullVolume() } else { siren.start(rampUp: settings.sirenRampUp) }
+            // The dismiss clock runs from the audible start (item 73, review 2 R2.4): the mic
+            // release above took time the interval knew nothing about, and the full-volume
+            // tail of the ramp lost exactly that much.
+            if !fullVolume { scheduleAlertDismiss() }
         }
     }
 
@@ -1795,12 +1854,15 @@ final class MonitoringEngine: ObservableObject {
         if state == .armed, cameraShouldBeWarm { warmActiveCamera() }   // undo the release above — never mid-capture
     }
 
-    /// Stop the Audio tripwire while a clip records (F-14): the capture session takes
-    /// over the mic, which otherwise silently interrupts our metering recorder. Making
-    /// the contention deliberate (rather than incidental) means the recorder isn't left
-    /// stalled after the clip. Not needed while the siren already owns the session.
+    /// Stop the Audio tripwire while a clip records WITH audio (F-14): a capture session that
+    /// takes the microphone seizes the app's audio session, which otherwise silently interrupts
+    /// our metering recorder; making the contention deliberate means the recorder isn't left
+    /// stalled after the clip. A clip that takes no microphone — the default since item 69's
+    /// clip-audio setting — has nothing to contend for, and the tripwire keeps listening through
+    /// it (item 73, review 1 R2 (a)); the monitor's own self-heal covers a video-only session
+    /// that still disturbs the recorder. Not needed while the siren already owns the session.
     func pauseAudioForCapture() {
-        guard sensorEnabled(.audio), !audioPausedForCapture, !audioPausedForSiren else { return }
+        guard sensorEnabled(.audio), !audioPausedForCapture, !audioPausedForSiren, camera.clipAudio else { return }
         monitors[.audio]?.stop()
         audioPausedForCapture = true
     }
@@ -1846,7 +1908,7 @@ final class MonitoringEngine: ObservableObject {
             guard state == .armed, hadConnectivityAtArm, settings.jammingResponse else { return }
             // Debounce a total loss before treating it as suspected jamming.
             blackoutTimer?.invalidate()
-            blackoutTimer = Timer.scheduledTimer(withTimeInterval: blackoutDebounce, repeats: false) { [weak self] _ in
+            blackoutTimer = Timer.commonMode(interval: blackoutDebounce, repeats: false) { [weak self] _ in
                 Task { @MainActor in self?.evaluateBlackout() }
             }
         }
@@ -2335,7 +2397,7 @@ final class MonitoringEngine: ObservableObject {
 
     private func startRefractorySweep() {
         refractoryTimer?.invalidate()
-        refractoryTimer = Timer.scheduledTimer(withTimeInterval: refractorySweepInterval, repeats: true) { [weak self] _ in
+        refractoryTimer = Timer.commonMode(interval: refractorySweepInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refractorySweep() }
         }
     }
@@ -2575,7 +2637,7 @@ final class MonitoringEngine: ObservableObject {
 
     private func scheduleSustainedClear() {
         sustainedClearTimer?.invalidate()
-        sustainedClearTimer = Timer.scheduledTimer(withTimeInterval: sustainedIdleClear, repeats: false) { [weak self] _ in
+        sustainedClearTimer = Timer.commonMode(interval: sustainedIdleClear, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.eventStore.flush()   // capture the final coalesced count on disk (F2)
                 // The cloud only heard every 10th count (and the post-capture rich push
@@ -2717,8 +2779,11 @@ final class MonitoringEngine: ObservableObject {
         let ev = merged
         Task { await exfiltrate(ev, cloudAllowedOverride: sessionAllowed) }
 
-        // If the user disarmed while we were capturing, stop here: don't re-arm or alert.
-        guard session == armSession else { return }
+        // If the user disarmed while we were capturing, stop here: don't re-arm or alert —
+        // and leave no camera running. The pipeline shut it down as its attempt ended; a disarm
+        // that landed after the attempt answered did so itself; this is the belt to those
+        // braces (review 3, R3.1).
+        guard session == armSession else { camera.shutDown(); return }
 
         // 5. Re-arm the sensors NOW so the next tamper is caught immediately.
         reArm()
@@ -3120,6 +3185,7 @@ final class MonitoringEngine: ObservableObject {
     /// The UI must verify the PIN before calling this.
     func disarm() {
         armSession &+= 1   // invalidate any in-flight trigger response
+        cameraWarmGeneration += 1   // a warm-up still answering is stale: its state writes are dropped (review 3, R3.1)
         // A correct PIN means the owner: anything captured while the pad was open was their
         // own handling, so attribute it rather than spamming the log with it. The coordinator
         // tears its own state down (which clears the @Published mirror) and hands back the set.
@@ -3140,11 +3206,6 @@ final class MonitoringEngine: ObservableObject {
         // which the invariant note above wrongly assumed only the proActive-gated retry path
         // could reach). Evidence upload was never affected — arming re-snapshots.
         armedPro = false
-        // Remember the Guided Access state the owner is walking away from, so the next arm
-        // can tell them if it changed in between (BACKLOG 24b). Recorded at disarm rather
-        // than at arm because the disarm is the last moment the owner is demonstrably present.
-        UserDefaults.standard.set(UIAccessibility.isGuidedAccessEnabled,
-                                  forKey: Self.guidedAccessAtDisarmKey)
         armWasAutoRecovered = false
         clearGuidedAccessLift()   // a lift covers one arm; the session it authorized is over
         capturePipeline.cancelUntilClear()
@@ -3173,16 +3234,19 @@ final class MonitoringEngine: ObservableObject {
         showingCalibrationReview = false
         for (_, m) in monitors { m.stop() }
         camera.shutDown()
-        releaseCovertScreen()
         if let armedSince {
             let end = Date()
             lastArmedDuration = end.timeIntervalSince(armedSince)
             lastArmedInterval = (start: armedSince, end: end)
             // Only log a "disarmed" record when a watch was actually running (armedSince set),
             // so cancelling the arming flow before it goes live doesn't create a spurious
-            // entry. This is the auditable proof of exactly when protection stopped.
+            // entry. This is the auditable proof of exactly when protection stopped — written
+            // (and journaled, synchronously) BEFORE the armed marker goes, so a crash between
+            // the two leaves a recoverable session rather than neither the record nor the
+            // marker (item 73, review 3 R11).
             logStateChange("disarmed", sessionCloudAllowed: sessionCloudAllowed)
         }
+        releaseCovertScreen()
         armedSince = nil
         recentTrips.removeAll()
         latchedSensors.removeAll()
@@ -3198,6 +3262,11 @@ final class MonitoringEngine: ObservableObject {
         // PIN, or a thief who caused the crash just taps "Cancel" to undo the auto
         // re-protection (R-04). The UI routes the cancel through PINEntryView → disarm().
         guard !armWasAutoRecovered else { return }
+        // A countdown the owner started and someone cancelled: on the record (review 3, R3.2).
+        // Cancelling needs no PIN — unlike a disarm — and used to leave nothing; the owner who
+        // watched the countdown start and walked away believed the phone was armed. Pushed to
+        // the owner's other devices on Pro through the disarm alert (`disarmSignalWanted`).
+        if state == .arming || state == .calibrating { logStateChange("armingCancelled") }
         disarm()
     }
 }

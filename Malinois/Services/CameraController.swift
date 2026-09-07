@@ -47,6 +47,9 @@ protocol EvidenceCamera: AnyObject, Sendable {
     /// Whether the vision tap is delivering after a warm-up: nil = cold, false = asked for
     /// and not up, true = live.
     var visionTapActive: Bool? { get }
+    /// A clip session asked for the microphone and could not attach it (item 73, review 1 R7):
+    /// clips will be silent although the owner asked for sound. False whenever no mic was asked for.
+    var micUnavailableForClips: Bool { get }
     /// Frames from the vision tap, delivered on the main actor.
     var onVisionFrame: (@MainActor (VisionFrame) -> Void)? { get set }
     func setVisionTapEnabled(_ enabled: Bool)
@@ -86,7 +89,7 @@ extension CameraController: EvidenceCamera {
 // @unchecked Sendable: all mutable state is confined to `sessionQueue`.
 final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
-    enum CameraError: Error { case unauthorized, unavailable, captureFailed, timedOut }
+    enum CameraError: Error { case unauthorized, unavailable, captureFailed, timedOut, sessionNotRunning }
     private enum Lens { case front, rear }
 
     /// Whether this device can capture both cameras at once.
@@ -104,6 +107,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) private var configuredForClips = false
     /// Whether the configured session carries the mic input (a clip session may not, item 69).
     nonisolated(unsafe) private var configuredWithMic = false
+    /// See `EvidenceCamera.micUnavailableForClips`.
+    nonisolated(unsafe) private(set) var micUnavailableForClips = false
     /// See `EvidenceCamera.clipAudio`; the engine sets it at arm (item 69).
     nonisolated(unsafe) var clipAudio = false
     nonisolated(unsafe) private var configuredVision = false
@@ -631,14 +636,20 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                    let micInput = try? AVCaptureDeviceInput(device: mic),
                    session.canAddInput(micInput) {
                     session.addInput(micInput)
+                    micUnavailableForClips = false
                     // Logged because the failure it guards is otherwise invisible: after a siren
                     // drops the mic, a clip session that is never rebuilt records silently, and
                     // nothing surfaces it until someone plays the evidence back (BACKLOG 17).
                     Log.camera.info("Mic attached for clip capture")
                 } else {
+                    // The request stands (`configuredWithMic` records what was asked, so the next
+                    // warm-up does not rebuild the session over it); the OUTCOME is what the owner
+                    // needs to hear, at arm, not on playback (item 73, review 1 R7).
+                    micUnavailableForClips = true
                     Log.camera.error("Clip session configured WITHOUT a mic — clips will be silent")
                 }
             } else {
+                micUnavailableForClips = false
                 // By choice, not by accident: clip audio is off, or the mic was never granted —
                 // an unauthorized mic is never attached, so iOS never prompts from here (item 69).
                 Log.camera.info("Clip session built without a mic (clip audio off or not allowed)")
@@ -913,6 +924,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated func beginClip(torch: Bool) {
         sessionQueue.async {
             guard !self.movieOutput.isRecording else { return }
+            guard self.session.isRunning else { return }   // nothing starts on a stopped session; endClip then fails fast (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
             self.movieFinalizedURLs[.single] = nil
@@ -943,6 +955,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// Begins a clip on BOTH cameras at once.
     nonisolated func beginBothClips(rearTorch: Bool) {
         sessionQueue.async {
+            guard self.mcSession.isRunning else { return }   // as beginClip (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
             self.movieFinalizedURLs[.front] = nil
@@ -994,6 +1007,15 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     private func capturePhoto(slot: Slot, flash: Bool, timeout: Double = 6) async throws -> Data {
         try await withCheckedThrowingContinuation { cont in
             sessionQueue.async {
+                // A stopped session never answers (review 3, R3.1): the disarm's shutdown can land
+                // between the pipeline's last check and this hop, and AVFoundation's reaction to a
+                // capture on a stopped session is not something to rely on. Refuse here, on the
+                // queue where the order of the two is settled.
+                let owner: AVCaptureSession = slot == .single ? self.session : self.mcSession
+                guard owner.isRunning else {
+                    cont.resume(throwing: CameraError.sessionNotRunning)
+                    return
+                }
                 let output = self.photoOutput(for: slot)
                 let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
                 settings.flashMode = (flash && output.supportedFlashModes.contains(.on)) ? .on : .off

@@ -41,6 +41,12 @@ final class EventStore: ObservableObject {
     /// log-only — the owner saw events in the UI that were never durably stored. Surfaced on
     /// Home beside `loadFailed`.
     @Published private(set) var persistDegraded = false
+    /// The log could not be decoded and was set aside as a timestamped backup; a fresh log has
+    /// started (item 73, review 2 R2.2). Cleared by the next clean load.
+    @Published private(set) var logWasQuarantined = false
+    /// A birth-journal append or full sync failed, so the crash-durability promise does not
+    /// hold for recent events (item 73, review 1 R6). The full log write still lands them.
+    @Published private(set) var journalDegraded = false
     /// ioQueue-confined mirror, so the main-actor hop happens only on state CHANGES.
     nonisolated(unsafe) private var persistFailedOnQueue = false
     private var protectedDataObserver: NSObjectProtocol?
@@ -614,6 +620,7 @@ final class EventStore: ObservableObject {
         }
         if appended {
             journalHasEntries = true
+            journalDegraded = !(sync?.synced ?? false)   // a full sync that failed is a promise that does not hold (item 73, R6)
             if let sync, sync.synced {
                 #if DEBUG
                 journalFullSyncsForTesting += 1
@@ -624,9 +631,12 @@ final class EventStore: ObservableObject {
                 let failure = sync?.errno ?? -1
                 Log.store.error("Journal full sync failed (errno \(failure, privacy: .public)) — the line survives a kill, not a power cut")
             }
-        } else if !journalFailureLogged {
-            journalFailureLogged = true
-            Log.store.error("Journal append failed — birth records fall back to the async log write")
+        } else {
+            journalDegraded = true   // surfaced on Home, not only in the console (item 73, review 1 R6)
+            if !journalFailureLogged {
+                journalFailureLogged = true
+                Log.store.error("Journal append failed — birth records fall back to the async log write")
+            }
         }
     }
 
@@ -1055,6 +1065,7 @@ final class EventStore: ObservableObject {
             Log.store.fault("events.json unreadable and un-backupable; persistence disabled to avoid data loss")
         } else {
             Log.store.error("events.json unreadable or corrupt; preserved as \(backup.lastPathComponent, privacy: .public)")
+            logWasQuarantined = true   // Home says so; the backup is reaped after 30 days (item 73, review 2 R2.2)
         }
     }
 

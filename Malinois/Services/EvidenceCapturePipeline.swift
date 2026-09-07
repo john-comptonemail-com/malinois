@@ -246,6 +246,11 @@ final class EvidenceCapturePipeline {
         host?.syncVisionTap()
         host?.suppressVision(for: 4)
         camera.beginCaptureAttempt()   // this attempt's failure is classified by THIS attempt (item 65, finding 5)
+        // Review 3, R3.1: a disarm that lands anywhere in this attempt leaves the camera to the
+        // pipeline. Every stand-down in the engine needs an armed state or a cold policy, so a
+        // session the warm-up below restarted would otherwise stay up on a disarmed phone —
+        // green dot on, no badge on Home — until the next arm.
+        defer { if endedByDisarm { camera.shutDown() } }
 
         // Point the session at the requested camera. If that fails, return nil — never
         // silently capture from whatever camera happened to be configured (that produced
@@ -271,6 +276,13 @@ final class EvidenceCapturePipeline {
             host?.report(cameraNotice: "Camera unavailable - an evidence capture failed. Check camera permission in iOS Settings.")
             return .failed(CaptureFailureReason.forWarmUpFailure(error))
         }
+        // The warm-up answered — but did the watch end meanwhile? Its success path never
+        // asked, so a disarm whose shutdown queued BEFORE the warm-up's start had the session
+        // restarted under it and a capture taken on a disarmed engine (review 3, R3.1).
+        if endedByDisarm {
+            Log.engine.info("Warm-up outlived the disarm — not capturing")
+            return .failed(.disarmed)
+        }
         // After switching cameras, wait for the new sensor to deliver a fresh, exposed
         // frame — otherwise the first capture can be stale or black. A reconfigure already
         // gives auto-exposure time to settle; a warm camera gets a shorter settle so the
@@ -287,6 +299,7 @@ final class EvidenceCapturePipeline {
         let useHardwareLight = illuminate && position == .rear
         if useScreenFlash { await illuminateForCapture() }
         defer { if useScreenFlash { endIllumination() } }
+        if endedByDisarm { return .failed(.disarmed) }   // the settle and the light check took time: ask once more before the lens
 
         if mode.isClip {
             let recordStart = Date()
@@ -336,6 +349,7 @@ final class EvidenceCapturePipeline {
     func captureBoth(mode: CaptureMode, illumination: IlluminationMode) async -> BothOutcome {
         host?.suppressVision(for: 4)
         camera.beginCaptureAttempt()   // item 65, finding 5
+        defer { if endedByDisarm { camera.shutDown() } }   // review 3, R3.1 — see capture(from:)
         do {
             let coldStarted = try await Self.withDeadline(timing.warmUpDeadline) { [camera] in
                 try await camera.warmUpMultiCam(forClips: mode.isClip)
@@ -349,6 +363,7 @@ final class EvidenceCapturePipeline {
             let fallback = await capture(from: .front, mode: mode, illumination: illumination)
             return BothOutcome(front: fallback.capture, rear: nil, failure: fallback.failure)
         }
+        if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }   // R3.1, as in capture(from:)
 
         // Decide illumination per camera (Auto reads each lens' light level).
         let screenFlash: Bool
@@ -365,6 +380,7 @@ final class EvidenceCapturePipeline {
 
         if screenFlash { await illuminateForCapture() }
         defer { if screenFlash { endIllumination() } }
+        if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
 
         if mode.isClip {
             let start = Date()

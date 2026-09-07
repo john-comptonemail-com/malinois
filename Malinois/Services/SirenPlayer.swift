@@ -181,7 +181,7 @@ final class SirenPlayer {
 
     private func scheduleRamp() {
         rampTimer?.invalidate()
-        rampTimer = Timer.scheduledTimer(withTimeInterval: Self.rampHoldSeconds, repeats: false) { [weak self] _ in
+        rampTimer = Timer.commonMode(interval: Self.rampHoldSeconds, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let p = self.player else { return }
                 p.setVolume(1.0, fadeDuration: Self.rampFadeSeconds)

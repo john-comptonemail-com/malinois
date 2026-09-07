@@ -230,6 +230,7 @@ struct GuidedAccessPromptView: View {
                     bullet("The power-off slider is blocked")
                     bullet("Incoming calls go to voicemail and Siri is disabled, so neither can interrupt monitoring")
                     bullet("With Volume Buttons turned off in its Options, the siren can't be turned down")
+                    bullet("With Side Button turned off in its Options, one press can't lock the phone and pause monitoring")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)

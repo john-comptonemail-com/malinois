@@ -438,9 +438,12 @@ final class MonitoringEngineTests: XCTestCase {
 
     /// R3-8: the lift button re-arms on leave-and-return, and every unauthenticated tap
     /// minted a fresh pushed audit record — repeatable without consequence. Coalesced:
-    /// one `gaLifted` record per unconsumed spree; an arm consumes the spree, so the
-    /// next lift is a new fact worth a new record. The "someone poked at it" signal
-    /// survives — only the repetition is deduplicated.
+    /// one `gaLifted` record per unconsumed spree; a watch going LIVE consumes the spree, so
+    /// the next lift is a new fact worth a new record. The "someone poked at it" signal
+    /// survives — only the repetition is deduplicated. Narrowed by item 73 (review 3, R3.4):
+    /// an arm that merely BEGAN used to consume the spree too, so ARM → lift → Cancel minted a
+    /// record per cycle and five hundred cycles evicted genuine evidence. The go-live release
+    /// is pinned in Item73RegressionTests, where the engine runs on fast timing.
     func testRepeatedUnconsumedGALiftsCoalesceToOneRecord() {
         let engine = makeEngine { $0.requireGuidedAccess = true }
         // Deltas, not absolutes: the test host's store persists across runs (house rule).
@@ -456,11 +459,11 @@ final class MonitoringEngineTests: XCTestCase {
         engine.liftGuidedAccessRequirementForThisArm()
         XCTAssertEqual(gaLiftCount(), baseline + 1,
                        "an unconsumed spree coalesces to one record (R3-8)")
-        engine.beginArming()                               // an arm consumes the spree
-        engine.disarm()
+        engine.beginArming()                               // an arm that never goes live…
+        engine.disarm()                                    // …releases nothing (item 73, R3.4)
         engine.liftGuidedAccessRequirementForThisArm()
-        XCTAssertEqual(gaLiftCount(), baseline + 2,
-                       "after an arm, a fresh lift is worth a fresh record")
+        XCTAssertEqual(gaLiftCount(), baseline + 1,
+                       "ARM → Cancel consumes no spree: only a watch going live does")
     }
 
     /// R1-L2: `isOnline` deliberately defaults optimistic, but an arm snapshot taken before
@@ -578,22 +581,6 @@ final class MonitoringEngineTests: XCTestCase {
     }
 
     // MARK: - Guided Access across a disarm (BACKLOG 24b)
-
-    /// Only ON→OFF is reported. OFF→ON is the owner setting protection up, and an unknown
-    /// prior state (first run, or a disarm recorded before this shipped) is not evidence of
-    /// anything — reporting either would train the owner to dismiss the warning that matters.
-    func testGuidedAccessChangeAcrossDisarmReportsOnlyTheOffDirection() {
-        XCTAssertTrue(MonitoringEngine.guidedAccessWentOffWhileDisarmed(atLastDisarm: true, now: false),
-                      "on at disarm, off now — something turned it off while nobody was watching")
-        XCTAssertFalse(MonitoringEngine.guidedAccessWentOffWhileDisarmed(atLastDisarm: true, now: true),
-                       "unchanged and still on")
-        XCTAssertFalse(MonitoringEngine.guidedAccessWentOffWhileDisarmed(atLastDisarm: false, now: false),
-                       "off at disarm and off now — the owner's own configuration, unchanged")
-        XCTAssertFalse(MonitoringEngine.guidedAccessWentOffWhileDisarmed(atLastDisarm: false, now: true),
-                       "off to on is the owner improving things, never a warning")
-        XCTAssertFalse(MonitoringEngine.guidedAccessWentOffWhileDisarmed(atLastDisarm: nil, now: false),
-                       "no recorded disarm yet — a first arm must not look like a change")
-    }
 
     // MARK: - Mic-less warm session during the siren (BACKLOG 17)
 

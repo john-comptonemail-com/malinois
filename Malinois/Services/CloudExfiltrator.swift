@@ -549,9 +549,14 @@ final class CloudExfiltrator: ObservableObject {
         return record
     }
 
-    /// Pure (unit-tested): only a disarm gets the signal — arms and Guided Access lifts stay
-    /// silent, which is the whole reason the audit type has no subscription of its own.
-    nonisolated static func disarmSignalWanted(kind: String) -> Bool { kind == "disarmed" }
+    /// Pure (unit-tested): the disarm alert fires for a disarm and for a cancelled countdown
+    /// (review 3, R3.2) — both stop future protection, which is what the alert exists to tell
+    /// the owner's other devices; the mirrored record carries the exact reason. Arms, Guided
+    /// Access lifts and a kill's launch-time record stay silent, which is the whole reason the
+    /// audit type has no subscription of its own.
+    nonisolated static func disarmSignalWanted(kind: String) -> Bool {
+        kind == "disarmed" || kind == "armingCancelled"
+    }
 
     /// Returns nil when the record landed (or a richer one already stands — the stale-skip),
     /// else the terminal error, so the caller can classify it (32.R1).
@@ -852,7 +857,7 @@ final class CloudExfiltrator: ObservableObject {
               // Allow-list (34 review, validation): an unknown kind — a future build's new
               // state, or a corrupted field — must be dropped, not rendered. It used to fall
               // through `sensorSummary` and display as "Signal loss", which asserts an attack.
-              ["armed", "disarmed", "gaLifted", "cameraError"].contains(kind)
+              ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted"].contains(kind)
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,

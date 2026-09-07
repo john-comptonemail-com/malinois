@@ -104,6 +104,10 @@ final class Item65RegressionTests: XCTestCase {
         rig.engine.replaceMonitorForTesting(audio)
         arm(rig)
         XCTAssertTrue(audio.isWatching, "the Sound tripwire runs from the moment the watch starts")
+        // Item 73, review 1 R2 (a): only a clip that takes the microphone pauses the tripwire;
+        // this test is about the resume, so give the clip a mic (the engine set it from the
+        // settings at arm — off by default since item 69).
+        rig.camera.clipAudio = true
 
         rig.engine.handleTrip(.motion)
         XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")

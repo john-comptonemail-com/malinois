@@ -174,7 +174,7 @@ final class DisarmEntryCoordinator {
 
     private func scheduleTimeout() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: timing.disarmEntryTimeout, repeats: false) { [weak self] _ in
+        timer = Timer.commonMode(interval: timing.disarmEntryTimeout, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.end() }
         }
     }

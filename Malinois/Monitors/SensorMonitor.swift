@@ -52,6 +52,12 @@ protocol SensorMonitor: AnyObject {
     /// trip forever. Defaults to `rearm()` for monitors with no baseline to move.
     func rearmAndRebaseline()
 
+    /// The app is back in the foreground after a suspension it could not watch through — a
+    /// Guided Access lock, an answered call (review 3, R3.3). A monitor whose state can change
+    /// silently while suspended compares the live state with its baseline here; a state that
+    /// changed while nobody could watch IS the event. The default does nothing.
+    func resumeAfterSuspension()
+
     /// A recent trace sample for the event window (implementation-specific unit).
     /// Motion returns user-accel magnitude (g); audio returns dBFS. Others return
     /// an empty array.
@@ -68,6 +74,7 @@ extension SensorMonitor {
     func endCalibration() {}
     /// Most monitors have no movable baseline — re-arming is the same either way.
     func rearmAndRebaseline() { rearm() }
+    func resumeAfterSuspension() {}
     func recentTrace() -> [Double] { [] }
     func liveReading() -> SensorReading? { nil }
 }

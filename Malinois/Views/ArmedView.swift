@@ -121,9 +121,12 @@ struct ArmedView: View {
         // A tactile confirmation the moment the 5-second hold registers and the pad
         // reveals — the owner feels it without needing to see the (still-black) screen.
         .sensoryFeedback(trigger: engine.disarmEntryActive) { _, revealed in revealed ? .impact(weight: .medium) : nil }
-        // While recording, show the status bar too, so the SYSTEM camera indicator
-        // (green dot) is also visible alongside the in-app badge.
-        .statusBarHidden(!camera.isRecordingActive)
+        // The status bar stays hidden while recording (owner ruling 2026-09-06, item 73): iOS
+        // draws its camera and microphone indicator in the Dynamic Island or the top corner
+        // whatever the app does with the bar — seen on device — so un-hiding it lit a strip of
+        // clock, carrier and battery over the black screen for nothing. The REC badge and its
+        // brightness floor remain the app's own indication (guideline 2.5.14).
+        .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
     }
 

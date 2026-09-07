@@ -9,9 +9,9 @@ Malinois' singular objective is to guarantee, to the greatest extent possible, t
 - **A.** Return to an unattended device in the same state you left it, or
 - **B.** Know that unauthorized access was attempted (or succeeded)
 
-Once armed, if the device is moved, tilted, unplugged, handled, touched, or approached, Malinois logs a tripwire event, captures a photo or clip, and writes it to a PIN-gated Event Log. Arms, disarms, and all tripwire events are logged with no immediate delete mechanism for an adversary, and all paths to escape Malinois leave a trace.
+Once armed, if the device is moved, tilted, unplugged, handled, touched, or approached, Malinois logs a tripwire event, captures a photo or clip, and writes it to a PIN-gated Event Log. Arms, disarms, and all tripwire events are logged with no immediate delete mechanism for an adversary, and all paths to escape Malinois leave a trace, short of deleting the app itself, which needs the unlocked home screen.
 
-With Guided Access on and iOS set to ask before new wired accessories connect, there is no viable scenario (short of an already compromised device) where a tamper can occur without an indication: The nearest misses are documented in [SECURITY.md](SECURITY.md).
+With Guided Access on, its Side Button option off, and iOS set to ask before new wired accessories connect, there is no viable scenario (short of an already compromised device) where a tamper can occur without an indication: The nearest misses are documented in [SECURITY.md](SECURITY.md).
 
 ## Try it out
 
@@ -21,7 +21,7 @@ With Guided Access on and iOS set to ask before new wired accessories connect, t
 4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes black.
 5. **To disarm:** press and hold the black screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
 
-**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. Using a PIN instead of Face ID for Guided Access is recommended due to the open "Guided Access is not available" iOS bug.
+**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. Using a PIN instead of Face ID for Guided Access is recommended due to the open "Guided Access is not available" iOS bug. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
 
 ## AI Disclosure
 
@@ -42,6 +42,8 @@ A Pro in-app purchase is available, but **Pro is not required to meet Malinois' 
 Solo project, no dates, and everything here is subject to change — or to being talked out of. If one of these matters to you (or something missing does), support@comptonemail.com reaches me.
 
 **Shipped in 1.3** — honest capture-interruption records: a capture that produced nothing now says why, on the event itself.
+
+**Shipped in 1.3.1** — the fixes from the September review pass: a cancelled countdown leaves a record and alerts your other devices, the Side Button coaching for Guided Access, and the app now says when its own log or journal is in trouble.
 
 **Exploring**
 

@@ -172,6 +172,8 @@ struct EventRow: View {
         case "armed":    return "lock.fill"
         case "disarmed": return "lock.open.fill"
         case "gaLifted": return "lock.slash"
+        case "armingCancelled":   return "xmark.shield"
+        case "armingInterrupted": return "exclamationmark.shield"
         default:         return "camera.metering.none"
         }
     }

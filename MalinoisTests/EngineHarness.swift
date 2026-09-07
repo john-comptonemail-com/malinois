@@ -26,6 +26,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var supportsMultiCam = false
     var clipAudio = false
     var visionTapActive: Bool?
+    var micUnavailableForClips = false
     /// What every low-light probe answers — front, rear, or the active camera alike.
     var lowLight = false
     /// Thrown by every warm-up while set: a camera that cannot come up.

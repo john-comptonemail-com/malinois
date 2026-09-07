@@ -39,13 +39,29 @@ final class AudioMonitor: SensorMonitor {
     /// After start(), snap the rolling baseline to the current ambient for a
     /// short window (no trips) — so resuming after the siren, when the room may
     /// have changed, doesn't fire a burst of false positives against a stale
-    /// calibration baseline.
+    /// calibration baseline. Skipped on the start that follows a calibration, where the
+    /// baseline is seconds old (`baselineFresh`).
     private var warmupSamples = 0
     private let warmupSampleCount = 15        // ~1.5s at 10 Hz
+
+    /// Pure (unit-tested; item 73, review 1 R3): how many samples to hold fire for after
+    /// `start()`. The warm-up exists for a resume after the siren or a capture, when the room
+    /// may have changed since the baseline was set; the start that follows a calibration has a
+    /// baseline seconds old, and holding fire there was 1.5 s of deafness at go-live for nothing.
+    nonisolated static func warmupSampleCount(afterCalibration: Bool, standard: Int = 15) -> Int {
+        afterCalibration ? 0 : standard
+    }
+
+    #if DEBUG
+    var warmupSamplesRemainingForTesting: Int { warmupSamples }
+    #endif
     private var warmupBuffer: [Double] = []
 
     // Calibration accumulation.
     private var calibrating = false
+    /// Set by `endCalibration`, spent by the next `start()`: the baseline is seconds old, so
+    /// that start holds no warm-up fire (item 73, review 1 R3). A later restart warms up.
+    private var baselineFresh = false
     private var calibrationSamples: [Double] = []
 
     // Event trace ring buffer (~3s at 10 Hz).
@@ -125,7 +141,7 @@ final class AudioMonitor: SensorMonitor {
         makeRecorderIfNeeded()
         calibrating = true
         calibrationSamples.removeAll()
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        meterTimer = Timer.commonMode(interval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.calibrating else { return }
                 self.calibrationSamples.append(self.currentLevel())
@@ -143,6 +159,7 @@ final class AudioMonitor: SensorMonitor {
             baselineDB = Self.clampedCalibratedBaseline(Self.median(calibrationSamples) ?? baselineDB)
         }
         rollingDB = baselineDB
+        baselineFresh = true   // the watch that follows hears at once (item 73, review 1 R3)
     }
 
     /// Ceiling on the calibrated quiet (dBFS). Above this, we assume the room was noisy
@@ -159,9 +176,10 @@ final class AudioMonitor: SensorMonitor {
         hasTripped = false
         traceBuffer.removeAll()
         rollingDB = baselineDB
-        warmupSamples = warmupSampleCount
+        warmupSamples = Self.warmupSampleCount(afterCalibration: baselineFresh)
+        baselineFresh = false
         warmupBuffer.removeAll()
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        meterTimer = Timer.commonMode(interval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.evaluate() }
         }
     }
@@ -175,6 +193,7 @@ final class AudioMonitor: SensorMonitor {
         calibrationSamples.removeAll()
         warmupSamples = 0
         warmupBuffer.removeAll()
+        baselineFresh = false
     }
 
     func rearm() {

@@ -24,9 +24,14 @@ trying to power it off before the evidence escapes.
   a Guided Access passcode holder can close the app, which is logged and alerted — and,
   with the device in hand and unlocked, can wholesale-delete the cloud copy from iOS
   Settings, as can anyone holding the iCloud credentials; neither can edit it. The local
-  log survives; the loss is total rather than selective, and it surfaces when the cloud
+  log survives that; the loss is total rather than selective, and it surfaces when the cloud
   copy is next consulted — on a restore, or from another device — not as a real-time alert
   (the one exception, an encrypted-data reset, the app detects and repairs by re-uploading).
+  What the local log does **not** survive is the app being deleted from the unlocked home
+  screen — no credential beyond reaching that screen, no record left behind; Guided Access
+  is what keeps a snoop from the home screen, and iOS's Screen Time restriction on deleting
+  apps can deny it outright (README, *Enable it*). Pro's cloud copy survives a deletion and
+  comes back at reinstall.
 - **Tier 3 — professionals (spyware, device forensics).** The core objective survives:
   the tripwires still fire, and the record exists — usually off-device (Pro) — before
   any toolchain can finish. What ends is the vault, not the tripwire: a compromised OS
@@ -35,16 +40,22 @@ trying to power it off before the evidence escapes.
 **Core guarantees:**
 1. **Detection never silently stops** — not for PIN entry (the open pad pauses just one
    sensor, proximity, which would otherwise blank it — see the resilience notes), not for
-   a capture in flight, not for a lapsed paywall.
+   a capture in flight (one stated exception: the Sound tripwire pauses for a clip that
+   records audio, since one microphone has one owner; the default video-only clip pauses
+   nothing), not for a lapsed paywall.
 2. **Evidence precedes response.** The record is written before any alert or siren
    fires, and (Pro) the tamper *fact* reaches iCloud sub-second — a race against
    power-off the design exists to win.
 3. **The log only accumulates.** No delete affordance, no destructive merge; changes
    attach and label, never erase.
-4. **Recording is always indicated** (the REC badge and iOS's camera dot) — covertness
-   has a deliberate, non-negotiable bound.
-5. **Failures are loud.** Interrupted sessions, refused uploads, degraded persistence,
-   and silent-clip conditions all surface to the owner instead of passing quietly.
+4. **Recording is always indicated** (the REC badge and iOS's camera dot; with the Sound
+   tripwire on, iOS's microphone dot for the whole watch) — covertness has a deliberate,
+   non-negotiable bound.
+5. **Failures are loud.** Interrupted sessions, refused uploads, degraded persistence
+   (a full disk, a quarantined log, a journal that cannot be written), and silent-clip
+   conditions (a denied microphone, one that could not be attached) all surface to the
+   owner instead of passing quietly. Stated residual: a tripwire that stalls mid-session
+   restarts itself, and the restart is console-only today.
 
 **Honest limits:** a hardware force-restart can be raced but not blocked; no network at
 trigger time means local-only until reconnect; a compromised OS is out of scope; free-tier
@@ -100,9 +111,12 @@ something specific and leaves something behind (details in
 [Non-goals](#non-goals--known-limitations)):
 - **Malinois PIN:** can disarm — stopping *future* monitoring — but cannot delete anything,
   and the disarm itself becomes an undeletable, timestamped record. Detection continues
-  during PIN entry, so even the disarm is photographed, and on Pro with cross-device
-  alerts on, the disarm is pushed to the owner's other devices the moment it happens — a
-  PIN-holder's disarm is quiet on this device only.
+  during PIN entry, so with the Touch tripwire on the hold that reveals the pad is
+  photographed, and on Pro with cross-device alerts on, the disarm is pushed to the owner's
+  other devices the moment it happens — a PIN-holder's disarm is quiet on this device only.
+  The PIN also opens Settings: a PIN-holder can weaken the *next* session's configuration —
+  tripwires, camera, the Guided Access requirement, cross-device alerts — and today no
+  record says so. That is the boundary as it stands; a settings-change record is planned.
 - **Guided Access passcode:** can kill the app; the kill is logged as "Monitoring
   interrupted — the app was closed or crashed while armed" on the next launch and alerts
   the owner's other devices (Pro). Evidence already pushed has already escaped. It also
@@ -447,8 +461,10 @@ Two consequences matter for the threat model:
   5-second hold that revealed the pad was already logged as one on press-down (32.R7).
   Suppression covers only the *presentation* — the capture flash and the start of a
   fresh on-screen alert, which would fight the raised pad brightness — and only while a
-  keypress landed in the last 20 s (A-02/H1). Neither an open-but-idle pad (it stays up 30 s
-  past the last keypress, to a 120 s ceiling) nor a mere touch on the glass qualifies; owner
+  keypress landed in the last 20 s (A-02/H1); the 5-second hold that opens the pad counts as
+  the first keypress — one window per logged hold, not renewable without another. An idle
+  pad past that window (it stays up 30 s past the last keypress, to a 120 s ceiling) and a
+  mere touch on the glass do not qualify; owner
   *attribution* still uses the wider any-touch window, but presentation was deliberately
   narrowed to actual typing (F1). Residual, accepted: someone tapping keys holds suppression
   for the pad's lifetime — while standing over an armed device whose motion, sound and vision
@@ -681,10 +697,14 @@ survive a device wipe.
   blocks app-switching and the soft power-off. It also **routes incoming calls to
   voicemail** (verified on device) and disables Siri, so neither can background the app
   or interrupt monitoring — which is a large part of why GA is the recommended armed
-  configuration rather than merely a nicety.
+  configuration rather than merely a nicety. Its Options should also disable the Side Button
+  (Sleep/Wake Button on older phones): with it on (the default), one press locks the screen and suspends the watch until
+  the owner unlocks — recorded as a lock, and the tripwires compare the live state with
+  their baselines on resume, but nothing is watched meanwhile (README, *Enable it*).
 - **Covertness has a hard, deliberate bound: the recording indicator.** Whenever any
-  capture session is live, the app shows a non-disableable `REC` badge, un-hides the status
-  bar, and floors screen brightness at 0.33. It is derived from `AVCaptureSession` lifecycle
+  capture session is live, the app shows a non-disableable `REC` badge and floors screen
+  brightness at 0.33; iOS draws its own camera indicator in the Dynamic Island or the top
+  corner whatever the app does with the status bar, which stays hidden. It is derived from `AVCaptureSession` lifecycle
   notifications precisely so that no code path can record without it (App Store guideline
   2.5.14). The consequence is easy to understate: under the default Battery mode (*Auto*)
   on a **charging** device the camera is held warm for the *entire* armed session, so the
@@ -692,7 +712,10 @@ survive a device wipe.
   *Battery saver*, or *Auto* on battery, gives a genuinely black screen, at the cost of a
   cold-start delay on the first frame. This is the single largest limit on covert operation,
   it is not defeatable from inside the app, and it is not meant to be: the alternative was
-  not shipping.
+  not shipping. A second, smaller one: with the Sound tripwire on, the microphone is open
+  for the whole watch — metered, never stored — and iOS shows its orange indicator for the
+  whole watch (one indicator at a time: green takes over while the camera is live, verified on
+  device). The screen is black; the device is not idle.
 - **The intended configuration, enforced by default.** Guided Access is what the armed
   threat model assumes; without it the app can be swiped away or force-quit and monitoring
   stops — and, found on device, even the side-button press of a force-restart
@@ -758,6 +781,12 @@ These are out of scope by design — Malinois does not claim to defend against t
 - **A compromised / jailbroken device.** With code execution, an attacker can read
   the Keychain-protected hash, the on-disk evidence, and app memory. Data Protection
   and PBKDF2 raise the cost but don't stop a rooted attacker.
+- **An attacker at the unlocked home screen can delete the app,** and the on-device log
+  goes with its container — no credential beyond reaching that screen, no record left. A
+  Guided Access passcode holder gets there by ending Guided Access; with Guided Access off,
+  so does anyone, and the first arm is Guided-Access-free by design. Guided Access is the
+  control, iOS's Screen Time restriction on deleting apps the belt to it; Pro's cloud copy
+  survives and comes back at reinstall.
 - **An attacker who can reach the cloud copy** can delete the off-device evidence from
   the user's CloudKit database — with the iCloud credentials from anywhere, or, on the
   unlocked device itself, from iOS Settings (Manage Account Storage → Delete Data from
@@ -774,8 +803,9 @@ These are out of scope by design — Malinois does not claim to defend against t
   narrower — it stops *future* monitoring and silences the response; the GA passcode
   unlocks the single-app lock (and exiting it is itself captured, with the alert to the
   owner's other devices on its way before any Settings deletion could begin). Detection
-  continues during disarm, so even a PIN-holder's handling is
-  photographed and pushed (flagged owner-attributed, not redacted). And every arm and
+  continues during disarm, so with the Touch tripwire on a PIN-holder's handling — the
+  hold that reveals the pad — is photographed and pushed (flagged owner-attributed, not
+  redacted); with Touch off, a careful disarm leaves the record but no photograph. And every arm and
   disarm is now written to the log as an explicit, non-deletable **"Monitoring
   armed"/"disarmed"** record, so a PIN-holder who turns protection off leaves proof of
   exactly *when* — the owner doesn't have to infer it from a re-armed session's start time.
@@ -841,7 +871,8 @@ These are out of scope by design — Malinois does not claim to defend against t
   a Stealth-mode device.
 - **Being killed while armed is not silent.** If the armed app is terminated without a
   clean disarm — a force-quit, Voice Control "Close application", or an OS/OOM crash — the
-  kill itself captures nothing (the app is gone). But an armed marker persists, and the next
+  kill itself captures nothing (the app is gone). But an armed marker persists from the
+  moment the watch goes live — under the calibration card, not from the black screen — and the next
   launch's crash recovery logs a **"Monitoring interrupted"** event and pushes it, so the
   interruption leaves a local record and alerts the owner's other devices. This is recorded
   *before* the crash-loop guard runs, so even when a rapid series of kills correctly stops
@@ -850,14 +881,18 @@ These are out of scope by design — Malinois does not claim to defend against t
   beside the armed marker, and at the next launch a pure, unit-tested rule compares it with
   the current one — a jump of more than 30 s, or uptime that shrank, means the device
   restarted; otherwise the app alone was closed or crashed. Sending an active session to the
-  background is its own cause. A marker from a build before the stamp stays a bare
+  background is its own cause — named a lock when Guided Access was on, since the lock
+  button is the only exit there; on resume the tripwires compare the live state with their
+  baselines, so a plug or unplug during the lock still trips. Cancelling a countdown, and a
+  kill during one, leave records too: the one needs no PIN and used to leave nothing. A marker from a build before the stamp stays a bare
   "interrupted" rather than a guess. The one thing that can mislead the rule is a manual
   clock change of more than 30 s between arm and relaunch, which Guided Access rules out
   while armed; after a restart the record appears at first unlock, since the app cannot run
   before then.
 - **The disarm PIN pad never reveals the stored PIN length** (no placeholder dots; an
   explicit submit), and Keychain writes update-in-place so a failed write can't destroy
-  the PIN or reset the brute-force counter. The brute-force lockout is enforced inside
+  the PIN or reset the brute-force counter — and an in-process mirror of the count and the
+  deadline means a refused write cannot lower either. The brute-force lockout is enforced inside
   `KeychainService.verify` itself, which both refuses a locked-out attempt **and counts
   the failed guess** — callers must not count it again. Rate limiting is therefore a
   property of the service, not of any screen: a non-UI caller cannot get unlimited

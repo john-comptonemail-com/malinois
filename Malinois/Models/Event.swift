@@ -226,6 +226,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "disarmed": return "Monitoring disarmed"
         case "gaLifted": return "Guided Access requirement lifted for one arm"
         case "cameraError": return "Camera session failed while armed"
+        case "armingCancelled":   return "Arming cancelled before going live"
+        case "armingInterrupted": return "Arming did not complete: the app ended during the countdown"
         default:         break
         }
         if interrupted == true {
@@ -235,6 +237,7 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             case .rebooted:     return "Monitoring interrupted: the device restarted while armed"
             case .terminated:   return "Monitoring interrupted: the app was closed or crashed while armed"
             case .backgrounded: return "Monitoring interrupted: the app was sent to the background while armed"
+            case .locked:       return "Monitoring interrupted: the device was locked while armed"
             case nil:           return "Monitoring interrupted: the app closed before a clean disarm"
             }
         }
@@ -295,6 +298,10 @@ enum InterruptionCause: String, CaseIterable, Sendable {
     case terminated
     /// An active session was sent to the background, where iOS stops the watch (32.R6).
     case backgrounded
+    /// The device was locked while armed under Guided Access (review 3, R3.3): the lock button
+    /// is the only way to background the app there, so the lapse can be named. Whatever the
+    /// tripwires could not see during the lock is compared against their baselines on resume.
+    case locked
 }
 
 enum DeviceInfo {

@@ -28,11 +28,13 @@ final class PowerMonitor: SensorMonitor {
     /// than the immediately prior sample) is what fails closed across an intermediate
     /// `.unknown`, e.g. `.full → .unknown → .unplugged` still trips (F-20).
     private var lastKnownPowered: Bool?
+    /// Where the live battery state comes from — the device, or a test's stand-in.
+    var batteryStateProvider: () -> UIDevice.BatteryState = { UIDevice.current.batteryState }
 
     func start() {
         UIDevice.current.isBatteryMonitoringEnabled = true
         hasTripped = false
-        lastKnownPowered = Self.poweredness(UIDevice.current.batteryState)   // baseline (nil if unknown now)
+        lastKnownPowered = Self.poweredness(batteryStateProvider())   // baseline (nil if unknown now)
         observer = NotificationCenter.default.addObserver(
             forName: UIDevice.batteryStateDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -52,8 +54,16 @@ final class PowerMonitor: SensorMonitor {
 
     func rearm() { hasTripped = false }
 
+    /// Back in the foreground after a suspension (review 3, R3.3): `batteryStateDidChange` is
+    /// not delivered to a suspended process and never replayed, so a plug or unplug during a
+    /// Guided Access lock left the pre-lock baseline standing — and the next change back was
+    /// compared against it and never tripped. Evaluate the live state now exactly as a
+    /// notification would: a state that changed while nobody could watch is the event, and
+    /// `evaluate` moves the baseline on so it is reported once.
+    func resumeAfterSuspension() { evaluate() }
+
     private func evaluate() {
-        let state = UIDevice.current.batteryState
+        let state = batteryStateProvider()
         defer { if let p = Self.poweredness(state) { lastKnownPowered = p } }   // only KNOWN states update the baseline
         guard !hasTripped else { return }
         if Self.powerChangeTrips(state: state, lastKnownPowered: lastKnownPowered) {

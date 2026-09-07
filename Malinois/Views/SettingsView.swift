@@ -525,6 +525,7 @@ struct SettingsView: View {
     /// deleting, nothing else will retry the removal.
     private func applyCrossDeviceAlerts(_ enabled: Bool) {
         settings.notifyOtherDevices = enabled
+        settings.save()   // now, not after the 400 ms debounce: the account switch below applies at once (item 73, review 1 F4)
         guard entitlements.proActive else { return }   // free tier has no subscription to manage
         subscriptionNote = nil
         Task {

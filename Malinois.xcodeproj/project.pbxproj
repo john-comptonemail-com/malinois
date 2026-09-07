@@ -35,6 +35,7 @@
 		B1B2C3D4E5F6000000000018 /* SirenPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */; };
 		B1B2C3D4E5F6000000000020 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000020 /* Brand.swift */; };
 		B1B2C3D4E5F6000000000302 /* BootStamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000302 /* BootStamp.swift */; };
+		B1B2C3D4E5F6000000000310 /* CommonModeTimer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000310 /* CommonModeTimer.swift */; };
 		B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000021 /* DryRunView.swift */; };
 		B1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */; };
 		B1B2C3D4E5F6000000000023 /* ProEntitlements.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */; };
@@ -55,6 +56,7 @@
 		E1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */; };
 		E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */; };
 		E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */; };
+		E1D2C3D4E5F600000000000C /* Item73RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -96,6 +98,7 @@
 		A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SirenPlayer.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000020 /* Brand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Brand.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000302 /* BootStamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BootStamp.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000000000310 /* CommonModeTimer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonModeTimer.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000021 /* DryRunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DryRunView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectivityMonitor.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProEntitlements.swift; sourceTree = "<group>"; };
@@ -121,6 +124,7 @@
 		D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceCapturePipelineTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisarmEntryCoordinatorTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item65RegressionTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item73RegressionTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000200 /* MalinoisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MalinoisTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -235,6 +239,7 @@
 				A1B2C3D4E5F6000000000020 /* Brand.swift */,
 				A1B2C3D4E5F6000000000301 /* Log.swift */,
 				A1B2C3D4E5F6000000000302 /* BootStamp.swift */,
+				A1B2C3D4E5F6000000000310 /* CommonModeTimer.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -262,6 +267,7 @@
 				D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */,
 				D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */,
 				D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */,
+				D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */,
 			);
 			path = MalinoisTests;
 			sourceTree = "<group>";
@@ -382,6 +388,7 @@
 				B1B2C3D4E5F6000000000023 /* ProEntitlements.swift in Sources */,
 				B1B2C3D4E5F6000000000020 /* Brand.swift in Sources */,
 				B1B2C3D4E5F6000000000302 /* BootStamp.swift in Sources */,
+				B1B2C3D4E5F6000000000310 /* CommonModeTimer.swift in Sources */,
 				B1B2C3D4E5F6000000000301 /* Log.swift in Sources */,
 				B1B2C3D4E5F600000000000A /* SensorMonitor.swift in Sources */,
 				B1B2C3D4E5F600000000000B /* MotionMonitor.swift in Sources */,
@@ -419,6 +426,7 @@
 				E1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift in Sources */,
 				E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */,
 				E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */,
+				E1D2C3D4E5F600000000000C /* Item73RegressionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -548,7 +556,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 45;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -558,7 +566,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -576,7 +584,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 45;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -586,7 +594,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -605,7 +613,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -622,7 +630,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

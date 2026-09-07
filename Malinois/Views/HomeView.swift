@@ -367,6 +367,22 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            if eventStore.logWasQuarantined {
+                Label("The event log couldn't be read and was set aside as a backup - new events go to a fresh log. The backup is kept for 30 days.",
+                      systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            if eventStore.journalDegraded {
+                Label("Recent events may not survive a crash - the event journal can't be written. The log itself is saving normally.",
+                      systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
             if let notice = engine.cloudResetNotice {
                 Label(notice, systemImage: "icloud.slash")
                     .font(.caption2)

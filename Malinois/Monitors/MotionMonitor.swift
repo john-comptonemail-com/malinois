@@ -227,7 +227,7 @@ final class MotionMonitor: SensorMonitor {
         stallCount = 0
         startUpdates()
         watchdog?.invalidate()
-        watchdog = Timer.scheduledTimer(withTimeInterval: watchdogInterval, repeats: true) { [weak self] _ in
+        watchdog = Timer.commonMode(interval: watchdogInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkForStall() }
         }
     }

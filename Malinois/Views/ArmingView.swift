@@ -196,19 +196,6 @@ struct ArmingView: View {
 
             guidedAccessIndicator
 
-            // The warning above says Guided Access is off. This says the part that carries
-            // meaning: it was ON when you last disarmed, so something turned it off in
-            // between. Malinois cannot say when or by whom — it can't observe Guided Access
-            // while suspended at all — so this claims only what it can support.
-            if engine.guidedAccessOffSinceDisarm {
-                Label("Guided Access was ON when you last disarmed, and is off now. Malinois can't tell when it changed or who changed it - but you didn't leave it this way.",
-                      systemImage: "exclamationmark.shield.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .padding()
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
-            }
-
             VStack(alignment: .leading, spacing: 12) {
                 instruction(1, "Open Settings → Accessibility → Guided Access and turn it on (one-time setup).")
                 instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, so someone who knows your unlock code still can't exit.")
@@ -216,6 +203,7 @@ struct ArmingView: View {
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
                 instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
                 instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise a thief can turn the siren down.")
+                instruction(7, "Also in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile.")
             }
             .padding()
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
