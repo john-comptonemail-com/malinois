@@ -238,6 +238,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             case .terminated:   return "Monitoring interrupted: the app was closed or crashed while armed"
             case .backgrounded: return "Monitoring interrupted: the app was sent to the background while armed"
             case .locked:       return "Monitoring interrupted: the device was locked while armed"
+            case .backgroundedDuringCountdown:
+                return "Monitoring interrupted: the app was sent to the background during the countdown"
             case nil:           return "Monitoring interrupted: the app closed before a clean disarm"
             }
         }
@@ -302,6 +304,10 @@ enum InterruptionCause: String, CaseIterable, Sendable {
     /// is the only way to background the app there, so the lapse can be named. Whatever the
     /// tripwires could not see during the lock is compared against their baselines on resume.
     case locked
+    /// The countdown was sent to the background before the watch went live — a swipe-away
+    /// during the grace seconds (item 74, line 6). Named for the countdown so the relaunch's
+    /// "Arming did not complete" can stand down: one interruption, one record.
+    case backgroundedDuringCountdown
 }
 
 enum DeviceInfo {

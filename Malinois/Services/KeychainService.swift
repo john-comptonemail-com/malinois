@@ -114,6 +114,13 @@ enum KeychainService {
               let ts = Double(text) else { return nil }
         return Date(timeIntervalSince1970: ts)
     }
+    /// The trial start as a three-way read (item 65, finding 13): found, SEALED by the lock,
+    /// or missing. `trialStart` above collapses the seal to nil — right for a display, wrong
+    /// for a decision that mints a start from "nothing there".
+    static var trialStartRead: ItemRead {
+        let r = readWithStatus(account: trialStartAccount)
+        return itemRead(status: r.status, data: r.data)
+    }
     @discardableResult
     static func setTrialStart(_ date: Date) -> Bool {
         write(Data("\(date.timeIntervalSince1970)".utf8), account: trialStartAccount)

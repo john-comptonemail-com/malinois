@@ -44,8 +44,9 @@ trying to power it off before the evidence escapes.
    records audio, since one microphone has one owner; the default video-only clip pauses
    nothing), not for a lapsed paywall.
 2. **Evidence precedes response.** The record is written before any alert or siren
-   fires, and (Pro) the tamper *fact* reaches iCloud sub-second — a race against
-   power-off the design exists to win.
+   fires, the jamming and flood escalations included (1.3.2 closed a milliseconds-wide
+   exception on both), and (Pro) the tamper *fact* reaches iCloud sub-second — a race
+   against power-off the design exists to win.
 3. **The log only accumulates.** No delete affordance, no destructive merge; changes
    attach and label, never erase.
 4. **Recording is always indicated** (the REC badge and iOS's camera dot; with the Sound
@@ -392,9 +393,15 @@ Two consequences matter for the threat model:
 - **Bounded retry.** Because a single dropped push at trigger time can mean lost
   evidence — a stolen device never comes back to retry — each push retries transient
   CloudKit failures (network loss, throttling) with backoff, honoring the server's
-  retry-after, but capped to a few attempts so it always completes inside the
-  background-task window. Only if it still can't reach iCloud does the event fall
-  back to local-only, to re-upload when the owner next opens the log.
+  retry-after, but capped to a few attempts and to 4 s per wait so it always completes
+  inside the background-task window. Only if it still can't reach iCloud does the event
+  fall back to local-only, for the pending sweep to re-upload: at launch, on every
+  foreground, when a network path returns, and when the owner opens the log. The sweep
+  has no power-off to race, so it is patient where the trigger-time push is not: it
+  honors the server's retry-after in full (2–120 s), stops handing out records the
+  moment the server names a wait, and makes follow-up passes by itself until the backlog
+  is up or it stops getting anywhere (at most 20 passes, 3 in a row that land nothing).
+  See ADR 0003's amendment.
 - **The cached account state is an optimization, not a gate.** A push always *attempts*
   unless iCloud is definitively unavailable (no account / restricted); a merely stale
   or transient state (e.g. `.couldNotDetermine` during a network transition at arm) is
@@ -577,7 +584,10 @@ rather than jumpy:
   handled by the normal trigger) and the loss to persist ~30 s (riding out
   registration flaps). Requiring loss of **all** interfaces rules out a lone Wi-Fi
   or cell blip. This is strongest with an active **cellular** connection; a
-  Wi-Fi-only device is weaker (a router reboot looks the same).
+  Wi-Fi-only device is weaker (a router reboot looks the same). The check is not tied
+  to a quiet moment: a loss that begins during a capture or the calibration card is
+  examined again the moment the watch is armed, so a jam timed to the last seconds of a
+  capture is not missed (1.3.2).
 - **Go loud.** On the gold trigger — or when a real tamper fires and can't be
   exfiltrated — Malinois **abandons covertness**: it sounds the siren (which no
   jammer can block) and shows an on-screen interference warning, and grabs a frame
@@ -700,7 +710,9 @@ survive a device wipe.
   configuration rather than merely a nicety. Its Options should also disable the Side Button
   (Sleep/Wake Button on older phones): with it on (the default), one press locks the screen and suspends the watch until
   the owner unlocks — recorded as a lock, and the tripwires compare the live state with
-  their baselines on resume, but nothing is watched meanwhile (README, *Enable it*).
+  their baselines on resume, but nothing is watched meanwhile (README, *Enable it*). With it off, a
+  press only shows the iOS banner that Guided Access is on and how to exit; the tripwires keep
+  running, and ending Guided Access still needs its passcode.
 - **Covertness has a hard, deliberate bound: the recording indicator.** Whenever any
   capture session is live, the app shows a non-disableable `REC` badge and floors screen
   brightness at 0.33; iOS draws its own camera indicator in the Dynamic Island or the top

@@ -656,6 +656,7 @@ extension SettingsView {
     var spikeSection: some View {
         Section("Development (debug builds only)") {
             NavigationLink("Item 14 spike — NFC / smart-card probes") { Spike14View() }
+            Item79SeedRow()
         }
     }
 }
@@ -1351,6 +1352,42 @@ struct Spike14View: View {
             Text("Wipes ALL PIV keys and certificates, then resets PIN, PUK, and the "
                  + "management key to factory defaults. Dedicated test key only — never "
                  + "a key holding real credentials.")
+        }
+    }
+}
+
+/// Debug builds only (item 79's device legs): seeds the Event Log with arm/disarm records that
+/// never reached iCloud — the state a long stretch in Airplane Mode leaves — so the sync legs
+/// need no hours offline. When the log is full it makes room only by dropping the oldest
+/// mirrored copies (iCloud still holds them); an event only this device holds is never pushed
+/// out. The records upload to the development iCloud like any others, and each "disarmed" one
+/// sends its alert.
+struct Item79SeedRow: View {
+    @EnvironmentObject private var eventStore: EventStore
+    @State private var note: String?
+
+    private var copies: Int { eventStore.events.lazy.filter(\.isMirrored).count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button("Item 79: seed 100 unsynced arm/disarm records") {
+                let result = eventStore.seedUnsyncedBacklogForTesting(count: 100)
+                if result.added == 0 {
+                    note = "Nothing was added: the log is full and holds no copies from iCloud, "
+                        + "and this device's own events are never pushed out for test data."
+                } else {
+                    let dropped = result.droppedCopies > 0
+                        ? ", dropping the \(result.droppedCopies) oldest copies from iCloud to make room" : ""
+                    note = "Added \(result.added)\(dropped). They upload on the next reconnect, "
+                        + "foreground, or Event Log visit."
+                }
+            }
+            Text("Log: \(eventStore.events.count) of \(EventStore.maxEvents), \(copies) of them copies from "
+                 + "iCloud. When full, the seed makes room only by dropping the oldest copies.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

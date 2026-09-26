@@ -40,6 +40,21 @@ final class ConnectivityMonitor: ObservableObject {
     private let queue = DispatchQueue(label: "com.malinois.connectivity", qos: .utility)
     private var started = false
 
+    #if DEBUG
+    /// Test seam (item 77): once a test has spoken, the monitor reports what the test says and
+    /// ignores NWPath — the simulator's path never drops, and the jamming canary's behavior
+    /// around a loss is exactly what the tests pin. Debug-only, like the engine's other seams.
+    private var simulatedForTesting = false
+
+    func simulateForTesting(online: Bool) {
+        simulatedForTesting = true
+        hasFirstReport = true
+        guard isOnline != online else { return }
+        isOnline = online
+        onChange?(online)
+    }
+    #endif
+
     func start() {
         guard !started else { return }
         started = true
@@ -47,6 +62,9 @@ final class ConnectivityMonitor: ObservableObject {
             let online = path.status == .satisfied
             Task { @MainActor in
                 guard let self else { return }
+                #if DEBUG
+                if self.simulatedForTesting { return }
+                #endif
                 self.hasFirstReport = true
                 guard self.isOnline != online else { return }
                 self.isOnline = online

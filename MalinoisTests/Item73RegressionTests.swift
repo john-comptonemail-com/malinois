@@ -148,8 +148,8 @@ final class Item73RegressionTests: XCTestCase {
     /// so a lapse there is a lock — and the record says so, instead of the generic "sent to the
     /// background" that hides the tamper's actual shape.
     func testABackgroundLapseUnderGuidedAccessIsRecordedAsALock() {
-        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: true).rawValue, "locked")
-        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: false), .backgrounded,
+        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: true, duringCountdown: false).rawValue, "locked")
+        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: false, duringCountdown: false), .backgrounded,
                        "without Guided Access a background can be a swipe-away — the generic cause stands")
         let locked = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .localOnly,
                            interrupted: true, interruptionCause: "locked")

@@ -837,7 +837,23 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         other.beginConfiguration()
         other.removeOutput(visionOutput)
         other.commitConfiguration()
+        // The session that lost the tap is no longer configured WITH it. Left claiming it
+        // was, the next warm-up whose shape otherwise matched reused that session unchanged —
+        // running with no tap while `visionTapActive` still read true from the other one, and
+        // the Vision tripwire was silently dead in Both mode after any single-camera cadence
+        // still (item 65, finding 9).
+        let flags = Self.configuredVisionAfterRelease(fromMultiCam: other === mcSession,
+                                                      single: configuredVision, multiCam: mcConfiguredVision)
+        configuredVision = flags.single
+        mcConfiguredVision = flags.multiCam
         Log.camera.info("Vision tap released from the previous session")
+    }
+
+    /// Pure (unit-tested): the configured-vision bookkeeping after the tap leaves one session
+    /// for the other — the side that lost it is cleared, the other side keeps its answer.
+    nonisolated static func configuredVisionAfterRelease(fromMultiCam: Bool, single: Bool,
+                                                         multiCam: Bool) -> (single: Bool, multiCam: Bool) {
+        fromMultiCam ? (single, false) : (false, multiCam)
     }
 
     /// Whether the multi-cam session has to be rebuilt to satisfy the requested shape.
@@ -927,7 +943,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             guard self.session.isRunning else { return }   // nothing starts on a stopped session; endClip then fails fast (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
-            self.movieFinalizedURLs[.single] = nil
+            self.discardParkedClip(.single)
             if torch { self.setTorch(true, device: self.videoDevice) }
             let url = Self.tempMovieURL()
             self.movieExpectedURLs[.single] = url
@@ -958,8 +974,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             guard self.mcSession.isRunning else { return }   // as beginClip (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
-            self.movieFinalizedURLs[.front] = nil
-            self.movieFinalizedURLs[.rear] = nil
+            self.discardParkedClip(.front)
+            self.discardParkedClip(.rear)
             if rearTorch { self.setTorch(true, device: self.rearDevice) }
             if !self.frontMovieOutput.isRecording {
                 let url = Self.tempMovieURL()
@@ -1050,7 +1066,15 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                     return
                 }
                 let output = self.movieOutput(for: slot)
-                guard output.isRecording else {
+                // A recording the session stop already ended — a disarm's `shutDown()` racing
+                // the pipeline's stop — reads `isRecording == false` with its delegate callback
+                // still on the way. Failing it here lost the usable partial clip: the callback
+                // then parked the file for the next clip to discard, and the record said the
+                // camera failed (item 65, finding 12). Wait for the callback instead, bounded.
+                guard let wait = Self.recordingStopWait(isRecording: output.isRecording,
+                                                        callbackPending: self.movieExpectedURLs[slot] != nil,
+                                                        stopTimeout: timeout,
+                                                        pendingFinalizeWait: Self.pendingFinalizeWait) else {
                     cont.resume(throwing: CameraError.captureFailed)
                     return
                 }
@@ -1067,8 +1091,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                 let token = self.movieTokenCounter
                 self.movieConts[slot] = cont
                 self.movieTokens[slot] = token
-                output.stopRecording()
-                self.sessionQueue.asyncAfter(deadline: .now() + timeout) {
+                if output.isRecording { output.stopRecording() }   // else the session stop did; the delegate is on its way
+                self.sessionQueue.asyncAfter(deadline: .now() + wait) {
                     guard self.movieTokens[slot] == token,
                           let stale = self.movieConts.removeValue(forKey: slot) else { return }
                     self.movieTokens[slot] = nil
@@ -1086,6 +1110,29 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                     if output.isRecording { output.stopRecording() }
                 }
             }
+        }
+    }
+
+    /// How long a stop waits for a recording whose session was already stopped out from
+    /// under it: the delegate's finalize is on its way, seconds at most, never the full stop
+    /// timeout (item 65, finding 12).
+    nonisolated static let pendingFinalizeWait: Double = 2
+
+    /// Pure (unit-tested): how long `endRecording` waits for this slot's clip — the stop
+    /// timeout while the output is still recording; the short finalize wait when it is not but
+    /// a callback is still expected for the file; nothing (fail now) when neither holds.
+    nonisolated static func recordingStopWait(isRecording: Bool, callbackPending: Bool,
+                                              stopTimeout: Double, pendingFinalizeWait: Double) -> Double? {
+        if isRecording { return stopTimeout }
+        return callbackPending ? pendingFinalizeWait : nil
+    }
+
+    /// A clip the delegate parked for a stop that never claimed it — the previous recording's
+    /// failed stop — is discarded, file included, before the slot records again. It used to be
+    /// dropped from the table and left on disk (item 65, finding 12).
+    private func discardParkedClip(_ slot: Slot) {
+        if let parked = movieFinalizedURLs.removeValue(forKey: slot) {
+            try? FileManager.default.removeItem(at: parked)
         }
     }
 

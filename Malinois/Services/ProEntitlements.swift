@@ -183,9 +183,18 @@ final class ProEntitlements: ObservableObject {
         }
         // Record the first launch (idempotent — once, survives reinstall). Kept during early
         // access too: it is the install date, and the trial a newcomer gets after the program
-        // closes runs from it.
-        if Self.storedTrialStart == nil { Self.storedTrialStart = Date() }
-        let start = Self.storedTrialStart ?? Date()
+        // closes runs from it. Never from a SEALED read, though: on a locked device the
+        // Keychain answers "not now", not "absent", and minting a start of now from that gave
+        // a lapsed user a fresh trial for one background launch after a reinstall — and swept
+        // their local-only evidence into iCloud on its strength (item 65, finding 13). Sealed,
+        // the UserDefaults mirror answers if it can; otherwise this launch has no start.
+        let read = KeychainService.trialStartRead
+        let decision = Self.trialStartDecision(keychain: read, mirror: Self.mirroredTrialStart)
+        if decision.mint { Self.storedTrialStart = Date() }
+        var start = decision.mint ? Self.storedTrialStart : decision.start
+        #if DEBUG
+        if let override = Self.debugTrialStartOverride { start = override }
+        #endif
         // Early-Access (BACKLOG 66): a member has Pro permanently; a first launch while the
         // program is open becomes a member on the spot. If the marker cannot be written the
         // promise still holds for this launch — `resolvedStatus` grants Pro on the open program
@@ -197,13 +206,36 @@ final class ProEntitlements: ObservableObject {
         status = Self.resolvedStatus(purchased: false, member: member,
                                      programOpen: Self.earlyAccessProgramOpen,
                                      trialStart: start, now: Date())
-        if status == .trial {
-            scheduleTrialEndNotification(start: start)
-        } else {
-            cancelTrialEndNotification()   // a member (or a lapsed trial) gets no "trial ended" reminder
+        // A sealed read hides the start: leave the reminder as it stands — the next unlocked
+        // launch schedules or cancels it from the real answer.
+        if read != .sealed {
+            if status == .trial, let start {
+                scheduleTrialEndNotification(start: start)
+            } else {
+                cancelTrialEndNotification()   // a member (or a lapsed trial) gets no "trial ended" reminder
+            }
         }
         hasResolved = true
         if product == nil { await loadProduct() }
+    }
+
+    /// Pure (unit-tested; item 65, finding 13): what a launch does with the stored trial
+    /// start. A readable start is the answer; a MISSING one is the first launch and is minted
+    /// now — unless the UserDefaults mirror still holds it; a SEALED one (the device is
+    /// locked) is unknown: the mirror if it has one, and never a mint.
+    nonisolated static func trialStartDecision(keychain: KeychainService.ItemRead,
+                                               mirror: Date?) -> (start: Date?, mint: Bool) {
+        switch keychain {
+        case .found(let data):
+            if let text = String(data: data, encoding: .utf8), let ts = Double(text) {
+                return (Date(timeIntervalSince1970: ts), false)
+            }
+            return (mirror, mirror == nil)   // an unreadable value is as good as a missing one
+        case .missing:
+            return (mirror, mirror == nil)
+        case .sealed:
+            return (mirror, false)
+        }
     }
 
     /// Pure (unit-tested; BACKLOG 66). A purchase first; then Early-Access — a member for good,
@@ -318,14 +350,20 @@ final class ProEntitlements: ObservableObject {
     static var debugTrialStartOverride: Date?
     #endif
 
+    /// The trial start's UserDefaults mirror alone — the fast/offline copy the getter below
+    /// falls back to. The Keychain is the authority; a locked device seals it (see `refresh`).
+    private static var mirroredTrialStart: Date? {
+        let local = UserDefaults.standard.double(forKey: trialStartKey)
+        return local > 0 ? Date(timeIntervalSince1970: local) : nil
+    }
+
     static var storedTrialStart: Date? {
         get {
             #if DEBUG
             if let override = debugTrialStartOverride { return override }
             #endif
             if let fromKeychain = KeychainService.trialStart { return fromKeychain }
-            let local = UserDefaults.standard.double(forKey: trialStartKey)
-            return local > 0 ? Date(timeIntervalSince1970: local) : nil
+            return mirroredTrialStart
         }
         set {
             guard let newValue else { return }   // one-way: a trial start is never cleared

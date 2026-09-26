@@ -17,6 +17,23 @@ struct EventLogView: View {
 
     private var unsyncedCount: Int { EventStore.unsyncedCount(in: eventStore.events) }
 
+    /// Pure (unit-tested; item 79): the banner's spinner shows for this screen's own request OR
+    /// for a sweep anyone else started. The engine turns a second caller away at once while a
+    /// sweep runs, so the screen's own flag alone dropped the spinner mid-sync.
+    nonisolated static func bannerShowsSpinner(viewRetrying: Bool, sweepActive: Bool) -> Bool {
+        viewRetrying || sweepActive
+    }
+
+    /// Pure (unit-tested; item 79): the banner's second line. iCloud being unavailable is the
+    /// bigger news and keeps its instruction; otherwise, while the sweep waits out a throttle
+    /// or an outage between passes, the banner says so — the count has stopped moving, and
+    /// without a reason that reads as stuck.
+    nonisolated static func bannerCaption(accountReady: Bool, sweepWaiting: Bool) -> String? {
+        if !accountReady { return "Sign in to iCloud and confirm the app's CloudKit setup, then tap Retry." }
+        if sweepWaiting { return "Uploads are paused for a moment. The rest will continue automatically." }
+        return nil
+    }
+
     var body: some View {
         Group {
             if eventStore.events.isEmpty {
@@ -59,15 +76,16 @@ struct EventLogView: View {
                      : "iCloud unavailable - \(cloud.accountState.displayName)")
                     .font(.caption)
                 Spacer()
-                if isRetrying {
+                if Self.bannerShowsSpinner(viewRetrying: isRetrying, sweepActive: engine.pendingSweepActive) {
                     ProgressView()
                 } else {
                     Button("Retry") { Task { await retry() } }
                         .font(.caption.weight(.semibold))
                 }
             }
-            if !cloud.accountState.isReady {
-                Text("Sign in to iCloud and confirm the app's CloudKit setup, then tap Retry.")
+            if let caption = Self.bannerCaption(accountReady: cloud.accountState.isReady,
+                                                sweepWaiting: engine.pendingSweepWaiting) {
+                Text(caption)
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

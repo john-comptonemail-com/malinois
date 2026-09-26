@@ -1100,3 +1100,44 @@ final class EventStore: ObservableObject {
         Log.store.info("Reconciled \(queued.count, privacy: .public) queued event(s) with the log on unlock")
     }
 }
+
+#if DEBUG
+// MARK: - A seeded backlog for item 79's device legs (Debug builds only)
+
+extension EventStore {
+    /// Debug-only (item 79's device legs), pure (unit-tested): the backlog a long stretch in
+    /// Airplane Mode leaves behind (the owner's, 2026-09-20) — arm/disarm audit records that never
+    /// reached iCloud, alternating from "armed", one second apart, oldest first, the newest dated
+    /// `endingAt`. First-hand records, not mirrors, so the pending sweep uploads them.
+    nonisolated static func seededBacklog(count: Int, endingAt end: Date) -> [Event] {
+        guard count > 0 else { return [] }
+        return (0..<count).map { i in
+            let at = end.addingTimeInterval(Double(i - (count - 1)))
+            return Event(startDate: at, endDate: at, triggeredSensors: [],
+                         cloudSyncState: .localOnly,
+                         stateChange: i.isMultiple(of: 2) ? "armed" : "disarmed")
+        }
+    }
+
+    /// Pure (unit-tested): how many seeded records fit. The free room first; past the cap, only as
+    /// many as there are mirrored copies to displace — the log's own first choice when full
+    /// (`countEvictionOrder`'s mirror pass), because iCloud still holds them and a pull brings them
+    /// back. An event only this device holds is never pushed out for test data.
+    nonisolated static func seedRoom(requested: Int, current: Int, cap: Int, mirrored: Int) -> Int {
+        max(0, min(requested, cap - current + max(0, mirrored)))
+    }
+
+    /// Debug-only: adds up to `count` seeded records and returns how many were added and how many
+    /// mirrored copies the log dropped to make room. Oldest first, so the log stays newest-first.
+    /// Starts no upload: the natural triggers do that (a reconnect, the foreground, opening the
+    /// Event Log), and those are what the legs exercise.
+    @discardableResult
+    func seedUnsyncedBacklogForTesting(count: Int, now: Date = Date()) -> (added: Int, droppedCopies: Int) {
+        let copiesBefore = events.lazy.filter(\.isMirrored).count
+        let room = Self.seedRoom(requested: count, current: events.count, cap: Self.maxEvents,
+                                 mirrored: copiesBefore)
+        for event in Self.seededBacklog(count: room, endingAt: now) { add(event) }
+        return (room, copiesBefore - events.lazy.filter(\.isMirrored).count)
+    }
+}
+#endif

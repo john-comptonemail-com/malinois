@@ -57,6 +57,8 @@
 		E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */; };
 		E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */; };
 		E1D2C3D4E5F600000000000C /* Item73RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */; };
+		E1D2C3D4E5F600000000000D /* Item77RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000D /* Item77RegressionTests.swift */; };
+		E1D2C3D4E5F600000000000E /* Item79RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000E /* Item79RegressionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +127,8 @@
 		D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisarmEntryCoordinatorTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item65RegressionTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item73RegressionTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000000D /* Item77RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item77RegressionTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000000E /* Item79RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item79RegressionTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000200 /* MalinoisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MalinoisTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -268,6 +272,8 @@
 				D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */,
 				D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */,
 				D1D2C3D4E5F600000000000C /* Item73RegressionTests.swift */,
+				D1D2C3D4E5F600000000000D /* Item77RegressionTests.swift */,
+				D1D2C3D4E5F600000000000E /* Item79RegressionTests.swift */,
 			);
 			path = MalinoisTests;
 			sourceTree = "<group>";
@@ -427,6 +433,8 @@
 				E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */,
 				E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */,
 				E1D2C3D4E5F600000000000C /* Item73RegressionTests.swift in Sources */,
+				E1D2C3D4E5F600000000000D /* Item77RegressionTests.swift in Sources */,
+				E1D2C3D4E5F600000000000E /* Item79RegressionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -556,7 +564,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 47;
+				CURRENT_PROJECT_VERSION = 48;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -566,7 +574,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.1;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -584,7 +592,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 47;
+				CURRENT_PROJECT_VERSION = 48;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -594,7 +602,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.1;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -613,7 +621,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.3.1;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -630,7 +638,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.3.1;
+				MARKETING_VERSION = 1.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

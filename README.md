@@ -45,6 +45,8 @@ Solo project, no dates, and everything here is subject to change — or to being
 
 **Shipped in 1.3.1** — the fixes from the September review pass: a cancelled countdown leaves a record and alerts your other devices, the Side Button coaching for Guided Access, and the app now says when its own log or journal is in trouble.
 
+**Shipped in 1.3.2** — the rest of the September review fixes: the record comes first (a jamming blackout or a sustained flood is logged before the alarm), fewer stray records, and fixes for clips and the camera; and the Event Log's sync spinner now stays up until every record has reached iCloud.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.

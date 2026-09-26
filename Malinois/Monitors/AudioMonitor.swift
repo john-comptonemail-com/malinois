@@ -141,6 +141,7 @@ final class AudioMonitor: SensorMonitor {
         makeRecorderIfNeeded()
         calibrating = true
         calibrationSamples.removeAll()
+        meterTimer?.invalidate()   // never assign over a live timer: the old one would tick for the life of the process (item 65, finding 17)
         meterTimer = Timer.commonMode(interval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.calibrating else { return }
@@ -179,6 +180,7 @@ final class AudioMonitor: SensorMonitor {
         warmupSamples = Self.warmupSampleCount(afterCalibration: baselineFresh)
         baselineFresh = false
         warmupBuffer.removeAll()
+        meterTimer?.invalidate()   // as in `beginCalibration` (item 65, finding 17)
         meterTimer = Timer.commonMode(interval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.evaluate() }
         }

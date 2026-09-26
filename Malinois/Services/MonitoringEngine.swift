@@ -172,6 +172,9 @@ final class MonitoringEngine: ObservableObject {
     /// straight to calibrating and learn garbage (BACKLOG 12). Nil once calibrating/running.
     @Published private(set) var dryRunCountdown: Int?
     nonisolated static let dryRunSettleSeconds = 3
+    /// Bumped by a re-calibration or a stop, so the completion of a calibration that was
+    /// abandoned mid-flight finds itself stale and does nothing (item 65, finding 17).
+    private var dryRunGeneration = 0
     private var dryRunSettleTimer: Timer?
 
     // MARK: - Collaborators
@@ -384,18 +387,25 @@ final class MonitoringEngine: ObservableObject {
 
     // MARK: - Init
 
+    /// Whether the device's protected data — the event log's class-B files among it — is
+    /// readable and writable right now. Injected so a test can stage a locked launch
+    /// (item 65, finding 18); production reads UIKit.
+    private let protectedDataAvailable: @MainActor () -> Bool
+
     init(settings: AppSettings,
          eventStore: EventStore,
          cloud: CloudExfiltrator,
          camera: any EvidenceCamera,
          entitlements: ProEntitlements,
-         timing: EngineTiming = .production) {
+         timing: EngineTiming = .production,
+         protectedDataAvailable: @escaping @MainActor () -> Bool = { UIApplication.shared.isProtectedDataAvailable }) {
         self.settings = settings
         self.eventStore = eventStore
         self.cloud = cloud
         self.camera = camera
         self.entitlements = entitlements
         self.timing = timing
+        self.protectedDataAvailable = protectedDataAvailable
         self.capturePipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
         self.disarmEntry = DisarmEntryCoordinator(timing: timing)
         self.eventCount = eventStore.events.count
@@ -449,6 +459,12 @@ final class MonitoringEngine: ObservableObject {
     /// the Pro check can possibly have resolved, so a retry fired from here always
     /// no-oped behind its Pro gate (fifth review, R1.2).
     private func recoverInterruptedSessionIfNeeded() {
+        // Item 65, finding 18: a push can launch the app while the device is locked. Consuming
+        // the marker and boot stamp now, the record below goes into a store that cannot
+        // persist until the unlock — and if iOS ended the process first, the interruption was
+        // gone for good (the owed re-arm survived; the evidence did not). Wait for the unlock,
+        // everything untouched, and run once then. The re-arm defers to the foreground anyway.
+        guard protectedDataAvailable() else { observeProtectedDataForRecovery(); return }
         let defaults = UserDefaults.standard
         // Read (and clear) the boot stamp planted with the marker, and classify the ending —
         // the device restarted, or only the app ended (BACKLOG 53). A marker with no stamp
@@ -470,7 +486,13 @@ final class MonitoringEngine: ObservableObject {
         let armingInterrupted = defaults.bool(forKey: Self.armingInProgressKey)
         if armingInterrupted { defaults.removeObject(forKey: Self.armingInProgressKey) }
         guard markerPresent || reArmOwed || recoveryInterrupted else {
-            if armingInterrupted { logStateChange("armingInterrupted") }
+            if armingInterrupted {
+                // A swipe-away during the countdown logged the lapse at background time; that
+                // record IS this interruption, and a second one said it twice (item 74, line 6).
+                let lapseLogged = defaults.bool(forKey: Self.backgroundLapseLoggedKey)
+                defaults.removeObject(forKey: Self.backgroundLapseLoggedKey)
+                if !lapseLogged { logStateChange("armingInterrupted") }
+            }
             return
         }
         if recoveryInterrupted { defaults.removeObject(forKey: Self.recoveryInProgressKey) }
@@ -645,15 +667,19 @@ final class MonitoringEngine: ObservableObject {
         guard state.isActive else { return }
         UserDefaults.standard.set(true, forKey: Self.backgroundLapseLoggedKey)
         Log.engine.warning("Armed session sent to the background; monitoring has stopped")
-        logInterruptedSession(cause: Self.backgroundInterruptionCause(guidedAccessOn: guidedAccessEnabled))
+        logInterruptedSession(cause: Self.backgroundInterruptionCause(guidedAccessOn: guidedAccessEnabled,
+                                                                      duringCountdown: state == .arming))
     }
 
-    /// Pure (unit-tested; review 3, R3.3): what sent an active session to the background.
-    /// Under Guided Access nothing but the lock button can — no app switcher, no Home, calls to
-    /// voicemail — so the lapse is named a lock; without it a swipe-away is as likely, and the
-    /// generic cause stands.
-    nonisolated static func backgroundInterruptionCause(guidedAccessOn: Bool) -> InterruptionCause {
-        guidedAccessOn ? .locked : .backgrounded
+    /// Pure (unit-tested; review 3, R3.3 + item 74, line 6): what sent an active session to the
+    /// background. During the countdown the watch is not live yet, and the lapse is named for
+    /// the countdown so the relaunch does not record the same interruption twice. Under Guided
+    /// Access nothing but the lock button can background a live watch — no app switcher, no
+    /// Home, calls to voicemail — so that lapse is named a lock; without it a swipe-away is as
+    /// likely, and the generic cause stands.
+    nonisolated static func backgroundInterruptionCause(guidedAccessOn: Bool, duringCountdown: Bool) -> InterruptionCause {
+        if duringCountdown { return .backgroundedDuringCountdown }
+        return guidedAccessOn ? .locked : .backgrounded
     }
 
     /// Logs the interruption record. `cause` is what could be told about the ending — a
@@ -732,6 +758,21 @@ final class MonitoringEngine: ObservableObject {
         monitors[monitor.type] = monitor
         monitor.onTrip = { [weak self] type in self?.handleTrip(type) }
     }
+
+    /// Test-only (item 77): drives the connectivity monitor by hand, so a test can take the
+    /// engine offline at a chosen moment — the simulator's own path never drops. See
+    /// `ConnectivityMonitor.simulateForTesting(online:)`.
+    func simulateConnectivityForTesting(online: Bool) {
+        connectivity.simulateForTesting(online: online)
+    }
+
+    /// Test-only (item 79): stands in for iCloud inside the pending sweep — the account check
+    /// and each record's upload. The simulator has no CloudKit container, so without it no test
+    /// can drive a pass. The closure returns the sync state the record lands in and, like
+    /// `CloudExfiltrator.save`, may report the transient failure that made it give up.
+    var sweepUploadForTesting: ((Event) async -> (state: CloudSyncState,
+                                                   transient: CloudExfiltrator.TransientFailure?))?
+    private var sweepTransientForTesting: CloudExfiltrator.TransientFailure?
     #endif
 
     /// A CloudKit push means another of the owner's devices just recorded a tamper. Pull the
@@ -767,9 +808,22 @@ final class MonitoringEngine: ObservableObject {
     /// was still running, so the system was free to suspend the app mid-copy. The push exists
     /// precisely so the evidence reaches a second device; being suspended halfway defeats it.
     func handleRemotePush() async -> UIBackgroundFetchResult {
+        // A push that cold-launches the app arrives while the entitlement check is still
+        // running; deciding "free tier, nothing to pull" on the unresolved default skipped
+        // the fetch, and the mirrored record landed only when the owner next opened the app
+        // (item 65, finding 10). Wait for the answer — bounded, iOS's patience is finite.
+        await awaitEntitlementResolution(bound: timing.pushResolveWait)
         let added = await syncFromCloud()
         return Self.pushResult(pro: entitlements.proActive,
                                fetchFailed: cloud.lastFetchFailed, added: added)
+    }
+
+    /// Returns once the entitlement check has resolved, or after `bound` — whichever first.
+    private func awaitEntitlementResolution(bound: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(bound)
+        while !entitlements.hasResolved, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 
     /// Pure (unit-tested). `.failed` is reported only for a query that genuinely failed — a
@@ -778,6 +832,26 @@ final class MonitoringEngine: ObservableObject {
         guard pro else { return .noData }        // the free tier has no cloud to pull from
         if fetchFailed { return .failed }
         return added > 0 ? .newData : .noData
+    }
+
+    /// The one-shot unlock observer behind the locked-launch deferral above (item 65,
+    /// finding 18). Idempotent: only the first locked launch arms it.
+    private var protectedDataRecoveryObserver: NSObjectProtocol?
+
+    private func observeProtectedDataForRecovery() {
+        guard protectedDataRecoveryObserver == nil else { return }
+        protectedDataRecoveryObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let token = self.protectedDataRecoveryObserver {
+                        NotificationCenter.default.removeObserver(token)
+                    }
+                    self.protectedDataRecoveryObserver = nil
+                    self.recoverInterruptedSessionIfNeeded()   // re-checks; re-arms the observer if re-locked meanwhile
+                }
+            }
     }
 
     private func observeGuidedAccess() {
@@ -960,6 +1034,7 @@ final class MonitoringEngine: ObservableObject {
         camera.clipAudio = Self.clipAudioAllowed(setting: settings.clipAudio,
                                                  micGranted: AVAudioApplication.shared.recordPermission == .granted)
         recoveredInterruptedSession = false   // dismiss the recovery note once re-arming
+        visionTapUnavailable = false          // last session's verdict on the tap is not this session's (item 65, finding 15)
         cloudPushRefused = false              // a new watch gets a fresh verdict (32.R1)
         cloudResetNotice = nil                // the pending badges carry the story from here
         armWasAutoRecovered = false           // a manual arm is user-initiated (cancellable)
@@ -1451,6 +1526,9 @@ final class MonitoringEngine: ObservableObject {
         latchedSensors.removeAll()
         sensorTripTimes.removeAll()
         recentTriggerTimes.removeAll()   // F8: don't inherit a prior session's aggregate-flood count
+        sustainedEvent = nil             // nor its flood anchor (item 65, finding 11)
+        lastFloodCapture = nil
+        lastFloodPersist = nil
         // Canary baseline: only a *loss* of a path we had at arm is suspicious.
         // Snapshot the OBSERVED reading, not the optimistic default (R1-L2): before NWPath's
         // first report — the crash-recovery re-arm at launch — "had a path at arm" must be
@@ -1490,6 +1568,7 @@ final class MonitoringEngine: ObservableObject {
         showingCalibrationReview = false
         state = .armed
         engageCovertScreen()
+        recheckBlackoutOnReturnToArmed()   // a path lost during the review (item 65, finding 8)
     }
 
     private func applyEnabledAndSensitivity() {
@@ -1905,13 +1984,39 @@ final class MonitoringEngine: ObservableObject {
             }
         } else {
             if offlineSince == nil { offlineSince = Date() }   // the transition, not a re-report
-            guard state == .armed, hadConnectivityAtArm, settings.jammingResponse else { return }
-            // Debounce a total loss before treating it as suspected jamming.
-            blackoutTimer?.invalidate()
-            blackoutTimer = Timer.commonMode(interval: blackoutDebounce, repeats: false) { [weak self] _ in
-                Task { @MainActor in self?.evaluateBlackout() }
-            }
+            // Debounce a total loss before treating it as suspected jamming — for any live
+            // watch, not only while `.armed`: a loss that begins during a capture or the
+            // calibration review is looked at again the moment the engine is armed
+            // (`recheckBlackoutOnReturnToArmed`; item 65, finding 8). `evaluateBlackout`
+            // keeps the armed gate, so nothing escalates from a state that can't.
+            guard state.isActive, hadConnectivityAtArm, settings.jammingResponse else { return }
+            scheduleBlackoutCheck(after: blackoutDebounce)
         }
+    }
+
+    private func scheduleBlackoutCheck(after delay: TimeInterval) {
+        blackoutTimer?.invalidate()
+        blackoutTimer = Timer.commonMode(interval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.evaluateBlackout() }
+        }
+    }
+
+    /// Item 65, finding 8: the canary's one-shot check fires on the debounce after the path
+    /// dropped; if the engine was busy then — a capture in flight, the calibration review — the
+    /// check declined and nothing looked again, so a loss in the last seconds of any capture
+    /// was never treated as jamming for that blackout. Called on every return to `.armed`:
+    /// with the path still down and nothing escalated, the check runs once the loss has
+    /// lasted the debounce — now, if it already has.
+    private func recheckBlackoutOnReturnToArmed() {
+        guard state == .armed, !connectivity.isOnline, let since = offlineSince,
+              !blackoutEscalated, hadConnectivityAtArm, settings.jammingResponse else { return }
+        scheduleBlackoutCheck(after: Self.blackoutRecheckDelay(offlineFor: Date().timeIntervalSince(since),
+                                                               debounce: blackoutDebounce))
+    }
+
+    /// Pure (unit-tested): the part of the debounce a loss still owes, never less than a beat.
+    nonisolated static func blackoutRecheckDelay(offlineFor: TimeInterval, debounce: TimeInterval) -> TimeInterval {
+        max(debounce - offlineFor, 0.05)
     }
 
     private func evaluateBlackout() {
@@ -1921,9 +2026,15 @@ final class MonitoringEngine: ObservableObject {
                                           hadConnectivityAtArm: hadConnectivityAtArm,
                                           stationary: isStationary,
                                           alreadyEscalated: blackoutEscalated) else { return }
+        // Evidence precedes response (SECURITY.md): the interference record is in the log
+        // before the siren sounds; the frame grab follows it (item 65, finding 16). The
+        // session's cloud authorization is decided WITH the record (sixth-review F3), so a
+        // disarm or trial expiry during the grab can't split the event across tiers.
+        let record = logBlackoutRecord()
+        let sessionAllowed = cloudAllowed
         escalate(.blackout)
         // A jammer setting up is likely nearby — grab a frame while we're loud.
-        Task { await captureBlackoutEvidence() }
+        Task { await captureBlackoutEvidence(for: record, cloudAllowed: sessionAllowed) }
     }
 
     /// Pure decision (unit-tested): a stationary armed device that had a path at arm
@@ -1999,17 +2110,18 @@ final class MonitoringEngine: ObservableObject {
         refreshBrightness()
     }
 
-    /// Captures a still on a suspected-jamming blackout and logs it (sensorless,
-    /// flagged offline) so there's evidence and a record even with no sensor trip.
-    private func captureBlackoutEvidence() async {
-        // Always LOG the blackout (a suspected-jamming record), even with the camera
-        // OFF — the *fact* of the interference matters more than the photo, and the
-        // whole point is that it survives (F-16). Only the frame grab is camera-gated.
-        // Carry the sensor traces (as the flood path does). For a suspected jamming record the
-        // motion trace is the most probative thing available: it evidences that the device was
-        // sitting still while every network path vanished, which is the whole basis for calling
-        // it jamming rather than a device carried out of coverage.
-        var event = Event(startDate: Date(), endDate: Date(),
+    /// Logs a suspected-jamming blackout (a sensorless record, flagged offline) and gets the
+    /// fact out — synchronously, so the record exists BEFORE the escalation that follows it
+    /// (item 65, finding 16). Always, even with the camera OFF: the *fact* of the interference
+    /// matters more than the photo, and the whole point is that it survives (F-16). Only the
+    /// frame grab, `captureBlackoutEvidence(for:cloudAllowed:)`, is camera-gated.
+    ///
+    /// Carries the sensor traces (as the flood path does). For a suspected jamming record the
+    /// motion trace is the most probative thing available: it evidences that the device was
+    /// sitting still while every network path vanished, which is the whole basis for calling
+    /// it jamming rather than a device carried out of coverage.
+    private func logBlackoutRecord() -> Event {
+        let event = Event(startDate: Date(), endDate: Date(),
                           triggeredSensors: [],
                           motionTrace: monitors[.motion]?.recentTrace() ?? [],
                           audioTrace: monitors[.audio]?.recentTrace() ?? [],
@@ -2018,12 +2130,14 @@ final class MonitoringEngine: ObservableObject {
                           capturedOffline: true)
         eventStore.add(event)
         eventCount = eventStore.events.count
-        let fact = event
-        pushFactIfCloud(fact)   // get the fact out immediately (Pro only)
-        // The session's cloud authorization, decided WITH the record (sixth-review F3):
-        // sampled before the capture below, so a disarm or trial expiry mid-capture can't
-        // split this event across tiers (P-01's live-session no-downgrade).
-        let sessionAllowed = cloudAllowed
+        pushFactIfCloud(event)   // get the fact out immediately (Pro only)
+        return event
+    }
+
+    /// The frame grab for a blackout record already in the log, pushed under the cloud
+    /// authorization decided with that record (P-01's live-session no-downgrade).
+    private func captureBlackoutEvidence(for logged: Event, cloudAllowed sessionAllowed: Bool) async {
+        var event = logged
 
         if settings.isEnabled(.camera),
            Self.mayRunCadenceCapture(handlingTrigger: isHandlingTrigger,
@@ -2314,6 +2428,7 @@ final class MonitoringEngine: ObservableObject {
     /// button is itself handling, and that is exactly the noise calibration must not learn.
     func recalibrateDryRun() {
         guard dryRunActive, dryRunCountdown == nil else { return }
+        dryRunGeneration += 1   // a calibration in flight is abandoned: its completion must not fire
         for (_, m) in monitors { m.stop() }
         dryRunTimer?.invalidate(); dryRunTimer = nil
         dryRunTrips = [:]
@@ -2343,8 +2458,12 @@ final class MonitoringEngine: ObservableObject {
     /// The calibrate-then-watch half of the dry run, after the settle countdown has elapsed.
     private func beginDryRunCalibration() {
         for (_, m) in monitors where m.isEnabled && m.requiresCalibration { m.beginCalibration() }
+        let generation = dryRunGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + calibrationDuration) { [weak self] in
-            guard let self, self.dryRunActive else { return }
+            // Stale after a Recalibrate or a stop: the monitors were stopped and a new settle
+            // countdown is running — ending "this" calibration would end the NEW one early and
+            // start the monitors mid-settle (item 65, finding 17).
+            guard let self, self.dryRunActive, self.dryRunGeneration == generation else { return }
             for (_, m) in self.monitors where m.isEnabled && m.requiresCalibration { m.endCalibration() }
             self.lastCalibration = self.makeCalibrationSummary()
             for (_, m) in self.monitors where m.isEnabled { m.start() }
@@ -2365,6 +2484,7 @@ final class MonitoringEngine: ObservableObject {
 
     func stopDryRun() {
         dryRunActive = false
+        dryRunGeneration += 1   // no calibration completion outlives the dry run
         dryRunTimer?.invalidate(); dryRunTimer = nil
         dryRunSettleTimer?.invalidate(); dryRunSettleTimer = nil
         dryRunCountdown = nil
@@ -2508,7 +2628,10 @@ final class MonitoringEngine: ObservableObject {
     }
 
     private func handleFloodTrigger(_ sensors: [SensorType]) {
-        if settings.jammingResponse { escalate(.flood) }   // abandon stealth — it's an attack
+        // Abandon stealth — it's an attack — but only once the record exists: here the anchor
+        // is the record; at the onset, `respond` escalates right after it writes the onset
+        // record (evidence precedes response; item 65, finding 16).
+        if sustainedEvent != nil, settings.jammingResponse { escalate(.flood) }
         if var ev = sustainedEvent {
             // Coalesce log spam, NOT evidence. Extend the one counter event, and still
             // capture on a bounded cadence so sustained real tampering keeps being shot.
@@ -2550,7 +2673,8 @@ final class MonitoringEngine: ObservableObject {
             lastTriggerDate = Date()
             let session = armSession
             lastFloodCapture = Date()   // onset capture resets the cadence clock
-            scheduleSustainedClear()
+            // The idle-clear is scheduled by `respond` when the anchor is installed — not here,
+            // before it exists (item 65, finding 11).
             Task { await respond(triggeredSensors: sensors, startDate: startDate, session: session, sustained: true) }
         }
     }
@@ -2674,6 +2798,10 @@ final class MonitoringEngine: ObservableObject {
         // entry): remember it, so a successful PIN can retroactively attribute it to the
         // owner instead of leaving self-disarm spam (R-02).
         disarmEntry.noteCandidateEvent(event.id)
+        // Flood onset: abandon stealth — it's an attack — now that the onset record is in the
+        // log (evidence precedes response; item 65, finding 16). Coalesced trips escalate from
+        // `handleFloodTrigger`, where the anchor already is the record.
+        if sustained, settings.jammingResponse { escalate(.flood) }
 
         // 1a. Shot 1 — get the FACT into iCloud NOW, before capture even starts, so
         //     the sub-second "the tamper survives a force-restart" guarantee holds
@@ -2743,8 +2871,11 @@ final class MonitoringEngine: ObservableObject {
                                                   reason: lastInterruption?.reason)
         event.captureFailure = failure?.rawValue
         // An interruption-class failure gets one bounded retry when the interruption ends
-        // (item 54) — a still for this event, if the session is still armed by then.
-        if let failure, failure.isInterruption {
+        // (item 54) — a still for this event, if the session is still armed by then. Parked
+        // only while the session that failed the capture is still the live one: a retry never
+        // crosses a disarm, and a late capture must not re-park what `disarm()` cleared
+        // (item 65, finding 11).
+        if let failure, failure.isInterruption, session == armSession {
             captureRetry = CaptureRetry(eventID: event.id, camera: captureCamera,
                                         failedAt: Date(), cloudAllowed: sessionAllowed)
         }
@@ -2767,9 +2898,16 @@ final class MonitoringEngine: ObservableObject {
         // capture ran (owner attribution at disarm — sixth-review F2), and the upload below
         // must carry them, or the rich push regresses the cloud record to unattributed.
         let merged = eventStore.events.first { $0.id == event.id } ?? event
-        // Flood onset: this becomes the coalescing anchor — subsequent flood trips
-        // extend it instead of creating new events.
-        if sustained { sustainedEvent = merged }
+        // Flood onset: this becomes the coalescing anchor — subsequent flood trips extend it
+        // instead of creating new events — and its idle-clear starts NOW, with the anchor,
+        // not at the onset trip: an onset capture longer than the clear interval used to
+        // leave an anchor with no timer, and a flood hours later coalesced into it. Only for
+        // the live session: a late capture must not re-install an anchor `disarm()` cleared
+        // (item 65, finding 11).
+        if sustained, session == armSession {
+            sustainedEvent = merged
+            scheduleSustainedClear()
+        }
 
         // 4. Exfiltrate in the background — ALWAYS, even if the owner disarmed
         //    mid-capture (e.g. they grabbed the phone back from a tamperer). The
@@ -2926,13 +3064,24 @@ final class MonitoringEngine: ObservableObject {
     /// After marking events owner-attributed locally, re-push their (tiny) meta so the
     /// CloudKit copy and any cross-device alert reflect it too — otherwise the flag only
     /// ever exists on-device (R-06). Deterministic record IDs make it a cheap upsert.
+    ///
+    /// A re-push that does not land reopens the record for the pending sweep (item 65,
+    /// finding 3): the record was `.synced` — terminal — so a fire-and-forget failure left
+    /// the attribution on this device forever. Reopened, the sweep carries it up on the
+    /// next chance (the media re-uploads with it: an upsert of bytes the cloud already
+    /// holds, the price of a rare failure path staying simple).
     private func reExfiltrateOwnerAttributed(_ ids: Set<UUID>) {
+        guard cloudAllowed else { return }
         let updated = eventStore.events.filter { ids.contains($0.id) }
-        for ev in updated { pushFactIfCloud(ev) }
+        for ev in updated {
+            Task {
+                let landed = await cloud.pushFact(ev)
+                handleEncryptedDataResetIfNeeded()   // R3-2: fact pushes consume the reset flag too
+                if !landed { eventStore.reopenForReupload(ev.id) }
+            }
+        }
     }
 
-    /// Retries CloudKit upload for any events not yet synced. Called when the user
-    /// opens the event log, so stuck/offline events catch up once iCloud is ready.
     /// Pulls mirrored evidence down from iCloud and folds it into the local log (BACKLOG 9b).
     ///
     /// This is the app's first-ever CloudKit **read**. Two deliberate constraints, both from
@@ -3141,32 +3290,185 @@ final class MonitoringEngine: ObservableObject {
     /// the next sweep.
     private var retryingSync = false
 
+    /// True for the whole life of a pending sweep, whoever started it — the foreground, a
+    /// reconnect, the launch, or the Event Log (item 79). The log's banner used to show its
+    /// spinner only for its OWN request, which the single-flight guard turns away at once when
+    /// a sweep is already running: the spinner vanished while rows were still turning green.
+    @Published private(set) var pendingSweepActive = false
+    /// True while the sweep waits out a throttle or an outage between passes (item 79). The
+    /// banner says so, because a count that has stopped moving otherwise reads as stuck.
+    @Published private(set) var pendingSweepWaiting = false
+
+    /// The most passes one sweep may make, and how many in a row may land nothing (item 79).
+    nonisolated static let sweepMaxPasses = 20
+    nonisolated static let sweepMaxIdlePasses = 3
+    /// How many records in a row may fail, with no wait named by the server, before a pass
+    /// takes it for an outage and stops handing out more (item 79; see `sweepDoorClosed`).
+    nonisolated static let sweepMaxFailuresInARow = 3
+
+    /// Pure (unit-tested; item 79): after a pass, how long to wait before the next — or nil to
+    /// stop. Another pass is earned only by a TRANSIENT failure (a throttle, an outage, a lost
+    /// response) with a network path up: a refusal is an answer the next trigger can re-ask,
+    /// and an offline device has the reconnect trigger. The wait is the server's own
+    /// Retry-After when it sent one, else a doubling fallback, clamped to the timing's floor
+    /// and ceiling; the pass and idle-pass caps bound a sweep that is getting nowhere.
+    nonisolated static func sweepFollowUpDelay(remaining: Int,
+                                               transient: CloudExfiltrator.TransientFailure?,
+                                               online: Bool, pass: Int, idlePasses: Int,
+                                               floor: TimeInterval, ceiling: TimeInterval) -> TimeInterval? {
+        guard remaining > 0, let transient, online,
+              pass < sweepMaxPasses, idlePasses < sweepMaxIdlePasses else { return nil }
+        let wanted = transient.retryAfter ?? floor * pow(2, Double(idlePasses))
+        guard !wanted.isNaN else { return floor }   // never a number the sleep cannot take
+        return min(max(wanted, floor), ceiling)
+    }
+
+    /// The sweep's view of the account: iCloud's own answer — or, under the test seam, yes.
+    private func sweepAccountReady() async -> Bool {
+        #if DEBUG
+        if sweepUploadForTesting != nil { return true }
+        #endif
+        await cloud.refreshAccountState()
+        return cloud.accountState.isReady
+    }
+
+    /// The transient failure this pass has met, if any: the cloud sender's own report — or,
+    /// under the test seam, the closure's.
+    private var sweepTransient: CloudExfiltrator.TransientFailure? {
+        #if DEBUG
+        if sweepUploadForTesting != nil { return sweepTransientForTesting }
+        #endif
+        return cloud.lastTransientFailure
+    }
+
+    private func clearSweepTransient() {
+        #if DEBUG
+        sweepTransientForTesting = nil
+        #endif
+        cloud.clearTransientFailure()
+    }
+
+    /// What a pass learns from one record's upload (item 79): whether it landed, and the
+    /// transient failure standing in the pass so far, whichever record's save reported it.
+    private struct SweepUploadOutcome: Sendable {
+        let landed: Bool
+        let transient: CloudExfiltrator.TransientFailure?
+    }
+
+    /// Pure (unit-tested; item 79): whether a pass stops handing out records. The server
+    /// naming a wait closes the door at once: that answer is about this device, not about one
+    /// record, and everything handed out after it would spend its attempts for nothing. A
+    /// transient failure WITHOUT a named wait (a lost path, a lost response, a stalled save)
+    /// closes it only when several records in a row have failed with none landing in between,
+    /// which is what an outage looks like — one record that cannot get through, a large clip
+    /// on a slow link, must not hold the others back. Refusals never close it: each record
+    /// gets its one attempt, as before.
+    nonisolated static func sweepDoorClosed(transient: CloudExfiltrator.TransientFailure?,
+                                            failuresInARow: Int) -> Bool {
+        guard let transient else { return false }
+        return transient.retryAfter != nil || failuresInARow >= sweepMaxFailuresInARow
+    }
+
+    /// One record's upload inside the sweep.
+    private func sweepUpload(_ event: Event) async -> SweepUploadOutcome {
+        #if DEBUG
+        if let upload = sweepUploadForTesting {
+            let outcome = await upload(event)
+            eventStore.setSyncState(outcome.state, for: event.id)
+            if let transient = outcome.transient { sweepTransientForTesting = transient }
+            return SweepUploadOutcome(landed: outcome.state == .synced, transient: sweepTransient)
+        }
+        #endif
+        await exfiltrate(event)
+        let landed = eventStore.events.first { $0.id == event.id }?.cloudSyncState == .synced
+        return SweepUploadOutcome(landed: landed, transient: sweepTransient)
+    }
+
+    /// Uploads whatever has not reached iCloud yet: the pending sweep. Started by the launch,
+    /// every foreground, a reconnect, an encrypted-data reset's requeue, and the Event Log
+    /// (opening it, pull-to-refresh, Retry). Single-flight — see `retryingSync`.
+    ///
+    /// Returns when the FIRST pass is done, as it always has: the Event Log and the launch
+    /// both follow it with a pull, which must not sit behind a throttle's waits. When a pass
+    /// ends on a transient failure with records left, the sweep carries on by itself (item
+    /// 79): follow-up passes on the engine's own task, each after the wait
+    /// `sweepFollowUpDelay` names, until nothing is left or that rule says stop.
+    /// `pendingSweepActive` covers the whole of it, `pendingSweepWaiting` the waits.
     func retryPendingSync() async {
         guard entitlements.proActive else { return }   // cloud backup is Pro
         guard !retryingSync else { return }
         retryingSync = true
-        defer { retryingSync = false }
-        await cloud.refreshAccountState()
-        guard cloud.accountState.isReady else { return }
+        pendingSweepActive = true
+        guard await sweepAccountReady() else {
+            endPendingSweep()
+            return
+        }
+        await runSweepPass(1, idlePasses: 0)
+    }
+
+    private func endPendingSweep() {
+        retryingSync = false
+        pendingSweepActive = false
+    }
+
+    /// One pass over what is pending right now; then the sweep either ends or schedules its
+    /// next pass. `idlePasses` counts the passes before this one that landed nothing, in a row.
+    private func runSweepPass(_ pass: Int, idlePasses: Int) async {
+        clearSweepTransient()
         // Bounded concurrency: a day's worth of offline events, each doing up to a
         // few retries, would take tens of seconds run strictly serially (and hang
         // pull-to-refresh). Run a few at a time so badges clear quickly without
         // flooding CloudKit.
         let pending = eventStore.events.filter { $0.cloudSyncState != .synced }
         let maxConcurrent = 3
-        await withTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: SweepUploadOutcome.self) { group in
             var next = pending.makeIterator()
             for _ in 0..<maxConcurrent {
-                if let event = next.next() { group.addTask { await self.exfiltrate(event) } }
+                if let event = next.next() { group.addTask { await self.sweepUpload(event) } }
             }
-            while await group.next() != nil {
-                if let event = next.next() { group.addTask { await self.exfiltrate(event) } }
+            // A throttle or an outage closes the door for this pass (item 79; the rule is
+            // `sweepDoorClosed`): what is in flight finishes, and the rest waits for the
+            // follow-up pass. It used to be handed out regardless, each record spending its
+            // three attempts against a server that had just said "not now", and failing until
+            // the next trigger.
+            var failuresInARow = 0
+            var doorClosed = false
+            while let outcome = await group.next() {
+                failuresInARow = outcome.landed ? 0 : failuresInARow + 1
+                doorClosed = doorClosed || Self.sweepDoorClosed(transient: outcome.transient,
+                                                                failuresInARow: failuresInARow)
+                if !doorClosed, let event = next.next() { group.addTask { await self.sweepUpload(event) } }
             }
         }
         // R3-2 backstop: a sweep whose only traffic was state records (their branch consumes
         // now, but belt-and-braces) — and any flag raised between checks — is acted on at
-        // the tail, so no process ends holding a detected-but-ignored reset.
+        // the tail of every pass, so no process ends holding a detected-but-ignored reset.
         handleEncryptedDataResetIfNeeded()
+
+        let handedOut = Set(pending.map(\.id))
+        let landed = eventStore.events.filter { handedOut.contains($0.id) && $0.cloudSyncState == .synced }.count
+        let remaining = EventStore.unsyncedCount(in: eventStore.events)
+        let idle = landed > 0 ? 0 : idlePasses + 1
+        guard let wait = Self.sweepFollowUpDelay(remaining: remaining, transient: sweepTransient,
+                                                 online: connectivity.isOnline, pass: pass, idlePasses: idle,
+                                                 floor: timing.sweepWaitFloor,
+                                                 ceiling: timing.sweepWaitCeiling) else {
+            if pass > 1 || remaining > 0 {
+                Log.engine.info("Pending sweep ended at pass \(pass, privacy: .public): \(landed, privacy: .public) landed, \(remaining, privacy: .public) left")
+            }
+            endPendingSweep()
+            return
+        }
+        let asked = sweepTransient?.retryAfter.map { String(format: "%.0f s", $0) } ?? "no wait"
+        Log.engine.info("Pending sweep pass \(pass, privacy: .public): \(landed, privacy: .public) landed, \(remaining, privacy: .public) left; iCloud named \(asked, privacy: .public), next pass in \(wait, privacy: .public) s")
+        pendingSweepWaiting = true
+        // The follow-up pass belongs to the engine, not to whoever asked for the sweep: a
+        // screen's task is cancelled when the screen closes, and a cancelled wait is no wait.
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            self.pendingSweepWaiting = false
+            await self.runSweepPass(pass + 1, idlePasses: idle)
+        }
     }
 
     private func reArm() {
@@ -3178,6 +3480,7 @@ final class MonitoringEngine: ObservableObject {
         latchedSensors.removeAll()
         isHandlingTrigger = false
         state = .armed
+        recheckBlackoutOnReturnToArmed()   // a path lost during the capture (item 65, finding 8)
     }
 
     // MARK: - Disarm (PIN-gated by caller)
@@ -3377,6 +3680,13 @@ struct EngineTiming: Sendable {
     var captureRetryWindow: TimeInterval = 120
     /// Item 54: repeats of a camera runtime error inside this window are the same storm.
     var cameraErrorDebounce: TimeInterval = 60
+    /// Item 65, finding 10: how long a push that cold-launches the app waits for the
+    /// entitlement check before deciding whether there is a cloud to pull from.
+    var pushResolveWait: TimeInterval = 5
+    /// Item 79: the pending sweep's wait between passes after a throttle or an outage — never
+    /// shorter than the floor, never longer than the ceiling, whatever the server suggested.
+    var sweepWaitFloor: TimeInterval = 2
+    var sweepWaitCeiling: TimeInterval = 120
 
     static let production = EngineTiming()
 }

@@ -362,16 +362,19 @@ final class CloudExfiltrator: ObservableObject {
     /// Pushes ONLY the metadata record — the "fact" of the tamper (+ the cross-device
     /// alert) — so it reaches iCloud immediately, before a possibly-long clip finishes
     /// recording. The full meta (with thumbnail) + media follow later via `exfiltrate`.
-    func pushFact(_ event: Event) async {
+    /// Returns whether the record landed, so a caller re-pushing a record that was already
+    /// `.synced` can reopen it for the sweep when it did not (item 65, finding 3).
+    @discardableResult
+    func pushFact(_ event: Event) async -> Bool {
         await enqueue(event.id) { [self] in
             // The cached state is an optimization, not an authority: a single transient
             // `.couldNotDetermine` at arm must not silently kill exfiltration for the whole
             // watch. Re-check once if it looks unavailable, and abort only on a hard no.
             if !accountState.isReady { await refreshAccountState() }
-            guard accountState.canAttempt else { return }
+            guard accountState.canAttempt else { return false }
             let bgTask = beginBackgroundTask()
             defer { endBackgroundTask(bgTask) }
-            _ = await pushMetaRecord(event)
+            return await pushMetaRecord(event) == nil
         }
     }
 
@@ -1434,7 +1437,12 @@ final class CloudExfiltrator: ObservableObject {
                 return
             } catch {
                 guard attempt < maxAttempts,
-                      let delay = Self.retryDelay(for: error, attempt: attempt) else { throw error }
+                      let delay = Self.retryDelay(for: error, attempt: attempt) else {
+                    // Giving up. When the reason is transient, say so for the pending sweep,
+                    // which can wait as long as the server asked; this path cannot (item 79).
+                    if let transient = Self.transientFailure(from: error) { noteTransientFailure(transient) }
+                    throw error
+                }
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
@@ -1494,6 +1502,45 @@ final class CloudExfiltrator: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// What a save that finally FAILED for a transient reason tells the pending sweep (item 79):
+    /// that another pass is worth making, and how long the server asked the app to stay away —
+    /// the hint UNCAPPED, unlike `retryDelay`, whose 4 s ceiling exists for trigger-time pushes
+    /// racing a power-off. A sweep has no such race; honouring the server's number is the point.
+    struct TransientFailure: Equatable {
+        let retryAfter: TimeInterval?
+    }
+
+    /// Pure (unit-tested): nil for an error that is not worth another pass (auth, quota, a
+    /// record too large, anything unclassified); otherwise the transient failure, with the
+    /// server's own Retry-After when it sent one. The same transient set and the same
+    /// `.partialFailure` unwrapping as `retryDelay`, by construction: it asks `retryDelay`
+    /// for the class.
+    nonisolated static func transientFailure(from error: Error) -> TransientFailure? {
+        guard retryDelay(for: error, attempt: 1) != nil, var ck = error as? CKError else { return nil }
+        if ck.code == .partialFailure,
+           let inner = ck.partialErrorsByItemID?.values.compactMap({ $0 as? CKError }).first {
+            ck = inner
+        }
+        let hint = (ck as NSError).userInfo[CKErrorRetryAfterKey] as? TimeInterval
+        // A hint that is not a usable number is no hint: the sweep falls back to its own wait.
+        return TransientFailure(retryAfter: hint.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil })
+    }
+
+    /// Set by a save that GAVE UP on a transient failure — read by the pending sweep during
+    /// and after a pass, cleared before the next (item 79). When several saves give up between
+    /// clears, the longest wait the server asked for stands: coming back on the shortest would
+    /// walk into the door the longest one named. Main-actor state like the rest of the class;
+    /// the trigger-time paths set it too (it is the same server saying the same thing) and
+    /// never consult it.
+    private(set) var lastTransientFailure: TransientFailure?
+    func clearTransientFailure() { lastTransientFailure = nil }
+
+    /// Internal rather than private only so the longest-wait rule is pinned by a test.
+    func noteTransientFailure(_ failure: TransientFailure) {
+        let hints = [lastTransientFailure?.retryAfter, failure.retryAfter].compactMap { $0 }
+        lastTransientFailure = TransientFailure(retryAfter: hints.max())
     }
 
     /// Backoff for a transient CloudKit error: the server's suggested Retry-After

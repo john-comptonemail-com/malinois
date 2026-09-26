@@ -203,7 +203,7 @@ struct ArmingView: View {
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
                 instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
                 instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise a thief can turn the siren down.")
-                instruction(7, "Also in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile.")
+                instruction(7, "Also in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile. With it off, a press only shows the iOS banner that Guided Access is on, and the tripwires keep running.")
             }
             .padding()
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
