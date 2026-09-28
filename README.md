@@ -47,6 +47,8 @@ Solo project, no dates, and everything here is subject to change — or to being
 
 **Shipped in 1.3.2** — the rest of the September review fixes: the record comes first (a jamming blackout or a sustained flood is logged before the alarm), fewer stray records, and fixes for clips and the camera; and the Event Log's sync spinner now stays up until every record has reached iCloud.
 
+**Shipped in 1.3.3** — a fix: after Malinois is ended while armed (a crash, the app being closed, a restart), opening it again records the interruption and re-arms, as it did before 1.3.2.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.

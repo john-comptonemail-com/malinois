@@ -785,7 +785,8 @@ These are out of scope by design — Malinois does not claim to defend against t
   rather than silent — and the record says whether the **device restarted** or only the
   app ended (a boot-time stamp planted at arm is compared at relaunch), so a
   battery death or an OS panic reads differently from a force-quit. After a restart the
-  record appears at first unlock, not at the restart: the app cannot run before then. A thermal sentinel that alarms on the way *up* — before the OS gives
+  record appears once the phone is unlocked (normally when Malinois is next opened), not at
+  the restart: the app cannot read its own log before the first unlock. A thermal sentinel that alarms on the way *up* — before the OS gives
   out — is tracked in the project's backlog. Related, found on device (iOS 26.6): triggering the
   five-press Emergency SOS flow under Guided Access froze the phone until a force-restart —
   for evidence purposes it behaves like the force-restart race, because five button presses
@@ -886,7 +887,11 @@ These are out of scope by design — Malinois does not claim to defend against t
   kill itself captures nothing (the app is gone). But an armed marker persists from the
   moment the watch goes live — under the calibration card, not from the black screen — and the next
   launch's crash recovery logs a **"Monitoring interrupted"** event and pushes it, so the
-  interruption leaves a local record and alerts the owner's other devices. This is recorded
+  interruption leaves a local record and alerts the owner's other devices. When the app is
+  opened, the recovery runs straight away. When a notification wakes it in the background,
+  iOS can report the phone as locked even when it is not, and the recovery then waits for
+  the unlock or for the app to be opened, whichever comes first (ADR 0016): a record written
+  while the phone really is locked could be lost before it is saved. The record is written
   *before* the crash-loop guard runs, so even when a rapid series of kills correctly stops
   the auto-re-arm (to avoid re-arming into a loop), each one still alerts the owner. The
   record also says **what ended the session**: the kernel's boot time is stored
@@ -899,8 +904,8 @@ These are out of scope by design — Malinois does not claim to defend against t
   kill during one, leave records too: the one needs no PIN and used to leave nothing. A marker from a build before the stamp stays a bare
   "interrupted" rather than a guess. The one thing that can mislead the rule is a manual
   clock change of more than 30 s between arm and relaunch, which Guided Access rules out
-  while armed; after a restart the record appears at first unlock, since the app cannot run
-  before then.
+  while armed; after a restart the record appears once the phone is unlocked (normally when
+  Malinois is next opened), since the app cannot read its own log before then.
 - **The disarm PIN pad never reveals the stored PIN length** (no placeholder dots; an
   explicit submit), and Keychain writes update-in-place so a failed write can't destroy
   the PIN or reset the brute-force counter — and an in-process mirror of the count and the

@@ -389,7 +389,9 @@ final class MonitoringEngine: ObservableObject {
 
     /// Whether the device's protected data — the event log's class-B files among it — is
     /// readable and writable right now. Injected so a test can stage a locked launch
-    /// (item 65, finding 18); production reads UIKit.
+    /// (item 65, finding 18); production reads UIKit. UIKit answers false while the app is
+    /// still being built, even on an unlocked phone (item 85), so a false here only makes the
+    /// launch recovery wait — for the unlock, or for the app becoming active.
     private let protectedDataAvailable: @MainActor () -> Bool
 
     init(settings: AppSettings,
@@ -458,13 +460,19 @@ final class MonitoringEngine: ObservableObject {
     /// entitlement-resolution hook instead of running here: this method runs before
     /// the Pro check can possibly have resolved, so a retry fired from here always
     /// no-oped behind its Pro gate (fifth review, R1.2).
-    private func recoverInterruptedSessionIfNeeded() {
+    ///
+    /// `appIsActive`: the app has just become active, which settles the lock question — an app
+    /// on screen means an unlocked phone (item 85).
+    private func recoverInterruptedSessionIfNeeded(appIsActive: Bool = false) {
         // Item 65, finding 18: a push can launch the app while the device is locked. Consuming
         // the marker and boot stamp now, the record below goes into a store that cannot
         // persist until the unlock — and if iOS ended the process first, the interruption was
         // gone for good (the owed re-arm survived; the evidence did not). Wait for the unlock,
         // everything untouched, and run once then. The re-arm defers to the foreground anyway.
-        guard protectedDataAvailable() else { observeProtectedDataForRecovery(); return }
+        // Item 85: this runs inside `MalinoisApp.init`, where UIKit answers "locked" even on an
+        // unlocked phone, and an unlocked phone sends no unlock notice — 1.3.2 waited until the
+        // next lock and unlock. So the wait also ends when the app becomes active.
+        guard appIsActive || protectedDataAvailable() else { observeProtectedDataForRecovery(); return }
         let defaults = UserDefaults.standard
         // Read (and clear) the boot stamp planted with the marker, and classify the ending —
         // the device restarted, or only the app ended (BACKLOG 53). A marker with no stamp
@@ -834,24 +842,38 @@ final class MonitoringEngine: ObservableObject {
         return added > 0 ? .newData : .noData
     }
 
-    /// The one-shot unlock observer behind the locked-launch deferral above (item 65,
-    /// finding 18). Idempotent: only the first locked launch arms it.
+    /// The one-shot observers behind the locked-launch deferral above: the unlock (item 65,
+    /// finding 18) and the app becoming active (item 85), whichever comes first. Idempotent:
+    /// only the first locked launch arms them. The first to fire removes both, so the recovery
+    /// runs once — a second run would find the recovery countdown's own marker and record it as
+    /// a new interruption.
     private var protectedDataRecoveryObserver: NSObjectProtocol?
+    private var activeRecoveryObserver: NSObjectProtocol?
 
     private func observeProtectedDataForRecovery() {
         guard protectedDataRecoveryObserver == nil else { return }
-        protectedDataRecoveryObserver = NotificationCenter.default.addObserver(
+        let center = NotificationCenter.default
+        protectedDataRecoveryObserver = center.addObserver(
             forName: UIApplication.protectedDataDidBecomeAvailableNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let token = self.protectedDataRecoveryObserver {
-                        NotificationCenter.default.removeObserver(token)
-                    }
-                    self.protectedDataRecoveryObserver = nil
-                    self.recoverInterruptedSessionIfNeeded()   // re-checks; re-arms the observer if re-locked meanwhile
-                }
+                Task { @MainActor in self?.runDeferredRecovery(appIsActive: false) }
             }
+        activeRecoveryObserver = center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.runDeferredRecovery(appIsActive: true) }
+            }
+    }
+
+    /// Runs the waiting launch recovery from whichever observer fired first, and removes both.
+    /// After the unlock it re-checks, and waits again if the device re-locked meanwhile.
+    private func runDeferredRecovery(appIsActive: Bool) {
+        guard let unlockToken = protectedDataRecoveryObserver else { return }   // already ran
+        NotificationCenter.default.removeObserver(unlockToken)
+        if let activeToken = activeRecoveryObserver { NotificationCenter.default.removeObserver(activeToken) }
+        protectedDataRecoveryObserver = nil
+        activeRecoveryObserver = nil
+        recoverInterruptedSessionIfNeeded(appIsActive: appIsActive)
     }
 
     private func observeGuidedAccess() {
