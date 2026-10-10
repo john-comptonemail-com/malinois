@@ -11,7 +11,10 @@ import OSLog
 import UIKit
 import UserNotifications
 
+// Release builds start here; Debug builds start at `AppEntry` below (item 84).
+#if !DEBUG
 @main
+#endif
 struct MalinoisApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -23,7 +26,16 @@ struct MalinoisApp: App {
     @StateObject private var entitlements: ProEntitlements
     @StateObject private var engine: MonitoringEngine
 
+    #if DEBUG
+    /// Set when this app builds its services (item 84): a unit test asserts that the test
+    /// runner's launch never does.
+    @MainActor static var builtServices = false
+    #endif
+
     init() {
+        #if DEBUG
+        Self.builtServices = true
+        #endif
         // iOS keeps Keychain items across app deletion, so a fresh install can inherit a PIN
         // from a previous install and skip setup. Clear that stale PIN data first, before any
         // view reads `KeychainService.hasPIN`. (The Pro trial start is kept — see the method.)
@@ -66,6 +78,41 @@ struct MalinoisApp: App {
         }
     }
 }
+
+#if DEBUG
+/// Debug builds' entry point (item 84). When the test runner launches the app to host the unit
+/// tests, it gets `TestHostApp`, an empty stand-in: no engine, no event log, nothing listening,
+/// so nothing in the process reacts to what the tests do except what the tests build. Every
+/// other launch, a Debug build run from Xcode for the device legs included, is the real app.
+@main
+@MainActor
+enum AppEntry {
+    static func main() {
+        if TestHost.isTestRunnerLaunch(xcTestLoaded: NSClassFromString("XCTestCase") != nil,
+                                       environment: ProcessInfo.processInfo.environment) {
+            TestHostApp.main()
+        } else {
+            MalinoisApp.main()
+        }
+    }
+}
+
+/// The app the test runner gets (item 84): one empty window.
+struct TestHostApp: App {
+    var body: some Scene {
+        WindowGroup { Color.clear }
+    }
+}
+
+/// Recognizes the test runner's launch (item 84).
+enum TestHost {
+    /// Pure (unit-tested). XCTest is in the process only when the test runner injects it (the app
+    /// does not link it), and the runner names the bundle it injects in the environment.
+    nonisolated static func isTestRunnerLaunch(xcTestLoaded: Bool, environment: [String: String]) -> Bool {
+        xcTestLoaded || environment["XCInjectBundleInto"] != nil || environment["XCTestConfigurationFilePath"] != nil
+    }
+}
+#endif
 
 /// The notifications prompt, asked where it matters (item 69): on a device that will RECEIVE
 /// cross-device alerts — from Home's "Allow notifications" line, or when Cross-device alerts is

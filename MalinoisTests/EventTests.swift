@@ -8,6 +8,18 @@ import XCTest
 
 final class EventTests: XCTestCase {
 
+    // Every store these tests build keeps a folder of its own (item 84) — they used to build
+    // theirs in the test host's real log, seeding it with hundreds of test records.
+    override func setUp() {
+        super.setUp()
+        TestIsolation.setUp(folderPrefix: "MalinoisEventTests")
+    }
+
+    override func tearDown() {
+        TestIsolation.tearDownFolderAndFlags()
+        super.tearDown()
+    }
+
     func testDuration() {
         let start = Date()
         let e = Event(startDate: start, endDate: start.addingTimeInterval(5), triggeredSensors: [.motion])
@@ -523,8 +535,9 @@ final class EventTests: XCTestCase {
         // Seed an orphan line: an OLD event whose metadata write "never landed".
         let old = Event(startDate: base.addingTimeInterval(-86_400),
                         endDate: base.addingTimeInterval(-86_400), triggeredSensors: [.motion])
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let journal = docs.appendingPathComponent("MalinoisEvents/events.journal")
+        // The stores keep this test's own folder (item 84), so the orphan goes there — this used
+        // to plant it in the test host's real journal.
+        let journal = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("events.journal")
         var seeded = (try? Data(contentsOf: journal)) ?? Data()
         seeded.append(try XCTUnwrap(EventStore.journalLine(for: old)))
         try seeded.write(to: journal)
@@ -555,9 +568,10 @@ final class EventTests: XCTestCase {
     func testEveryJournalAppendIsFullySyncedBeforeAddReturns() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("MalinoisJournalSync-" + UUID().uuidString, isDirectory: true)
+        let classFolder = EventStore.rootOverrideForTesting
         EventStore.rootOverrideForTesting = root
         defer {
-            EventStore.rootOverrideForTesting = nil
+            EventStore.rootOverrideForTesting = classFolder   // the class tearDown removes that one (item 84)
             try? FileManager.default.removeItem(at: root)
         }
         let store = EventStore()
@@ -726,6 +740,27 @@ final class EventTests: XCTestCase {
             local: [], incoming: [event(UUID(), at: 100, from: "iPhone"), event(UUID(), at: 200, from: "iPhone")])
         XCTAssertEqual(merged.count, 2)
         XCTAssertTrue(merged.allSatisfy(\.isMirrored))
+    }
+
+    /// A mirror copy of the same revision replaces the one held only when neither count goes
+    /// down: a copy that counts more flood trips but fewer wrong PINs is refused, and so is the
+    /// reverse, so a stale duplicate can never walk either count back (the 1.4 review's test
+    /// gap, item 89). Growth in one count with the other unchanged is still taken.
+    func testAnEqualRevisionCopyWhoseCountsDisagreeIsRefused() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let id = UUID()
+        func copy(floods: Int?, attempts: Int?) -> Event {
+            Event(id: id, startDate: start, endDate: start, triggeredSensors: [.motion, .touch],
+                  sustainedCount: floods, sourceDevice: "iPhone Air", cloudRevision: 2, wrongPINCount: attempts)
+        }
+        XCTAssertFalse(EventStore.supersedes(incoming: copy(floods: 5, attempts: 1), existing: copy(floods: 3, attempts: 2)),
+                       "more floods, fewer attempts: refused")
+        XCTAssertFalse(EventStore.supersedes(incoming: copy(floods: 2, attempts: 3), existing: copy(floods: 3, attempts: 2)),
+                       "more attempts, fewer floods: refused")
+        XCTAssertTrue(EventStore.supersedes(incoming: copy(floods: 5, attempts: 2), existing: copy(floods: 3, attempts: 2)),
+                      "more floods, the same attempts: taken")
+        XCTAssertTrue(EventStore.supersedes(incoming: copy(floods: 3, attempts: 3), existing: copy(floods: 3, attempts: nil)),
+                      "an attempt count where there was none: taken")
     }
 
     func testMergeWithNothingNewLeavesTheLogIdentical() {
@@ -929,4 +964,41 @@ final class EventTests: XCTestCase {
         XCTAssertNil(EventStore.corruptArtifactDate("events.corrupt-.json"), "no digits, no date")
         XCTAssertNil(EventStore.corruptArtifactDate("events.json"), "not a tombstone at all")
     }
+
+    func testBothCaptureFailureHistoryIsOptionalInSavedEvents() throws {
+        var event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch])
+        let legacy = try JSONEncoder().encode(event)
+        XCTAssertNil(try JSONDecoder().decode(Event.self, from: legacy).captureFailuresByCamera)
+        event.captureFailuresByCamera = ["rear": "storageFailed"]
+        let saved = try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(event))
+        XCTAssertEqual(saved.captureFailuresByCamera, ["rear": "storageFailed"])
+    }
+
+    func testBothCaptureFailureMessagesDescribeOriginalCoverageInCameraOrder() {
+        var event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch],
+                          mediaFilename: "front.jpg")
+        event.captureFailuresByCamera = ["rear": "storageFailed", "front": "cameraUnavailable"]
+        XCTAssertEqual(event.captureFailureMessages, [
+            "Front camera, original capture: the camera could not be started.",
+            "Rear camera, original capture: the capture could not be written to storage."
+        ])
+        event.captureFailuresByCamera = ["rear": "storageFailed"]
+        XCTAssertFalse(event.captureFailureMessages.contains { $0.contains("came back") })
+        XCTAssertEqual(event.captureFailureMessages.count, 1)
+    }
+
+    func testLegacyRearOnlyStorageFailureIsNotDescribedAsARetry() {
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch],
+                          secondaryMediaFilename: "rear.mov", captureFailure: "storageFailed")
+        XCTAssertEqual(event.captureFailureMessages,
+                       ["Capture issue - the capture could not be written to storage. Saved evidence is available."])
+    }
+
+    func testLegacyManifestOnlyStorageFailureIsNotDescribedAsARetry() {
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch],
+                          captureFailure: "storageFailed", cloudMediaManifest: ["rear"])
+        XCTAssertEqual(event.captureFailureMessages,
+                       ["Capture issue - the capture could not be written to storage. Saved evidence is available."])
+    }
+
 }

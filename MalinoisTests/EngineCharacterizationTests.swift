@@ -51,13 +51,11 @@ final class EngineCharacterizationTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisCharacterization-" + UUID().uuidString, isDirectory: true)
+        TestIsolation.setUp(folderPrefix: "MalinoisCharacterization")
     }
 
     override func tearDown() {
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
     }
 
@@ -69,10 +67,10 @@ final class EngineCharacterizationTests: XCTestCase {
         configure(settings)
         let camera = FakeCamera()
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: camera,
-                                      entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: timing)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: camera,
+                                                          entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: timing))
         return Rig(engine: engine, camera: camera, store: store, settings: settings)
     }
 
@@ -480,4 +478,115 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertTrue(pump(until: { rig.engine.cameraNotice == nil }, timeout: 2), "cleared when it ends")
         rig.engine.disarm()
     }
+
+    private func bothRig(mode: CaptureMode = .photo, supportsBoth: Bool = true) -> Rig {
+        let rig = makeRig { $0.captureMode = mode; $0.cameraPosition = .both; $0.illumination = .off }
+        rig.camera.supportsMultiCam = supportsBoth
+        return rig
+    }
+
+    private func bothEvent(_ rig: Rig) throws -> Event {
+        arm(rig)
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: {
+            rig.engine.state == .armed && rig.store.events.contains { !$0.isStateChange }
+        }, timeout: 8))
+        return try XCTUnwrap(rig.store.events.first { !$0.isStateChange })
+    }
+
+    func testPartialBothCapturePersistsMissingFrontAndKeepsRear() throws {
+        let rig = bothRig()
+        rig.camera.omittedBothCameras = ["front"]
+        let event = try bothEvent(rig)
+        XCTAssertNil(event.mediaFilename)
+        XCTAssertNotNil(event.secondaryMediaFilename)
+        XCTAssertNil(event.captureFailure)
+        XCTAssertEqual(event.captureFailuresByCamera, ["front": "captureFailed"])
+        XCTAssertFalse(event.captureFailureMessages.contains { $0.contains("came back") })
+    }
+
+    func testPartialBothCapturePersistsMissingRearAndKeepsFront() throws {
+        let rig = bothRig()
+        rig.camera.omittedBothCameras = ["rear"]
+        let event = try bothEvent(rig)
+        XCTAssertNotNil(event.mediaFilename)
+        XCTAssertNil(event.secondaryMediaFilename)
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "captureFailed"])
+    }
+
+    func testBothCaptureReportsSecondaryStorageFailureWithoutLosingPrimary() throws {
+        let rig = bothRig(mode: .clip3)
+        rig.camera.invalidBothClipFiles = ["rear"]
+        let event = try bothEvent(rig)
+        XCTAssertNotNil(event.mediaFilename)
+        XCTAssertNil(event.secondaryMediaFilename)
+        XCTAssertNil(event.captureFailure)
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed"])
+        XCTAssertNotNil(rig.engine.cameraNotice)
+    }
+
+    func testBothCaptureReportsPrimaryStorageFailureWithoutCallingRearARetry() throws {
+        let rig = bothRig(mode: .clip3)
+        rig.camera.invalidBothClipFiles = ["front"]
+        let event = try bothEvent(rig)
+        XCTAssertNil(event.mediaFilename)
+        XCTAssertNotNil(event.secondaryMediaFilename)
+        XCTAssertNil(event.captureFailure, "the rear succeeded on the original attempt")
+        XCTAssertEqual(event.captureFailuresByCamera, ["front": "storageFailed"])
+        XCTAssertFalse(event.captureFailureMessages.contains { $0.contains("came back") })
+    }
+
+    func testBothUnsupportedDeviceRecordsMissingRearCoverage() throws {
+        let rig = bothRig(supportsBoth: false)
+        let event = try bothEvent(rig)
+        XCTAssertNotNil(event.mediaFilename)
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "cameraUnavailable"])
+    }
+
+    func testBothFailureHistorySurvivesRetryAndCoalescedCount() throws {
+        let rig = bothRig()
+        rig.camera.omittedBothCameras = ["front", "rear"]
+        rig.camera.interruptionReasonValue = .anotherApp
+        let original = try bothEvent(rig)
+        var updated = original
+        updated.sustainedCount = 7
+        rig.store.update(updated)
+        rig.camera.interruptionReasonValue = nil
+        rig.camera.onSessionEvent?(.interruptionEnded)
+        XCTAssertTrue(pump(until: {
+            rig.store.events.first { $0.id == original.id }?.mediaFilename != nil
+        }, timeout: 3))
+        let retried = try XCTUnwrap(rig.store.events.first { $0.id == original.id })
+        XCTAssertEqual(retried.sustainedCount, 7)
+        XCTAssertEqual(retried.captureFailuresByCamera,
+                       ["front": "interruptedByAnotherApp", "rear": "interruptedByAnotherApp"])
+    }
+
+    func testStorageWarningOutlivesTheInterruptionItReplaces() throws {
+        let rig = bothRig(mode: .clip3)
+        rig.camera.invalidBothClipFiles = ["rear"]
+        rig.camera.onBothCaptureEnd = { [weak camera = rig.camera] in
+            camera?.onSessionEvent?(.interrupted(.anotherApp))
+        }
+        _ = try bothEvent(rig)
+        XCTAssertTrue(rig.engine.cameraNotice?.contains("saved") == true)
+        rig.camera.onSessionEvent?(.interruptionEnded)
+        XCTAssertTrue(rig.engine.cameraNotice?.contains("saved") == true,
+                      "ending an interruption must not erase the later storage warning")
+    }
+
+    func testStorageFailureFinishingAfterDisarmDoesNotWarnOnHome() throws {
+        let rig = bothRig(mode: .clip3)
+        rig.camera.invalidBothClipFiles = ["rear"]
+        rig.camera.onBothCaptureEnd = { [weak engine = rig.engine] in engine?.disarm() }
+        arm(rig)
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: {
+            rig.engine.state == .disarmed && rig.store.events.contains { !$0.isStateChange && $0.mediaFilename != nil }
+        }, timeout: 8))
+        let event = try XCTUnwrap(rig.store.events.first { !$0.isStateChange })
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed"])
+        XCTAssertNil(rig.engine.cameraNotice, "the durable event records it; disarmed Home stays clear")
+    }
+
 }

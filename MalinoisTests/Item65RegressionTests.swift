@@ -24,11 +24,13 @@ final class FakeSensorMonitor: SensorMonitor {
     private(set) var isWatching = false
     private(set) var starts = 0
     private(set) var stops = 0
+    private(set) var capturePauses = 0
 
     init(type: SensorType) { self.type = type }
 
     func start() { isWatching = true; starts += 1 }
     func stop() { isWatching = false; stops += 1 }
+    func pauseForCapture() { isWatching = false; capturePauses += 1 }
     func rearm() {}
 }
 
@@ -44,13 +46,11 @@ final class Item65RegressionTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisItem65-" + UUID().uuidString, isDirectory: true)
+        TestIsolation.setUp(folderPrefix: "MalinoisItem65")
     }
 
     override func tearDown() {
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
     }
 
@@ -61,10 +61,10 @@ final class Item65RegressionTests: XCTestCase {
         configure(settings)
         let camera = FakeCamera()
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: camera,
-                                      entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: EngineCharacterizationTests.fastTiming)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: camera,
+                                                          entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming))
         return Rig(engine: engine, camera: camera, store: store, settings: settings)
     }
 

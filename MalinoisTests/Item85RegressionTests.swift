@@ -25,38 +25,20 @@ final class Item85RegressionTests: XCTestCase {
         let store: EventStore
     }
 
-    // The persisted recovery keys, spelled out (the item 73 precedent): a renamed key on disk is a
-    // behavior change these tests must catch, not absorb. The last re-arm attempt's time too: left
-    // over from another class's recovery, the crash-loop guard would decline the re-arm here.
+    // The armed marker these tests plant, spelled out (the item 73 precedent): a renamed key on
+    // disk is a behavior change they must catch, not absorb. Every recovery flag, the crash-loop
+    // guard's last attempt included, is cleared around each test by the shared helper (item 84;
+    // this class used to keep its own list: item 89, B3).
     private static let armedMarkerKey = "com.malinois.armedSession.brightness"
-    private static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
-    private static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
-    private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
-    private static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
-    private static let recoveryTimeKey = "com.malinois.recovery.lastAt"
-    private static let armingInProgressKey = "com.malinois.arming.inProgress"
-    private static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisItem85-" + UUID().uuidString, isDirectory: true)
-        clearPersistedMarkers()
+        TestIsolation.setUp(folderPrefix: "MalinoisItem85")
     }
 
     override func tearDown() {
-        clearPersistedMarkers()
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
-    }
-
-    private func clearPersistedMarkers() {
-        for key in [Self.armedMarkerKey, Self.armedBootTimeKey, Self.armedBootStampAtKey,
-                    Self.pendingReArmKey, Self.recoveryInProgressKey, Self.recoveryTimeKey,
-                    Self.armingInProgressKey, Self.backgroundLapseLoggedKey] {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
     }
 
     /// An engine built the way the app builds one at launch, with the answer about the lock
@@ -67,10 +49,10 @@ final class Item85RegressionTests: XCTestCase {
         settings.gracePeriodSeconds = gracePeriodSeconds
         settings.requireGuidedAccess = false
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: EngineCharacterizationTests.fastTiming,
-                                      protectedDataAvailable: protectedDataAvailable)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming,
+                                                          protectedDataAvailable: protectedDataAvailable))
         return Rig(engine: engine, store: store)
     }
 

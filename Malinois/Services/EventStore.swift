@@ -22,12 +22,14 @@ final class EventStore: ObservableObject {
     /// surfaced on Home so a silently non-persisting store can't go unnoticed (R-05).
     @Published private(set) var loadFailed = false
 
-    /// True while the log couldn't be read because the device hasn't been unlocked since
-    /// boot (Data Protection keeps the file encrypted), NOT because it's corrupt. A silent
+    /// True while the log's bytes couldn't be read because Data Protection still holds the key
+    /// (the device locked, or an instant from unlocking), NOT because it's corrupt. A silent
     /// push can background-launch us before first unlock; renaming the still-encrypted —
     /// but perfectly healthy — file to a corrupt-backup there would strand real evidence
-    /// (V-01). So we defer: block `persist()` (as `loadFailed` does) and retry the load the
-    /// moment the device unlocks. Cleared by a successful reload.
+    /// (V-01). So we defer: block `persist()` (as `loadFailed` does) and try the load again at
+    /// the unlock notice or when the app becomes active, whichever comes first. Cleared by a
+    /// load that reads the file, or sets it aside once UIKit says the phone is unlocked
+    /// (item 86 and its review, ADR 0016).
     private var awaitingUnlock = false
 
     /// True only when `load()` decoded the on-disk log THIS launch — the one state in which
@@ -50,6 +52,12 @@ final class EventStore: ObservableObject {
     /// ioQueue-confined mirror, so the main-actor hop happens only on state CHANGES.
     nonisolated(unsafe) private var persistFailedOnQueue = false
     private var protectedDataObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
+
+    /// Whether the device's protected data can be read now: UIKit's answer, injected so a test can
+    /// answer the way UIKit does while the app is still being built (item 86; the engine has the
+    /// same seam).
+    private let protectedDataAvailable: @MainActor () -> Bool
 
     /// Retention cap — oldest events (and their media) are pruned past this, so
     /// the log and its media directory can't grow without bound.
@@ -78,8 +86,8 @@ final class EventStore: ObservableObject {
     /// container gone) apart from a lost setup flag (PIN and container both intact) — see
     /// `KeychainService.recoveryKind`.
     ///
-    /// Deliberately does NOT create anything, unlike `rootDirectoryURL()`: it must stay a pure
-    /// observation, and it is asked at launch *before* the store is built.
+    /// Deliberately does NOT create anything, unlike the store's folder accessors (`ensured`):
+    /// it must stay a pure observation, and it is asked at launch *before* the store is built.
     nonisolated static var containerHasPriorEvents: Bool {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let file = docs.appendingPathComponent("MalinoisEvents", isDirectory: true)
@@ -89,43 +97,55 @@ final class EventStore: ObservableObject {
 
     #if DEBUG
     /// Test-only (the isolation seam, 1.3 step 3): redirects the store's whole on-disk
-    /// footprint — log, journal, media — to a directory the test owns. Static because the path
-    /// resolvers are; set it before building an `EventStore`, clear it in tearDown. Compiled
-    /// out of Release, so no shipped path can ever consult it.
+    /// footprint — log, journal, media — to a directory the test owns. Set it before building
+    /// an `EventStore`, clear it in tearDown. Each store reads it ONCE, when it is built (item
+    /// 84): moving or clearing it later never redirects a store that already exists — one that
+    /// outlived its test used to follow it into the next test's folder, or into the test host's
+    /// real log. Compiled out of Release, so no shipped path can ever consult it.
     nonisolated(unsafe) static var rootOverrideForTesting: URL?
     #endif
 
-    /// ~/Documents/MalinoisEvents/
-    nonisolated private static func rootDirectoryURL() -> URL {
+    /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
+    /// or the test override. Fixed when the store is built (item 84); only its CREATION stays
+    /// lazy (`ensured`), as before — a launch on a locked device may not be able to create it
+    /// yet, and the next access retries.
+    nonisolated private let root: URL
+
+    /// Where a store built now keeps its files. Creates nothing.
+    nonisolated private static func resolvedRoot() -> URL {
         #if DEBUG
-        if let override = rootOverrideForTesting {
-            try? FileManager.default.createDirectory(at: override, withIntermediateDirectories: true)
-            return override
-        }
+        if let override = rootOverrideForTesting { return override }
         #endif
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dir = docs.appendingPathComponent("MalinoisEvents", isDirectory: true)
+        return docs.appendingPathComponent("MalinoisEvents", isDirectory: true)
+    }
+
+    /// `dir`, created first if it is missing, at the evidence protection class — on every
+    /// access, the way the folder resolvers always have.
+    nonisolated private static func ensured(_ dir: URL) -> URL {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.protectionKey: FileProtectionType.completeUnlessOpen])
         return dir
     }
 
-    /// Directory for full-res stills / clips.
-    nonisolated private static func mediaDirectoryURL() -> URL {
-        let dir = rootDirectoryURL().appendingPathComponent("Media", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                 attributes: [.protectionKey: FileProtectionType.completeUnlessOpen])
-        return dir
+    /// Directory for full-res stills / clips, under a store's folder.
+    nonisolated private static func mediaDirectoryURL(in root: URL) -> URL {
+        ensured(ensured(root).appendingPathComponent("Media", isDirectory: true))
     }
 
-    private var rootURL: URL { Self.rootDirectoryURL() }
+    private var rootURL: URL { Self.ensured(root) }
     private var metadataURL: URL { rootURL.appendingPathComponent("events.json") }
-    var mediaDirectory: URL { Self.mediaDirectoryURL() }
+    var mediaDirectory: URL { Self.mediaDirectoryURL(in: root) }
 
-    init() {
+    /// - Parameter protectedDataAvailable: whether the device's protected data can be read; UIKit's
+    ///   answer unless a test injects one.
+    init(protectedDataAvailable: @escaping @MainActor () -> Bool = { UIApplication.shared.isProtectedDataAvailable }) {
+        root = Self.resolvedRoot()
+        self.protectedDataAvailable = protectedDataAvailable
         load()
         recoverFromJournal()
         sweepOrphanedMedia()
+        establishSeenMark()   // item 81
     }
 
     // MARK: - Mutations
@@ -186,15 +206,20 @@ final class EventStore: ObservableObject {
         let incomingRev = incoming.cloudRevision ?? 0
         let existingRev = existing.cloudRevision ?? 0
         if incomingRev > existingRev { return true }
-        // Equal revisions can still differ in the ONE field whose value grows WITHIN a
-        // revision: the coalesced flood count. Without this arm, a mirror that first fetched
-        // rev 2 at count 1 was FROZEN — every later fetch carried the same revision, failed
-        // strictly-greater, and the receiving device showed a plain row while the capturing
-        // device said "sustained ×14" (found live 2026-08-30 on the build-25 pair; 34.H8's
-        // thumbnail freeze, resurfaced through count progress). Monotonic on purpose: only a
-        // strictly higher count repairs, so replays and stale duplicates still lose.
-        return incomingRev == existingRev
-            && (incoming.sustainedCount ?? 0) > (existing.sustainedCount ?? 0)
+        // Equal revisions can still differ in the fields whose values grow WITHIN a revision:
+        // the coalesced flood count, and the wrong-PIN count (item 49 — a capture that failed
+        // leaves the full push at the fact's revision, so the fact's count-less copy froze the
+        // same way). Without this arm, a mirror that first fetched rev 2 at count 1 was FROZEN —
+        // every later fetch carried the same revision, failed strictly-greater, and the
+        // receiving device showed a plain row while the capturing device said "sustained ×14"
+        // (found live 2026-08-30 on the build-25 pair; 34.H8's thumbnail freeze, resurfaced
+        // through count progress). Monotonic on purpose: a count must strictly grow and neither
+        // may shrink, so replays and stale duplicates still lose.
+        guard incomingRev == existingRev else { return false }
+        let floods = (incoming: incoming.sustainedCount ?? 0, existing: existing.sustainedCount ?? 0)
+        let attempts = (incoming: incoming.wrongPINCount ?? 0, existing: existing.wrongPINCount ?? 0)
+        return floods.incoming >= floods.existing && attempts.incoming >= attempts.existing
+            && (floods.incoming > floods.existing || attempts.incoming > attempts.existing)
     }
 
     /// Pure (unit-tested): what a superseding mirror copy inherits from the copy it replaces.
@@ -258,6 +283,118 @@ final class EventStore: ObservableObject {
         deleteMediaNames(removedMedia)   // after the checkpoint (34.H4), as in add()
         scheduleByteCapPrune()
         return changes.inserted + changes.updated
+    }
+
+    // MARK: - New since the owner last looked (item 81)
+
+    /// The file beside the log that holds the seen mark.
+    static let seenFileName = "seen.json"
+
+    /// The records the owner has seen: every record in the log when the Event Log was last
+    /// opened or closed (it is PIN-gated, so opening it means the owner), plus the history a
+    /// restore brought in (`mergeFromCloud(_:)`). Kept on this device only, beside the log. Nil
+    /// until established: the first time the log can be read with this feature, whatever it
+    /// already holds counts as seen (history, not news).
+    @Published private(set) var seenIDs: Set<UUID>?
+
+    /// The file beside the log that says a restore is owed (item 89, C1).
+    static let restoreOwedFileName = "restore-owed.json"
+
+    /// When this install first read an empty log (a reinstall, or a new iPhone on the account),
+    /// while iCloud's records have yet to come down: a restore is owed. Until a launch pull
+    /// reaches iCloud (`completeRestore()`), what a pull brings that is dated before this moment
+    /// is history. Judged by the moment, not by an empty log (the 1.4 review, item 89, C1): a
+    /// restore that waits past the first arm is still history, and a phone that only receives
+    /// still counts its first mirror.
+    private(set) var restoreOwedSince: Date?
+
+    private var restoreOwedURL: URL { rootURL.appendingPathComponent(Self.restoreOwedFileName) }
+
+    private struct RestoreOwed: Codable {
+        let since: Date
+    }
+
+    private var seenURL: URL { rootURL.appendingPathComponent(Self.seenFileName) }
+
+    /// Pure (unit-tested): how many records are new since the owner last looked: the records
+    /// Home counts (everything but arm/disarm and the other state records) that are not in
+    /// `seen`. Nothing is new until the mark exists.
+    nonisolated static func newRecordCount(in events: [Event], seen: Set<UUID>?) -> Int {
+        guard let seen else { return 0 }
+        return events.lazy.filter { !$0.isStateChange && !seen.contains($0.id) }.count
+    }
+
+    /// What Home's Event Log button counts.
+    var newRecordCount: Int { Self.newRecordCount(in: events, seen: seenIDs) }
+
+    /// The owner has looked: everything in the log now is seen. The Event Log calls this when
+    /// it opens and when it closes.
+    func markAllSeen() {
+        saveSeenIDs(Set(events.map(\.id)))
+    }
+
+    /// A pull from iCloud: `merge(_:)`, and while a restore is owed, the records it inserted
+    /// that are dated before the install count as seen: history, not news. Anything dated after
+    /// it, and any record the log already held, keeps its own state.
+    @discardableResult
+    func mergeFromCloud(_ incoming: [Event]) -> Int {
+        let before = Set(events.map(\.id))
+        let changed = merge(incoming)
+        if let since = restoreOwedSince, let seen = seenIDs {
+            let inserted = events.filter { !before.contains($0.id) }
+            let history = Self.historyIDs(inserted: inserted, installedAt: since)
+            if !history.isEmpty {
+                saveSeenIDs(seen.union(history).intersection(Set(events.map(\.id))))
+            }
+        }
+        return changed
+    }
+
+    /// Pure (unit-tested; item 89, C1): which of the records a pull inserted are history: the
+    /// ones dated before this install first read its log.
+    nonisolated static func historyIDs(inserted: [Event], installedAt: Date) -> Set<UUID> {
+        Set(inserted.lazy.filter { $0.startDate < installedAt }.map(\.id))
+    }
+
+    /// A launch pull reached iCloud and ran to the end: the restore owed since the install is
+    /// done, and what later pulls bring is news.
+    func completeRestore() {
+        guard restoreOwedSince != nil else { return }
+        restoreOwedSince = nil
+        try? FileManager.default.removeItem(at: restoreOwedURL)
+    }
+
+    /// At launch and after the unlock reload: read the mark, or, the first time, adopt what the
+    /// log holds. Waits while the log cannot be read (a locked launch), so the history it adopts
+    /// is the real one.
+    private func establishSeenMark() {
+        guard seenIDs == nil, !awaitingUnlock else { return }
+        if let data = try? Data(contentsOf: restoreOwedURL),
+           let owed = try? JSONDecoder().decode(RestoreOwed.self, from: data) {
+            restoreOwedSince = owed.since
+        }
+        if let data = try? Data(contentsOf: seenURL),
+           let stored = try? JSONDecoder().decode([UUID].self, from: data) {
+            seenIDs = Set(stored)
+        } else {
+            // The first launch with this feature, or a mark that cannot be read. An empty log
+            // here is a new install: iCloud's records are still to come, and they are history.
+            // Noted before the mark, so a stop between the two notes it again.
+            if events.isEmpty, restoreOwedSince == nil { oweRestore(since: Date()) }
+            markAllSeen()
+        }
+    }
+
+    private func oweRestore(since date: Date) {
+        restoreOwedSince = date
+        guard let data = try? JSONEncoder().encode(RestoreOwed(since: date)) else { return }
+        try? data.write(to: restoreOwedURL, options: writeProtection)
+    }
+
+    private func saveSeenIDs(_ ids: Set<UUID>) {
+        seenIDs = ids
+        guard let data = try? JSONEncoder().encode(Array(ids)) else { return }
+        try? data.write(to: seenURL, options: writeProtection)
     }
 
     /// Pure (unit-tested): what a merge actually changed — events present now that weren't
@@ -395,7 +532,7 @@ final class EventStore: ObservableObject {
     /// every media file — runs off the main actor; only the decision + the in-memory
     /// mutation happen on it.
     private func pruneMediaBytes() async {
-        let dir = Self.mediaDirectoryURL()
+        let dir = mediaDirectory
         let snapshot = events.map { (id: $0.id,
                                      isFlood: $0.sustainedCount != nil,
                                      isSynced: $0.cloudSyncState == .synced,
@@ -471,8 +608,8 @@ final class EventStore: ObservableObject {
     /// rest of the store's file I/O.
     private func deleteMediaNames(_ names: [String]) {
         guard !names.isEmpty else { return }
-        ioQueue.async {
-            let dir = Self.mediaDirectoryURL()
+        ioQueue.async { [root] in
+            let dir = Self.mediaDirectoryURL(in: root)
             for name in names {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
@@ -498,9 +635,9 @@ final class EventStore: ObservableObject {
     private func sweepOrphanedMedia() {
         guard loadedCleanly, !loadFailed, !awaitingUnlock else { return }
         let referenced = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
-        ioQueue.async {
+        ioQueue.async { [storeRoot = root] in
             let fm = FileManager.default
-            let root = Self.rootDirectoryURL()
+            let root = Self.ensured(storeRoot)
             let rootNames = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
             // Reap aged corruption tombstones FIRST (seventh review, #6): one backup used to
             // disable this sweep FOREVER. The refusal below stays deliberate — but time-bounded:
@@ -516,7 +653,7 @@ final class EventStore: ObservableObject {
             }
             let corruptBackupPresent = rootNames
                 .contains { $0.hasPrefix("events.corrupt-") && !reaped.contains($0) }
-            let dir = Self.mediaDirectoryURL()
+            let dir = Self.mediaDirectoryURL(in: storeRoot)
             let onDisk: [(name: String, modified: Date)] = ((try? fm.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles])) ?? []).compactMap { url in
@@ -578,9 +715,11 @@ final class EventStore: ObservableObject {
     /// one writer and nothing races (the full metadata write stays on `ioQueue`; only its
     /// success SIGNAL hops back here). Single chokepoint on purpose: item 35's sealing hooks
     /// the journaled path.
-    nonisolated private static func journalURL() -> URL {
-        rootDirectoryURL().appendingPathComponent("events.journal")
+    nonisolated private static func journalURL(in root: URL) -> URL {
+        ensured(root).appendingPathComponent("events.journal")
     }
+    /// This store's journal, in the folder it was built with (item 84).
+    private var journalFile: URL { Self.journalURL(in: root) }
     /// Cheap gate so the per-persist checkpoint is a no-op while nothing is journaled.
     private var journalHasEntries = false
     /// One log line per process for a failing journal — it degrades to the old behavior
@@ -607,7 +746,7 @@ final class EventStore: ObservableObject {
     /// cost is logged per event so it can be re-read on a device (ADR 0005, as amended).
     private func appendToJournal(_ event: Event) {
         guard let line = Self.journalLine(for: event) else { return }
-        let url = Self.journalURL()
+        let url = journalFile
         var appended = false
         var sync: (synced: Bool, errno: Int32, elapsed: Duration)?
         if let handle = try? FileHandle(forWritingTo: url) {
@@ -679,7 +818,7 @@ final class EventStore: ObservableObject {
     /// persist never costs the net; a still-locked launch can't read the protected file and
     /// no-ops until the unlock reload.
     private func recoverFromJournal() {
-        guard let data = try? Data(contentsOf: Self.journalURL()) else { return }
+        guard let data = try? Data(contentsOf: journalFile) else { return }
         journalHasEntries = !data.isEmpty
         let known = Set(events.map(\.id))
         let missing = Self.journaledEvents(in: data).filter { !known.contains($0.id) }
@@ -779,7 +918,7 @@ final class EventStore: ObservableObject {
     /// rewrite also sheds any torn tail, self-healing the file.
     private func retireJournalLines(persistedIDs: Set<UUID>) {
         guard journalHasEntries else { return }
-        let url = Self.journalURL()
+        let url = journalFile
         guard let data = try? Data(contentsOf: url) else { return }
         let survivors = Self.journaledEvents(in: data).filter { !persistedIDs.contains($0.id) }
         if survivors.isEmpty {
@@ -928,7 +1067,7 @@ final class EventStore: ObservableObject {
         await withCheckedContinuation { cont in
             ioQueue.async {
                 let name = UUID().uuidString + "." + ext
-                let dest = Self.mediaDirectoryURL().appendingPathComponent(name)
+                let dest = Self.mediaDirectoryURL(in: self.root).appendingPathComponent(name)
                 do {
                     let thumbnail: Data?
                     switch source {
@@ -1023,35 +1162,54 @@ final class EventStore: ObservableObject {
         }
     }
 
+    /// Reads the log from disk, telling a SEALED file from a DAMAGED one (V-01, item 86 and its
+    /// review):
+    ///  - bytes that read and decode: the log;
+    ///  - bytes that read but do not decode: damaged, whatever the lock state (a sealed file cannot
+    ///    be read at all), so it is set aside at once;
+    ///  - bytes that cannot be read: sealed while UIKit says the phone is locked, so the load
+    ///    waits; set aside only once UIKit says the phone is unlocked and they still cannot be
+    ///    read. UIKit's "locked" is not trusted to mean damaged (inside `MalinoisApp.init` it
+    ///    reads an unlocked phone as locked, ADR 0016), and the app being on screen is not
+    ///    trusted to mean unlocked (a lock-screen notification tap can make the app active an
+    ///    instant before the keys arrive: KeychainService and RootView, found live 2026-08-30).
     private func load() {
         let url = metadataURL
         guard fileManager.fileExists(atPath: url.path) else { return }   // first launch — no file
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode([Event].self, from: data) {
-            events = decoded
-            awaitingUnlock = false            // a successful read clears any deferred state
-            loadedCleanly = true              // the in-memory log is the truth about the disk
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            guard protectedDataAvailable() else {
+                // Sealed: a background push-launch before first unlock hits this on a HEALTHY
+                // file, and renaming it — a metadata op that succeeds even while the content is
+                // protected — would strand real evidence in a backup we never re-read (V-01).
+                // Leave it untouched, block persist(), and try again at the unlock notice or
+                // when the app becomes active.
+                awaitingUnlock = true
+                observeForDeferredLoad()
+                Log.store.info("events.json unreadable while the device reads as locked; deferring load until unlock")
+                return
+            }
+            // The phone is unlocked and the bytes still cannot be read: broken, not sealed.
+            setAside(url)
             return
         }
-        // The file exists but couldn't be read. Two very different causes:
-        //  (a) the device hasn't been unlocked since boot, so completeFileProtection keeps
-        //      the file encrypted — a background push-launch hits this on a HEALTHY file;
-        //  (b) the file is genuinely corrupt/undecodable.
-        // Only (b) may rename-to-backup. Renaming in case (a) — a metadata op that succeeds
-        // even while the content is protected — would strand real evidence in a backup we
-        // never re-read (V-01). So defer: leave the file untouched, block persist(), and
-        // retry when the device unlocks.
-        if !UIApplication.shared.isProtectedDataAvailable {
-            awaitingUnlock = true
-            observeProtectedDataAvailable()
-            Log.store.info("events.json unreadable while the device is locked; deferring load until unlock")
+        guard let decoded = try? JSONDecoder().decode([Event].self, from: data) else {
+            setAside(url)   // readable but undecodable: damaged, whatever the lock state
             return
         }
-        // (b) genuinely unreadable/corrupt. The device is unlocked to be here, so the
-        // locked-file question is settled — a deferred load that lands in this branch must
-        // clear its flag whatever the quarantine outcome (32.R4): left set, `persist()`
-        // stayed refused for the rest of the process, silently, with nothing on Home saying
-        // so. `loadFailed` alone governs the un-backupable case, and that one IS surfaced.
+        events = decoded
+        awaitingUnlock = false            // a successful read clears any deferred state
+        loadedCleanly = true              // the in-memory log is the truth about the disk
+    }
+
+    /// Sets a damaged or broken log aside as a timestamped backup and starts fresh (F-11).
+    private func setAside(_ url: URL) {
+        // The locked-file question is settled — a deferred load that lands here must clear its
+        // flag whatever the quarantine outcome (32.R4): left set, `persist()` stayed refused for
+        // the rest of the process, silently, with nothing on Home saying so. `loadFailed` alone
+        // governs the un-backupable case, and that one IS surfaced.
         awaitingUnlock = false
         // Do NOT start empty and let the next persist()
         // silently overwrite it — that would destroy recoverable evidence. Preserve it as a
@@ -1069,15 +1227,32 @@ final class EventStore: ObservableObject {
         }
     }
 
-    /// Registers a one-time observer that retries the deferred load the instant the device
-    /// is first unlocked (V-01). Idempotent — only the first locked-launch arms it.
-    private func observeProtectedDataAvailable() {
+    /// Registers the observers that try a deferred load again (V-01, ADR 0016): the unlock
+    /// notice, or the app becoming active (where UIKit, asked again, answers for the running
+    /// app). Idempotent while they are registered; a load deferred again registers anew.
+    private func observeForDeferredLoad() {
         guard protectedDataObserver == nil else { return }
         protectedDataObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.protectedDataDidBecomeAvailableNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.reloadAfterUnlock() }
+                Task { @MainActor in self?.endDeferredLoad() }
         }
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.endDeferredLoad() }
+        }
+    }
+
+    /// The first of the two notices removes both observers and tries the load again; a load
+    /// that still cannot read a sealed file registers them anew.
+    private func endDeferredLoad() {
+        guard let unlockToken = protectedDataObserver else { return }   // already ended
+        NotificationCenter.default.removeObserver(unlockToken)
+        if let activeToken = activeObserver { NotificationCenter.default.removeObserver(activeToken) }
+        protectedDataObserver = nil
+        activeObserver = nil
+        reloadAfterUnlock()
     }
 
     private func reloadAfterUnlock() {
@@ -1086,11 +1261,14 @@ final class EventStore: ObservableObject {
         // interrupted-session record: a background launch before first unlock constructs the
         // engine, and `recoverInterruptedSessionIfNeeded` logs one during construction.
         let queued = events
-        // Reads the disk copy and clears `awaitingUnlock` — or leaves both alone if it still
-        // can't (device re-locked, or the file is corrupt), in which case persistence stays
-        // blocked and `queued` is still all we have.
+        // Reads the disk copy and clears `awaitingUnlock`, or sets a damaged or broken file
+        // aside and clears it too. A file still sealed (the app active an instant before the
+        // keys arrive, or the device re-locked before an unlock notice was handled) leaves both
+        // alone: persistence stays blocked, `queued` is still all we have, and the load waits
+        // again.
         load()
         recoverFromJournal()   // the protected file is readable now too (ADR 0005)
+        establishSeenMark()    // item 81: the history is known now; what was queued stays new
         guard !queued.isEmpty else { return }
         events = Self.reconciledAfterUnlock(disk: events, queued: queued)
         let removedMedia = pruneToCountCap()

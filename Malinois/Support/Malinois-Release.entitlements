@@ -16,6 +16,8 @@
 	     that alerts the owner's other devices silently never arrives. That is a paid Pro
 	     feature, so the failure would hit exactly the customers who paid for it.
 	     Keep the two files in sync when adding any other capability. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 	<key>aps-environment</key>
 	<string>production</string>
 </dict>

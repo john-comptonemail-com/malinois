@@ -40,15 +40,18 @@ line_length:
     - '"[^"]{60,}'
 
 # Size metrics: runaway guards, not targets. MonitoringEngine.swift is a
-# deliberate monolith (2,776 lines, 1,526-line type body today) — the arming /
-# detection / escalation state machine stays in one file so it can be audited
-# in one read. Limits sit well above today's high-water marks so they only
-# fire on pathological growth (say, a generated file committed by mistake).
+# deliberate monolith (2,776 lines and a 1,526-line type body at adoption;
+# 4,009 lines and a 2,079-line type body with 1.4's reviewed items merged,
+# 2026-09-28) — the arming / detection / escalation state machine stays in one
+# file so it can be audited in one read. Limits sit above the high-water marks
+# so they only fire on pathological growth (say, a generated file committed by
+# mistake); the two warnings were raised for 1.4, when its items reached the
+# old ones.
 file_length:
-  warning: 4000
+  warning: 4500
   error: 5000
 type_body_length:
-  warning: 2000
+  warning: 2300
   error: 3000
 function_body_length: # high-water mark today: 76 lines (CameraController)
   warning: 120

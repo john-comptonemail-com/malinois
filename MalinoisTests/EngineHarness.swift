@@ -24,6 +24,10 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     // MARK: Knobs (set before driving the engine)
 
     var supportsMultiCam = false
+    var omittedBothCameras: Set<String> = []
+    var invalidBothClipFiles: Set<String> = []
+    var multiCamWarmUpError: Error?
+    var onBothCaptureEnd: (@MainActor () -> Void)?
     var clipAudio = false
     var visionTapActive: Bool?
     var micUnavailableForClips = false
@@ -31,6 +35,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var lowLight = false
     /// Thrown by every warm-up while set: a camera that cannot come up.
     var warmUpError: Error?
+    var onWarmUpForTesting: (@MainActor () -> Void)?
+    var shutDownDelay: TimeInterval = 0
     /// Seconds a warm-up takes before answering — lets a test outlast the pipeline's deadline.
     var warmUpDelay: TimeInterval = 0
     /// The bytes every still returns. A JPEG start/end marker pair: enough to be "a still"
@@ -110,6 +116,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     func setVisionTapEnabled(_ enabled: Bool) { lock.withLock { _visionTapRequests.append(enabled) } }
 
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool {
+        await onWarmUpForTesting?()
         if warmUpDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(warmUpDelay * 1_000_000_000)) }
         if let warmUpError { throw warmUpError }
         lock.withLock { _warmUps.append(WarmUp(forClips: forClips, camera: camera)) }
@@ -117,6 +124,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     }
 
     func warmUpMultiCam(forClips: Bool) async throws -> Bool {
+        if let multiCamWarmUpError { throw multiCamWarmUpError }
         if warmUpDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(warmUpDelay * 1_000_000_000)) }
         if let warmUpError { throw warmUpError }
         lock.withLock { _multiCamWarmUps += 1 }
@@ -124,6 +132,12 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     }
 
     func shutDown() { lock.withLock { _shutDowns += 1 } }
+    func warmUpForAudioHandoff(camera: CameraChoice, deadline: Date) async throws -> Bool {
+        if shutDownDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(shutDownDelay * 1_000_000_000)) }
+        shutDown()
+        guard Date() < deadline else { throw CameraController.CameraError.timedOut }
+        return try await warmUp(forClips: true, camera: camera)
+    }
     func dropMicAndWait() async { lock.withLock { _micDrops += 1 } }
     func isLowLight() async -> Bool { lowLight }
     func isLowLightFront() async -> Bool { lowLight }
@@ -157,12 +171,21 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 
     func captureBothStills(rearHardwareFlash: Bool) async throws -> (front: Data?, rear: Data?) {
         lock.withLock { _bothStills += 1 }
-        return (stillData, stillData)
+        return (omittedBothCameras.contains("front") ? nil : stillData,
+                omittedBothCameras.contains("rear") ? nil : stillData)
     }
 
     func beginBothClips(rearTorch: Bool) { lock.withLock { _bothClips += 1 } }
     func endBothClips() async throws -> (front: URL?, rear: URL?) {
-        (try Self.emptyClipFile(), try Self.emptyClipFile())
+        await onBothCaptureEnd?()
+        func file(_ lens: String) throws -> URL? {
+            guard !omittedBothCameras.contains(lens) else { return nil }
+            if invalidBothClipFiles.contains(lens) {
+                return FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+            }
+            return try Self.emptyClipFile()
+        }
+        return (try file("front"), try file("rear"))
     }
 
     func clipWasInterrupted() async -> Bool { clipInterrupted }
@@ -175,5 +198,66 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
         try Data().write(to: url)
         return url
+    }
+}
+
+// MARK: - Test isolation (item 84)
+
+/// What one test leaves behind must not reach the next (item 84). Every test class that builds
+/// an engine or a store calls `setUp(folderPrefix:)` and `tearDown()` (or, off the main actor,
+/// `tearDownFolderAndFlags()`) from its own, and wraps each engine it builds in `track`: the
+/// test gets a store folder of its own, its engines are disarmed afterwards, and the flags
+/// engines keep in UserDefaults are cleared on both sides — every engine in the process shares
+/// them, the test host's own included, and a flag left behind changes the next test's recovery.
+enum TestIsolation {
+    /// Every key an engine keeps about a session and its recovery, matched by prefix so a flag
+    /// added later is covered without editing a list: the armed marker and boot stamp, the
+    /// lapse-logged flag, the countdown marker, the owed re-arm and the crash-loop timestamp.
+    nonisolated static let recoveryFlagPrefixes = ["com.malinois.armedSession.", "com.malinois.armed.",
+                                                   "com.malinois.arming.", "com.malinois.recovery.",
+                                                   "com.malinois.protection."]   // item 91's recorded settings
+
+    @MainActor private static var engines: [MonitoringEngine] = []
+
+    /// A fresh store folder for the test, and no flags left by the one before.
+    nonisolated static func setUp(folderPrefix: String) {
+        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
+            .appendingPathComponent(folderPrefix + "-" + UUID().uuidString, isDirectory: true)
+        clearRecoveryFlags()
+    }
+
+    /// The test's engines disarmed, then its flags cleared and its folder removed.
+    @MainActor static func tearDown() {
+        disarmTrackedEngines()
+        tearDownFolderAndFlags()
+    }
+
+    /// The flags cleared and the folder removed — for a class that builds stores but no engines.
+    nonisolated static func tearDownFolderAndFlags() {
+        clearRecoveryFlags()
+        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
+        EventStore.rootOverrideForTesting = nil
+    }
+
+    /// Keeps `engine` for the tearDown's disarm, and returns it, so a rig can wrap its constructor.
+    @MainActor @discardableResult
+    static func track(_ engine: MonitoringEngine) -> MonitoringEngine {
+        engines.append(engine)
+        return engine
+    }
+
+    /// Disarms every tracked engine: one a failing test left armed stops here instead of
+    /// running into the next test.
+    @MainActor static func disarmTrackedEngines() {
+        for engine in engines { engine.disarm() }
+        engines.removeAll()
+    }
+
+    nonisolated static func clearRecoveryFlags() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where recoveryFlagPrefixes.contains(where: { key.hasPrefix($0) }) {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

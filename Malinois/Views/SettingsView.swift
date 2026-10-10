@@ -117,7 +117,8 @@ struct SettingsView: View {
 
     private var sensorsSection: some View {
         Section {
-            ForEach(SensorType.allCases.filter { $0 != .camera }) { sensor in
+            // Touch has no switch (item 83, ADR 0015): its row follows the switchable ones.
+            ForEach(SensorType.allCases.filter { $0 != .camera && $0 != .touch }) { sensor in
                 Toggle(isOn: binding(for: sensor)) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -146,17 +147,37 @@ struct SettingsView: View {
                                 .foregroundStyle(.orange)
                         }
                         if sensor == .vision, settings.isEnabled(.vision) {
-                            Text("For a phone lying face down, set Capture → Camera to Auto or Rear so it watches the room.")
+                            Text(CameraChoice.faceDownVisionHint)
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
+            touchRow
         } header: {
             Text("Tripwires")
         } footer: {
             Text("Any enabled tripwire fires on its own. Vision runs only while the camera is warm; on battery the other tripwires still cover you.")
         }
+    }
+
+    /// Touch, shown but not switchable (item 83, ADR 0015): nothing benign touches the armed
+    /// screen, and Touch is what photographs whoever opens the disarm pad, so turning it off
+    /// only ever removed protection.
+    private var touchRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(SensorType.touch.displayName, systemImage: SensorType.touch.iconName)
+                Text(SensorType.touch.summary)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Anything that touches the armed screen is a person, so Touch can't be switched off.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("Always on")
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// The Pro mark beside a Pro-gated control (owner's ask, 2026-09-04): the collar, small,
@@ -344,11 +365,8 @@ struct SettingsView: View {
                 Text("Rear and Auto appear when the Vision tripwire is on: the rear camera is only worth using while the camera is watching the room, as with a phone lying face down.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if settings.cameraPosition == .rear {
-                Text("Rear only, with one exception: a trigger that includes a screen touch captures from the front camera, because a screen being touched is facing whoever touches it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if settings.cameraPosition == .auto {
-                Text("Rear while the phone lies face down, front in every other position, decided at each event.")
+            if let caption = settings.cameraPosition.pickerCaption {
+                Text(caption)
                     .font(.caption).foregroundStyle(.secondary)
             }
             if settings.cameraPosition == .both {
@@ -408,8 +426,8 @@ struct SettingsView: View {
                 get: { settings.biometricUnlock },
                 set: { settings.biometricUnlock = $0 })) {
                 VStack(alignment: .leading) {
-                    Text("Face ID unlock")
-                    Text("Open the Event Log and Test Sensors with Face ID instead of the PIN. Settings, disarming, and changing the PIN always require the PIN: a face can be presented; a PIN has to be given.")
+                    Text(BiometricKind.current.unlockToggleTitle)
+                    Text(BiometricKind.current.unlockToggleCaption)
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -486,7 +504,7 @@ struct SettingsView: View {
                 set: { settings.cloudRetention = $0 })) {
                 ForEach(CloudRetention.allCases) { Text($0.displayName).tag($0) }
             } label: {
-                HStack { Text("Full-media retention"); proMark }
+                HStack { Text("iCloud Photo & Video Storage"); proMark }
             }
             Text("Applies to full-resolution photos and clips in iCloud. Event facts, thumbnails, and arm/disarm records are always kept, and nothing newer than 30 days is ever deleted.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -657,6 +675,7 @@ extension SettingsView {
         Section("Development (debug builds only)") {
             NavigationLink("Item 14 spike — NFC / smart-card probes") { Spike14View() }
             Item79SeedRow()
+            Item76AlertPreviewRow()
         }
     }
 }
@@ -1389,6 +1408,58 @@ struct Item79SeedRow: View {
                 Text(note).font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Debug builds only (item 76, the owner's choice 5a). There is no second iPhone on the owner's
+/// account, so the alerts the notification service extension words on another iPhone cannot be
+/// seen end to end. This shows them here instead, as local notifications built by the same
+/// `AlertRewrite`: the newest tamper record in the log, a Vision-only trip and a disarm, as
+/// another iPhone would show them for this one, five seconds apart so the screen can be locked
+/// first. The words, the sound and the Time Sensitive level are the extension's; the fetch is not
+/// exercised.
+struct Item76AlertPreviewRow: View {
+    @EnvironmentObject private var eventStore: EventStore
+    @State private var note: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button("Item 76: preview the cross-device alerts") {
+                Task { note = await schedule() }
+            }
+            Text("Three alerts as another iPhone would show them for this one, 5, 10 and 15 seconds "
+                 + "from now: lock the screen to see them arrive.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func schedule() async -> String {
+        let device = DeviceInfo.name
+        var alerts: [AlertRewrite] = []
+        if let newest = eventStore.events.first(where: { !$0.isStateChange }) {
+            alerts.append(.forTamper(newest, deviceName: device))
+        }
+        let vision = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.vision], cloudSyncState: .synced)
+        alerts.append(.forTamper(vision, deviceName: device))
+        alerts.append(.forDisarm(deviceName: device))
+        var scheduled = 0
+        for (index, alert) in alerts.enumerated() {
+            let content = UNMutableNotificationContent()
+            content.title = alert.title
+            content.body = alert.body
+            content.sound = alert.playsSound ? .default : nil
+            content.interruptionLevel = alert.timeSensitive ? .timeSensitive : .active
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(5 * (index + 1)), repeats: false)
+            let request = UNNotificationRequest(identifier: "malinois.item76.preview.\(index)", content: content,
+                                                trigger: trigger)
+            if (try? await UNUserNotificationCenter.current().add(request)) != nil { scheduled += 1 }
+        }
+        return scheduled == alerts.count
+            ? "Scheduled \(scheduled)."
+            : "Scheduled \(scheduled) of \(alerts.count): check Malinois's notification permission."
     }
 }
 

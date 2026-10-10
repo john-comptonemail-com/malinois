@@ -64,6 +64,10 @@ struct EventLogView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Opportunistically re-sync anything stuck when the log opens.
         .task { await retry() }
+        // The owner is looking (the log is PIN-gated): what is here is seen, and so is what
+        // arrived while it was open. Home's count starts again from here (item 81).
+        .onAppear { eventStore.markAllSeen() }
+        .onDisappear { eventStore.markAllSeen() }
     }
 
     /// A banner explaining iCloud status and offering a manual re-sync.
@@ -192,6 +196,9 @@ struct EventRow: View {
         case "gaLifted": return "lock.slash"
         case "armingCancelled":   return "xmark.shield"
         case "armingInterrupted": return "exclamationmark.shield"
+        case "thermalSerious":    return "thermometer.medium"   // item 38
+        case "thermalCritical":   return "thermometer.high"
+        case let kind? where Event.protectionChangeKinds.contains(kind): return "slider.horizontal.3"   // item 91
         default:         return "camera.metering.none"
         }
     }

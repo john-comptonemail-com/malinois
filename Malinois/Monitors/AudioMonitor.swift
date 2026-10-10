@@ -54,6 +54,13 @@ final class AudioMonitor: SensorMonitor {
 
     #if DEBUG
     var warmupSamplesRemainingForTesting: Int { warmupSamples }
+    var deactivateAudioSessionForTesting: (() -> Void)?
+    var currentLevelForTesting: (() -> Double)?
+    func queuedMeterTickForTesting(calibration: Bool) -> () -> Void {
+        { [weak self] in
+            if calibration { self?.sampleCalibration() } else { self?.evaluate() }
+        }
+    }
     #endif
     private var warmupBuffer: [Double] = []
 
@@ -113,6 +120,9 @@ final class AudioMonitor: SensorMonitor {
     private let restartBackoff: TimeInterval = 2
 
     private func currentLevel() -> Double {
+        #if DEBUG
+        if let currentLevelForTesting { return currentLevelForTesting() }
+        #endif
         // Self-heal (F-14): a clip capture's mic input, a phone call, or a route change
         // can interrupt our metering recorder. Nothing restarts it otherwise, so it would
         // report a frozen/floor value for the rest of the session — a tripwire that
@@ -135,6 +145,16 @@ final class AudioMonitor: SensorMonitor {
         makeRecorderIfNeeded()   // rebuilds the session + recorder and calls record()
     }
 
+    private func deactivateAudioSession() {
+        #if DEBUG
+        if let deactivateAudioSessionForTesting {
+            deactivateAudioSessionForTesting()
+            return
+        }
+        #endif
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
     // MARK: - Calibration
 
     func beginCalibration() {
@@ -143,11 +163,13 @@ final class AudioMonitor: SensorMonitor {
         calibrationSamples.removeAll()
         meterTimer?.invalidate()   // never assign over a live timer: the old one would tick for the life of the process (item 65, finding 17)
         meterTimer = Timer.commonMode(interval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.calibrating else { return }
-                self.calibrationSamples.append(self.currentLevel())
-            }
+            Task { @MainActor in self?.sampleCalibration() }
         }
+    }
+
+    private func sampleCalibration() {
+        guard calibrating, meterTimer?.isValid == true else { return }
+        calibrationSamples.append(currentLevel())
     }
 
     func endCalibration() {
@@ -186,10 +208,19 @@ final class AudioMonitor: SensorMonitor {
         }
     }
 
+    /// Stops metering while the camera borrows the microphone. The capture session is
+    /// already warm: deactivating the shared AVAudioSession here silences its audio track.
+    func pauseForCapture() { stopMetering() }
+
+    /// Ends monitoring and releases the shared session for disarm or the siren.
     func stop() {
+        stopMetering()
+        deactivateAudioSession()
+    }
+
+    private func stopMetering() {
         meterTimer?.invalidate(); meterTimer = nil
         recorder?.stop(); recorder = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         hasTripped = false
         traceBuffer.removeAll()
         calibrationSamples.removeAll()
@@ -204,6 +235,9 @@ final class AudioMonitor: SensorMonitor {
     }
 
     private func evaluate() {
+        // Invalidating a timer cannot cancel a main-actor tick already queued by it.
+        // Reject that tick before currentLevel can restart the recorder during capture.
+        guard meterTimer?.isValid == true else { return }
         let level = currentLevel()
         traceBuffer.append(level)
         if traceBuffer.count > traceCapacity { traceBuffer.removeFirst() }

@@ -49,11 +49,24 @@ Solo project, no dates, and everything here is subject to change — or to being
 
 **Shipped in 1.3.3** — a fix: after Malinois is ended while armed (a crash, the app being closed, a restart), opening it again records the interruption and re-arms, as it did before 1.3.2.
 
+**Shipped in 1.4**
+
+A clearer record of what happened, and more useful alerts on your other devices.
+
+- Wrong disarm PINs leave their own event, with a front-camera photo when available.
+- Home shows how many events are new since you last opened the log.
+- Alerts name the device and the tripwire. Vision-only alerts arrive quietly; tamper alerts are Time Sensitive and can get through a Focus when allowed.
+- With Pro, “Last heard from” shows the latest heartbeat from another armed iPhone. Heartbeats are sent every five minutes while the app can run and reach iCloud.
+- Changes to protection settings and serious or critical heat while armed leave records in the log.
+- When Malinois detects that iCloud copies were deleted in Settings, it can restore locally retained records after confirming the same account. (Pro)
+- With Guided Access enabled, the screen stays awake for ten minutes while disarmed to give you time to get ready.
+
+This update also improves clip audio when Sound detection is enabled, explains partial camera captures while preserving successful evidence, clarifies iCloud Photo & Video Storage, and fixes several event-log and recovery issues. Touch detection is always enabled while armed.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.
 - **Apple Watch alerts** — the tamper alert as a tap on your wrist. (An iOS quirk makes this need a real watch app: an armed phone that is unlocked and in the foreground never mirrors its notifications to its own paired watch.)
-- **Heartbeat records** — periodic proof-of-life while armed, so that if a device goes silent, the silence itself becomes evidence.
 
 ---
 

@@ -264,7 +264,7 @@ struct PINRecoveryView: View {
                 Button("Try Again", action: authenticate)
                     .buttonStyle(.borderedProminent)
             } else if authUnavailable {
-                Text("Recovery requires a device passcode. Set one in iOS Settings → Face ID & Passcode, then tap Try Again.")
+                Text(BiometricKind.current.recoveryNeedsPasscode)
                     .font(.footnote)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
@@ -328,6 +328,10 @@ struct PINEntryView: View {
     var onSuccess: () -> Void
     var onCancel: () -> Void
     var onActivity: (() -> Void)? = nil
+    /// A wrong PIN, after `KeychainService.verify` has counted it. The armed screen's pad hands
+    /// it to the engine, which records the attempt (item 49); every other pad leaves it nil and
+    /// stays lockout-only.
+    var onFailure: (() -> Void)? = nil
 
     @EnvironmentObject private var settings: AppSettings
     @State private var digits = ""
@@ -360,7 +364,7 @@ struct PINEntryView: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
             } else if biometricsVetoedByGuidedAccess {
-                Text("Face ID is unavailable during Guided Access - enter your PIN.")
+                Text(BiometricKind.current.guidedAccessCaption)
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
@@ -417,7 +421,7 @@ struct PINEntryView: View {
         var error: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return }
         ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
-                           localizedReason: "Unlock the Malinois log and settings") { ok, _ in
+                           localizedReason: BiometricKind.unlockPromptReason) { ok, _ in
             Task { @MainActor in if ok { onSuccess() } }
         }
     }
@@ -439,6 +443,7 @@ struct PINEntryView: View {
             // authoritative remaining time back from the Keychain (the ticker's source too)
             // so the display always reflects stored state, never a local copy that drifts.
             lockoutRemaining = KeychainService.lockoutRemaining()
+            onFailure?()   // the armed pad's attempt goes on the record (item 49)
         }
     }
 }
@@ -454,4 +459,75 @@ struct Shake: GeometryEffect {
         let dx = travel * sin(animatableData * .pi * shakesPerUnit)
         return ProjectionTransform(CGAffineTransform(translationX: dx, y: 0))
     }
+}
+
+/// The biometric this iPhone has, for the words on screen (item 82, fix 3). The biometric unlock
+/// accepts whichever the phone has (`.deviceOwnerAuthenticationWithBiometrics`), but four texts
+/// named Face ID on every iPhone, wrong on the Touch ID iPhones the app supports (iPhone SE, 2nd
+/// and 3rd generation). Pure apart from `current`, and unit-tested.
+enum BiometricKind: Equatable, CaseIterable {
+    case faceID, touchID, opticID, none
+
+    init(_ type: LABiometryType) {
+        switch type {
+        case .faceID:  self = .faceID
+        case .touchID: self = .touchID
+        case .opticID: self = .opticID
+        default:       self = .none   // no biometric, or one a later iOS adds
+        }
+    }
+
+    /// This iPhone's, read once per launch. `biometryType` is set by `canEvaluatePolicy`
+    /// whatever it returns, so a phone with nothing enrolled, or no passcode, still names its
+    /// hardware.
+    static let current: BiometricKind = {
+        let context = LAContext()
+        _ = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+        return BiometricKind(context.biometryType)
+    }()
+
+    /// As iOS names it.
+    var name: String {
+        switch self {
+        case .faceID:  return "Face ID"
+        case .touchID: return "Touch ID"
+        case .opticID: return "Optic ID"
+        case .none:    return "Face ID or Touch ID"
+        }
+    }
+
+    /// The iOS Settings screen that holds the device passcode.
+    var settingsScreen: String {
+        // With no biometry reported (a phone without a passcode can read that way), name both
+        // real screens: every supported iPhone has one or the other, and none has a plain
+        // "Passcode" screen (item 89, C2).
+        self == .none ? "Face ID & Passcode (or Touch ID & Passcode)" : "\(name) & Passcode"
+    }
+
+    /// What can be held up to it: why a biometric never opens a write surface.
+    private var presentable: String {
+        switch self {
+        case .faceID:  return "a face"
+        case .touchID: return "a finger"
+        case .opticID: return "an eye"
+        case .none:    return "a face or a finger"
+        }
+    }
+
+    /// Settings: the opt-in toggle and its caption.
+    var unlockToggleTitle: String { "\(name) unlock" }
+    var unlockToggleCaption: String {
+        "Open the Event Log and Test Sensors with \(name) instead of the PIN. Settings, disarming, and changing "
+            + "the PIN always require the PIN: \(presentable) can be presented; a PIN has to be given."
+    }
+    /// PIN recovery on a phone without a device passcode.
+    var recoveryNeedsPasscode: String {
+        "Recovery requires a device passcode. Set one in iOS Settings → \(settingsScreen), then tap Try Again."
+    }
+    /// The PIN pad's caption when Guided Access keeps the biometric from being offered.
+    var guidedAccessCaption: String { "\(name) is unavailable during Guided Access - enter your PIN." }
+
+    /// The reason line under a Touch ID prompt (Face ID shows none): only what a biometric can
+    /// open. Settings, disarming and changing the PIN never accept one.
+    static let unlockPromptReason = "Open the Event Log or Test Sensors"
 }

@@ -123,6 +123,11 @@ final class CloudExfiltrator: ObservableObject {
     /// never ran.
     private(set) var lastFetchFailed = false
 
+    /// Whether the last `fetchRecentEvents` reached iCloud and ran every query to the end: the
+    /// account was ready and none failed. An owed restore (item 89, C1) is settled only then;
+    /// `lastFetchFailed` alone cannot say it, since an account that is not ready never queries.
+    private(set) var lastFetchComplete = false
+
     /// Highest metadata revision successfully submitted this session, per event.
     ///
     /// In memory on purpose: the only writer that can be *stale* is the sparse pre-capture
@@ -540,6 +545,51 @@ final class CloudExfiltrator: ObservableObject {
         return record
     }
 
+    /// Pure (unit-tested; item 87): the name of the record an event goes up as: an audit
+    /// record's state record, any other event's meta record (the builders' own names).
+    nonisolated static func cloudRecordName(for event: Event) -> String {
+        (event.isStateChange ? "state-v2-" : "meta-v2-") + event.id.uuidString
+    }
+
+    /// Pure (unit-tested; item 87): every name an event's record can be under in iCloud: its own
+    /// (`cloudRecordName`) and, for evidence, also 1.0's `meta-<id>`. 1.0 uploaded evidence under
+    /// that name and no audit records; 1.1 moved to `meta-v2-` and renamed nothing already in
+    /// iCloud (see `makeMetaRecord`), so a record 1.0 uploaded is still there under it.
+    nonisolated static func cloudRecordNames(for event: Event) -> [String] {
+        let own = cloudRecordName(for: event)
+        return event.isStateChange ? [own] : [own, "meta-" + event.id.uuidString]
+    }
+
+    /// Item 87: which of these record names the private database still holds, fetching no fields;
+    /// nil when the answer is not conclusive (no account, a network error, any failure other
+    /// than "no such record").
+    func presentRecordNames(_ names: [String]) async -> Set<String>? {
+        guard !names.isEmpty else { return [] }
+        await refreshAccountState()
+        guard accountState.isReady, let database else { return nil }
+        do {
+            let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) }, desiredKeys: [])
+            var present = Set<String>()
+            for (id, result) in results {
+                switch result {
+                case .success:
+                    present.insert(id.recordName)
+                case .failure(let error):
+                    guard (error as? CKError)?.code == .unknownItem else { return nil }
+                }
+            }
+            return present
+        } catch {
+            return nil
+        }
+    }
+
+    /// Item 87: the signed-in iCloud account's user record name (opaque, this app's own), or nil.
+    func userRecordName() async -> String? {
+        guard let container else { return nil }
+        return try? await container.userRecordID().recordName
+    }
+
     /// Builds the disarm signal (BACKLOG 59) — see `disarmSignalRecordTypeV2`. Carries only
     /// what a mirror would need to correlate it: the event id, when, and which device — all
     /// encrypted, like the audit record it accompanies.
@@ -618,7 +668,7 @@ final class CloudExfiltrator: ObservableObject {
     /// it through the UI, but deleting the whole app takes the local log with it. A cloud
     /// copy survives that. Silent by construction — see `stateRecordType`.
     @discardableResult
-    func pushStateChange(_ event: Event) async -> Bool {
+    func pushStateChange(_ event: Event, disarmSignal: Bool = true) async -> Bool {
         guard let kind = event.stateChange else { return false }
         return await enqueue(event.id) { [self] in
             // The same posture as `pushFact` (item 65, finding 7): re-check a stale account state
@@ -643,7 +693,8 @@ final class CloudExfiltrator: ObservableObject {
             // the push is a courtesy on top. Its failure — most likely the type not yet
             // deployed to Production — is logged and otherwise ignored, so the audit record's
             // sync state stays truthful.
-            if Self.disarmSignalWanted(kind: kind) {
+            // `disarmSignal` false: a late disarm the pending sweep does not alert for (item 74 line 9).
+            if disarmSignal, Self.disarmSignalWanted(kind: kind) {
                 let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
                 do {
                     try await save([signal])
@@ -675,6 +726,15 @@ final class CloudExfiltrator: ObservableObject {
 
     nonisolated static func validSustainedCount(_ n: Int?) -> Int? {
         n.flatMap { (1...maxCloudSustainedCount).contains($0) ? $0 : nil }
+    }
+
+    /// Wrong-PIN attempts on one record (item 49). The lockout allows five quick tries and then
+    /// waits 30 s, doubling, so one capture's window holds a handful at most; the bound is
+    /// generous by orders of magnitude, and zero or negative is not a count.
+    nonisolated static let maxCloudWrongPINCount = 1_000
+
+    nonisolated static func validWrongPINCount(_ n: Int?) -> Int? {
+        n.flatMap { (1...maxCloudWrongPINCount).contains($0) ? $0 : nil }
     }
 
     /// A cloud endDate is believed only within (start, start + 24 h] — no single event
@@ -773,7 +833,10 @@ final class CloudExfiltrator: ObservableObject {
         var primaryDuration: Double?, secondaryDuration: Double?
         var mediaDiscarded: Bool?
         var captureFailure: String?
+        var captureFailuresByCamera: [String: String]?
         var manifest: [String]?
+        var wrongPINCount: Int?
+        var thermalState: String?
         if let json = customField("metadataJSON", of: record) as? String,
            let data = json.data(using: .utf8),
            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -787,6 +850,15 @@ final class CloudExfiltrator: ObservableObject {
             secondaryDuration = Self.validDuration(obj["secondaryDuration"] as? Double)
             mediaDiscarded = obj["mediaDiscarded"] as? Bool
             captureFailure = Self.validCaptureFailure(obj["captureFailure"] as? String)
+            if let raw = obj["captureFailuresByCamera"] as? [String: Any] {
+                var failures: [String: String] = [:]
+                for camera in ["front", "rear"] {
+                    if let reason = Self.validCaptureFailure(raw[camera] as? String) { failures[camera] = reason }
+                }
+                captureFailuresByCamera = failures.isEmpty ? nil : failures
+            }
+            wrongPINCount = Self.validWrongPINCount(obj["wrongPINCount"] as? Int)
+            thermalState = Self.validThermalState(obj["thermalState"] as? String)
             if let raw = obj["media"] as? [Any] {
                 let tokens = raw.compactMap { $0 as? String }
                                 .filter { Self.allowedMediaTokens.contains($0) }
@@ -821,7 +893,15 @@ final class CloudExfiltrator: ObservableObject {
             cloudRevision: Self.validRevision(customField("revision", of: record) as? Int),
             mediaDiscarded: mediaDiscarded,
             captureFailure: captureFailure,
-            cloudMediaManifest: manifest)
+            captureFailuresByCamera: captureFailuresByCamera,
+            cloudMediaManifest: manifest,
+            wrongPINCount: wrongPINCount,
+            thermalState: thermalState)
+    }
+
+    /// A thermal state from the cloud (item 38): only the four iOS names; anything else is dropped.
+    nonisolated static func validThermalState(_ raw: String?) -> String? {
+        raw.flatMap { ["nominal", "fair", "serious", "critical"].contains($0) ? $0 : nil }
     }
 
     /// The only camera tokens a cloud payload may name. The manifest's feed record-name
@@ -860,7 +940,9 @@ final class CloudExfiltrator: ObservableObject {
               // Allow-list (34 review, validation): an unknown kind — a future build's new
               // state, or a corrupted field — must be dropped, not rendered. It used to fall
               // through `sensorSummary` and display as "Signal loss", which asserts an attack.
-              ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted"].contains(kind)
+              ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted",
+               "thermalSerious", "thermalCritical"].contains(kind)   // the last two: item 38
+                || Event.protectionChangeKinds.contains(kind)   // item 91
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,
@@ -893,6 +975,7 @@ final class CloudExfiltrator: ObservableObject {
     /// with it, and during the migration the 1.0 types are exactly the ones most likely to be
     /// missing from a freshly-deployed container.
     func fetchRecentEvents(limit: Int = fetchPageSize) async -> [Event] {
+        lastFetchComplete = false
         await refreshAccountState()
         guard accountState.isReady, let database else { return [] }
         let metaV2 = await fetch(Self.metaRecordTypeV2, from: database,
@@ -904,6 +987,7 @@ final class CloudExfiltrator: ObservableObject {
         let stateV1 = await fetch(Self.stateRecordType, from: database,
                                   limit: limit, decode: Self.stateEvent(from:))
         lastFetchFailed = [metaV2, metaV1, stateV2, stateV1].contains { !$0.ok }
+        lastFetchComplete = !lastFetchFailed
         let evidence = metaV2.events + metaV1.events
         let stateChanges = stateV2.events + stateV1.events
         Log.cloud.info("Fetched \(evidence.count, privacy: .public) event(s) + \(stateChanges.count, privacy: .public) state record(s)")
@@ -1072,6 +1156,81 @@ final class CloudExfiltrator: ObservableObject {
         } catch {
             Log.cloud.error("Full-media fetch failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
             return nil
+        }
+    }
+
+    // MARK: - Heartbeat (item 52)
+
+    /// Item 52: the heartbeat's record type. No subscription names it, so a beat never alerts.
+    nonisolated static let beatRecordTypeV2 = "TamperEventBeatV2"
+
+    /// Pure (unit-tested): the trail's record for one beat, created once.
+    nonisolated static func beatRecordName(session: UUID, sequence: Int) -> String {
+        "beat-v2-\(session.uuidString)-\(sequence)"
+    }
+
+    /// Pure (unit-tested): the session's latest record, saved over at each beat and fetched by this
+    /// name (the owner's choice of reader, (a)): its server time is when the phone was last heard from.
+    nonisolated static func latestBeatRecordName(session: UUID) -> String {
+        "beat-latest-v2-\(session.uuidString)"
+    }
+
+    /// Pure (unit-tested): the two records one beat writes, the trail's and the session's latest, of
+    /// one type, every field encrypted like every other field this app writes.
+    nonisolated static func makeBeatRecords(_ beat: HeartbeatBeat) -> [CKRecord] {
+        [beatRecordName(session: beat.session, sequence: beat.sequence), latestBeatRecordName(session: beat.session)]
+            .map { name in
+                let record = CKRecord(recordType: beatRecordTypeV2, recordID: CKRecord.ID(recordName: name))
+                record.encryptedValues["sessionID"] = beat.session.uuidString as CKRecordValue
+                record.encryptedValues["sequence"] = beat.sequence as CKRecordValue
+                record.encryptedValues["deviceName"] = beat.deviceName as CKRecordValue
+                if let level = beat.batteryLevel { record.encryptedValues["batteryLevel"] = level as CKRecordValue }
+                record.encryptedValues["charging"] = beat.charging as CKRecordValue
+                return record
+            }
+    }
+
+    /// The longest a beat waits for iCloud; past it the beat is dropped.
+    nonisolated static let beatDeadline: TimeInterval = 30
+
+    /// Item 52: sends one beat, both records in one attempt under `beatDeadline`; false when it
+    /// could not, and the beat is dropped, never sent late. Its own path, not `save`: a beat that
+    /// fails must not count as an evidence upload's transient failure, which the pending sweep
+    /// reads to decide when to stop (item 79).
+    func pushBeat(_ beat: HeartbeatBeat) async -> Bool {
+        await refreshAccountState()
+        guard accountState.isReady, let database else { return false }
+        return await withTaskGroup(of: Bool?.self) { group in
+            group.addTask {
+                let records = Self.makeBeatRecords(beat)
+                guard let (saved, _) = try? await database.modifyRecords(saving: records, deleting: [],
+                                                                          savePolicy: .allKeys, atomically: false)
+                else { return false }
+                return saved.count == records.count && saved.values.allSatisfy { result in
+                    if case .success = result { return true }
+                    return false
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(Self.beatDeadline * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? false
+        }
+    }
+
+    /// Item 52: the session's latest beat, fetched by name. No such record: never heard from (a
+    /// phone on 1.3.x, the free tier, or offline throughout); any other failure: not known.
+    func latestBeat(session: UUID) async -> LastHeard {
+        await refreshAccountState()
+        guard accountState.isReady, let database else { return .unknown }
+        do {
+            let record = try await database.record(for: CKRecord.ID(recordName: Self.latestBeatRecordName(session: session)))
+            return record.modificationDate.map(LastHeard.at) ?? .unknown
+        } catch {
+            return (error as? CKError)?.code == .unknownItem ? .never : .unknown
         }
     }
 
@@ -1544,8 +1703,9 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     /// Backoff for a transient CloudKit error: the server's suggested Retry-After
-    /// if it gave one, else a capped exponential fallback. Returns nil for errors
-    /// that aren't worth retrying (auth, quota, permission…).
+    /// if it gave a usable one (finite, not negative), else a capped exponential fallback.
+    /// Always a finite wait from 0 to 4 s. Returns nil for errors that aren't worth
+    /// retrying (auth, quota, permission…).
     nonisolated static func retryDelay(for error: Error, attempt: Int) -> TimeInterval? {
         guard var ck = error as? CKError else { return nil }
         // A CKModifyRecordsOperation reports per-record problems as `.partialFailure`
@@ -1568,7 +1728,11 @@ final class CloudExfiltrator: ObservableObject {
         // hint can't push the retries past our background-task window (better to
         // fall back to local-only and re-upload later than to be suspended waiting).
         let maxBackoff: TimeInterval = 4
-        if let suggested = (ck as NSError).userInfo[CKErrorRetryAfterKey] as? TimeInterval {
+        // A hint that is not a usable wait (negative, or not a number) is no hint, as for the
+        // pending sweep (item 74, line 10): passed through, the save path's conversion to
+        // nanoseconds would trap.
+        if let suggested = (ck as NSError).userInfo[CKErrorRetryAfterKey] as? TimeInterval,
+           suggested.isFinite, suggested >= 0 {
             return min(suggested, maxBackoff)
         }
         return min(0.5 * pow(2.0, Double(attempt - 1)), maxBackoff)   // 0.5s, 1s, 2s…
@@ -1635,15 +1799,22 @@ final class CloudExfiltrator: ObservableObject {
         info.alertBody = body
         info.soundName = "default"
         info.shouldSendContentAvailable = true   // wake the other device to pull the record into its log
+        // Item 76: the receiving iPhone's notification service extension rewords the alert from
+        // the record (the tripwires and the device; a Vision-only trip without sound). Without
+        // the extension (a device still on 1.3.x) the static text above shows, as before.
+        info.shouldSendMutableContent = true
         subscription.notificationInfo = info
         return subscription
     }
 
-    /// Pure (unit-tested): which of the two current subscriptions the account is missing, in
-    /// the order they are established — tamper first, so the alert that has shipped since
-    /// 1.0 never waits on the newer one.
-    nonisolated static func subscriptionsToEnsure(existingIDs: Set<String>) -> [CKQuerySubscription] {
-        [makeTamperSubscription(), makeDisarmSubscription()].filter { !existingIDs.contains($0.subscriptionID) }
+    /// Pure (unit-tested): which of the two current subscriptions to save, given each existing ID
+    /// and whether it already sends mutable pushes, in the order they are established — tamper
+    /// first, so the alert that has shipped since 1.0 never waits on the newer one. A missing one
+    /// is created; one without mutable pushes (made by 1.3.x) is saved again under its own ID
+    /// (item 76), which replaces it: a new ID would make a device still on 1.3.x, which creates
+    /// only missing IDs, add the old one back, and a mixed account would get two alerts per event.
+    nonisolated static func subscriptionsToSave(existing: [String: Bool]) -> [CKQuerySubscription] {
+        [makeTamperSubscription(), makeDisarmSubscription()].filter { existing[$0.subscriptionID] != true }
     }
 
     @discardableResult
@@ -1664,7 +1835,9 @@ final class CloudExfiltrator: ObservableObject {
         // TAMPER subscription's — the one the owner has relied on since 1.0; the disarm one
         // logs its own failure and is retried on the next ensure (arm, reconnect, toggle).
         var tamperOK = true
-        for subscription in Self.subscriptionsToEnsure(existingIDs: existingIDs) {
+        let mutableByID = Dictionary(existing.map { ($0.subscriptionID, $0.notificationInfo?.shouldSendMutableContent ?? false) },
+                                     uniquingKeysWith: { first, _ in first })
+        for subscription in Self.subscriptionsToSave(existing: mutableByID) {
             let saved = await saveSubscription(subscription)
             if subscription.subscriptionID == Self.subscriptionID { tamperOK = saved }
         }

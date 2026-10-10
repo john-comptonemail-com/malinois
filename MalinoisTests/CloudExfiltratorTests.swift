@@ -28,6 +28,18 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNil(CloudExfiltrator.retryDelay(for: URLError(.badURL), attempt: 1))
     }
 
+    /// Item 74, line 10: a Retry-After that is not a usable wait (negative, or not a number) is
+    /// no hint, as the pending sweep already treats it (item 79). Passed through, the save path's
+    /// conversion to nanoseconds would trap.
+    func testABadRetryAfterFallsBackToTheBackoff() {
+        for hint in [-1.0, -Double.infinity, Double.nan] {
+            let delay = CloudExfiltrator.retryDelay(for: ckError(.requestRateLimited, retryAfter: hint), attempt: 1)
+            XCTAssertEqual(delay, 0.5, "hint \(hint): the first backoff step instead")
+        }
+        XCTAssertEqual(CloudExfiltrator.retryDelay(for: ckError(.requestRateLimited, retryAfter: 2), attempt: 1), 2,
+                       "a usable hint still stands")
+    }
+
     func testTransientErrorsUseCappedExponentialBackoff() {
         XCTAssertEqual(CloudExfiltrator.retryDelay(for: ckError(.networkUnavailable), attempt: 1), 0.5)
         XCTAssertEqual(CloudExfiltrator.retryDelay(for: ckError(.networkFailure), attempt: 2), 1.0)
@@ -690,16 +702,17 @@ final class CloudExfiltratorTests: XCTestCase {
         }
     }
 
-    /// Ensure establishes only what the account is missing, tamper first; the OFF flip must
-    /// name every ID this app has ever created, the 1.0 one included.
+    /// Ensure establishes what the account is missing, tamper first (and, since item 76, saves
+    /// again one without mutable pushes: Item76AlertRewriteTests); the OFF flip must name every
+    /// ID this app has ever created, the 1.0 one included.
     func testEnsureFillsOnlyTheGapsAndRemoveNamesEveryIDEverCreated() {
         let tamperID = CloudExfiltrator.makeTamperSubscription().subscriptionID
         let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToEnsure(existingIDs: []).map(\.subscriptionID),
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [:]).map(\.subscriptionID),
                        [tamperID, disarmID])
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToEnsure(existingIDs: [tamperID]).map(\.subscriptionID),
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true]).map(\.subscriptionID),
                        [disarmID], "an account that predates 1.3 gains the disarm subscription on its next ensure")
-        XCTAssertTrue(CloudExfiltrator.subscriptionsToEnsure(existingIDs: [tamperID, disarmID]).isEmpty)
+        XCTAssertTrue(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true, disarmID: true]).isEmpty)
         XCTAssertEqual(Set(CloudExfiltrator.subscriptionIDsToRemove), [tamperID, disarmID, "malinois-tamper-meta-sub"])
     }
 
@@ -1187,4 +1200,19 @@ final class CloudExfiltratorTests: XCTestCase {
                        now.addingTimeInterval(86_400),
                        "no creation stamp — an unsaved or hand-built record — takes 'now' as the reference")
     }
+
+    func testBothFailureMetadataRoundTripsWithOnlyKnownCamerasAndReasons() throws {
+        var event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch])
+        event.captureFailuresByCamera = ["front": "captureFailed", "rear": "storageFailed"]
+        let json = try XCTUnwrap(String(data: try XCTUnwrap(event.metadataJSON), encoding: .utf8))
+        let mirror = try XCTUnwrap(CloudExfiltrator.event(from: metaRecord(metadataJSON: json)))
+        XCTAssertEqual(mirror.captureFailuresByCamera, event.captureFailuresByCamera)
+        let mixed = #"{"captureFailuresByCamera":{"front":"captureFailed","rear":"invented","other":"storageFailed"}}"#
+        XCTAssertEqual(CloudExfiltrator.event(from: metaRecord(metadataJSON: mixed))?.captureFailuresByCamera,
+                       ["front": "captureFailed"])
+        let invalid = #"{"captureFailuresByCamera":{"rear":"invented","front":12}}"#
+        XCTAssertNil(CloudExfiltrator.event(from: metaRecord(metadataJSON: invalid))?.captureFailuresByCamera)
+        XCTAssertNil(CloudExfiltrator.event(from: metaRecord())?.captureFailuresByCamera)
+    }
+
 }

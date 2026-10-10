@@ -63,6 +63,22 @@ enum CameraChoice: String, Codable, CaseIterable, Identifiable {
     /// room (owner ruling 2026-09-05, ADR 0012); without Vision the front lens is the useful
     /// one, and these two are not offered.
     var needsVision: Bool { self == .rear || self == .auto }
+
+    /// The caption under the Camera picker for Rear and Auto (item 74 line 2). Both's depends
+    /// on the device and the capture mode, so the Settings screen words it; Front has none.
+    var pickerCaption: String? {
+        switch self {
+        case .rear:
+            return "Rear only, with one exception: a trigger that includes a screen touch captures from the front camera, because a screen being touched is facing whoever touches it. A touch after the capture has begun adds no front photo; Both uses the front and rear cameras at once."
+        case .auto:
+            return "Rear while the phone lies face down, front in every other position, decided at each event. Both uses the front and rear cameras at once, so the screen side is photographed too."
+        case .front, .both:
+            return nil
+        }
+    }
+
+    /// The Vision tripwire's hint in Settings, shown while it is on (ADR 0012; item 74 line 2).
+    static let faceDownVisionHint = "For a phone lying face down, set Capture → Camera to Auto or Rear so it watches the room, or to Both to photograph the screen side too."
 }
 
 /// How the device reacts when a tamper is detected (after capturing evidence).
@@ -171,8 +187,13 @@ enum CloudRetention: String, Codable, CaseIterable, Identifiable {
 
 final class AppSettings: ObservableObject, Codable {
 
-    // Which tripwires are active.
-    @Published var enabledSensors: Set<SensorType>
+    /// Which tripwires are active. Touch is always among them (item 83, ADR 0015): whatever set
+    /// is assigned, the one that lands here holds Touch — a set without it is completed at once.
+    @Published var enabledSensors: Set<SensorType> {
+        didSet {
+            if !enabledSensors.contains(.touch) { enabledSensors = AppSettings.withTouch(enabledSensors) }
+        }
+    }
     // Per-sensor sensitivity.
     @Published var sensitivities: [SensorType: Sensitivity]
 
@@ -261,6 +282,14 @@ final class AppSettings: ObservableObject, Codable {
         (visionOn || !choice.needsVision) ? choice : .front
     }
 
+    /// Pure (unit-tested; item 83, ADR 0015): the Touch tripwire cannot be switched off, so any
+    /// set of tripwires the settings hold reads with Touch in it. Applied in three places (ADR
+    /// 0012's pattern): whenever `enabledSensors` changes, when a save is loaded — so an install
+    /// that switched Touch off before this rule gets it back once — and at arm (`effectiveSensors`).
+    nonisolated static func withTouch(_ sensors: Set<SensorType>) -> Set<SensorType> {
+        sensors.union([.touch])
+    }
+
     /// Randomize the disarm/gate PIN pad's digit positions on each presentation, so an
     /// observer can't learn the PIN from finger positions (shoulder-surf / smudge / thermal
     /// residue). Off by default — it trades muscle-memory speed for observation resistance.
@@ -334,6 +363,7 @@ final class AppSettings: ObservableObject, Codable {
     /// Whether at least one *tripwire* is enabled. With none, arming is inert — nothing
     /// can ever fire — so the UI warns before letting the owner arm into a false sense
     /// of security (F-23). The camera is a capture path, not a tripwire, so it doesn't count.
+    /// Since item 83 Touch is always on, so this is always true; the warning stays as a guard.
     var hasActiveTripwire: Bool {
         SensorType.tripwires.contains { enabledSensors.contains($0) }
     }
@@ -352,7 +382,9 @@ final class AppSettings: ObservableObject, Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let sensors = try c.decode(Set<SensorType>.self, forKey: .enabledSensors)
-        enabledSensors = sensors
+        // A save from a build that let Touch be switched off loads with it on (item 83). The
+        // assignment here is initialization, so the property observer does not run: apply it.
+        enabledSensors = AppSettings.withTouch(sensors)
         sensitivities = try c.decode([SensorType: Sensitivity].self, forKey: .sensitivities)
         // Lenient on purpose. `decodeIfPresent` is NOT enough here: a key that's *present*
         // with a raw value this build no longer knows (e.g. the removed "motionCorroborated")

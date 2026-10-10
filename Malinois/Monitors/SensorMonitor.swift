@@ -41,6 +41,9 @@ protocol SensorMonitor: AnyObject {
     /// Stop watching and release hardware.
     func stop()
 
+    /// Pause for a capture that borrows hardware without ending its shared audio session.
+    func pauseForCapture()
+
     /// Clear the one-shot trip latch ONLY, keeping the learned baseline. Used by the
     /// refractory sweep (and during an until-clear recording) where a trip aged out
     /// without firing — re-baselining there would let an attacker "ratchet" the device
@@ -69,6 +72,7 @@ protocol SensorMonitor: AnyObject {
 }
 
 extension SensorMonitor {
+    func pauseForCapture() { stop() }
     var requiresCalibration: Bool { false }
     func beginCalibration() {}
     func endCalibration() {}

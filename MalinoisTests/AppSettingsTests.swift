@@ -37,15 +37,17 @@ final class AppSettingsTests: XCTestCase {
                       "a stored choice wins even with the mic since revoked; the arm-time notice covers that")
     }
 
-    /// F-23: arming is inert with no tripwire enabled — the flag the UI warns on.
+    /// F-23: arming would be inert with no tripwire enabled — the flag the UI warns on. Since
+    /// item 83 that state cannot be reached: Touch is always on, so even a set holding only the
+    /// camera (a capture path, not a tripwire), or nothing, has an active tripwire.
     func testHasActiveTripwire() {
         let s = AppSettings()
         s.enabledSensors = [.motion]
         XCTAssertTrue(s.hasActiveTripwire)
-        s.enabledSensors = [.camera]   // camera is a capture path, not a tripwire
-        XCTAssertFalse(s.hasActiveTripwire)
+        s.enabledSensors = [.camera]   // camera is a capture path, not a tripwire …
+        XCTAssertTrue(s.hasActiveTripwire, "… but Touch rides along (item 83)")
         s.enabledSensors = []
-        XCTAssertFalse(s.hasActiveTripwire)
+        XCTAssertTrue(s.hasActiveTripwire, "an empty set still has Touch (item 83)")
         s.enabledSensors = [.camera, .touch]
         XCTAssertTrue(s.hasActiveTripwire)
     }
@@ -96,7 +98,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(d.captureMode, .clip5)
         XCTAssertEqual(d.cameraPosition, .both)
         XCTAssertEqual(d.cameraReadiness, .batterySaver)
-        XCTAssertEqual(d.enabledSensors, [.motion, .audio])
+        XCTAssertEqual(d.enabledSensors, [.motion, .audio, .touch], "Touch always rides along (item 83)")
         XCTAssertEqual(d.sensitivity(for: .motion), .high)
         XCTAssertEqual(d.responseMode, .siren)
         XCTAssertEqual(d.alertMessage, "Custom warning")
@@ -122,7 +124,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(d.alertMessage, "Custom warning")
         XCTAssertEqual(d.deviceLabel, "Desk iPhone")
         XCTAssertFalse(d.notifyOtherDevices)
-        XCTAssertEqual(d.enabledSensors, [.motion, .audio])
+        XCTAssertEqual(d.enabledSensors, [.motion, .audio, .touch], "a blob saved without Touch loads with it (item 83)")
     }
 
     func testLegacyCaptureModeRawValue() {
@@ -225,6 +227,21 @@ final class AppSettingsTests: XCTestCase {
         }
     }
 
+    /// Item 74 line 2, ruled "captions only" (owner, 2026-09-29): with Rear or Auto, a touch
+    /// landing during a rear capture gets no front photo, so their captions point at Both, and
+    /// the Vision tripwire's hint offers Both beside Auto and Rear. No em-dashes on screens.
+    func testRearAndAutoCaptionsAndTheVisionHintPointAtBoth() {
+        for choice in [CameraChoice.rear, .auto] {
+            XCTAssertTrue(choice.pickerCaption?.contains("Both uses the front and rear cameras at once") == true, "\(choice)")
+        }
+        XCTAssertNil(CameraChoice.front.pickerCaption)
+        XCTAssertNil(CameraChoice.both.pickerCaption, "Both's caption depends on the device and stays in the view")
+        XCTAssertTrue(CameraChoice.faceDownVisionHint.contains("or to Both"))
+        for text in [CameraChoice.rear.pickerCaption, CameraChoice.auto.pickerCaption, CameraChoice.faceDownVisionHint] {
+            XCTAssertFalse(text?.contains("\u{2014}") == true, "no em-dashes on screens")
+        }
+    }
+
     /// Longer video (5s / until-clear) clamps to the free 3s clip; photo and 3s pass through.
     func testEffectiveCaptureClampsLongerVideoToThreeSecondClip() {
         XCTAssertEqual(AppSettings.effectiveCapture(.clip5, pro: false), .clip3)
@@ -234,13 +251,15 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(AppSettings.effectiveCapture(.untilClear, pro: true), .untilClear, "Pro keeps it")
     }
 
-    /// A free user whose ONLY enabled tripwire is the Pro audio sensor has no *effective*
-    /// tripwire and must trip the warning — otherwise arming would be silently inert.
-    func testProAwareTripwireWarnsWhenOnlyAudioEnabledOnFree() {
+    /// A free user whose only chosen tripwire is the Pro audio sensor used to have no
+    /// *effective* tripwire and needed the warning. Since item 83 Touch is always on, so the
+    /// free tier is never inert: audio is clamped off, Touch still counts.
+    func testProAwareTripwireKeepsTouchWhenOnlyAudioChosenOnFree() {
         let s = AppSettings()
         s.enabledSensors = [.audio]
-        XCTAssertFalse(s.hasActiveTripwire(pro: false), "audio-only is inert without Pro")
-        XCTAssertTrue(s.hasActiveTripwire(pro: true), "with Pro the audio tripwire counts")
+        XCTAssertTrue(s.hasActiveTripwire(pro: false), "audio is clamped off without Pro, Touch still counts")
+        XCTAssertEqual(s.effectiveEnabledSensors(pro: false), [.touch])
+        XCTAssertTrue(s.hasActiveTripwire(pro: true), "with Pro the audio tripwire counts too")
         s.enabledSensors = [.audio, .motion]
         XCTAssertTrue(s.hasActiveTripwire(pro: false), "motion still protects the free tier")
     }

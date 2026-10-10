@@ -115,6 +115,33 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// allow-listed on the way in from the cloud. `nil` when the capture worked, or the
     /// camera tripwire was off.
     var captureFailure: String?
+    /// What the original Both-camera capture could not obtain or save, keyed by front/rear.
+    /// Historical: a later retry or download never clears these reasons. Optional for old events;
+    /// cloud input permits only the two camera names and known CaptureFailureReason values.
+    var captureFailuresByCamera: [String: String]?
+
+    /// Fixed-order coverage notices, plus the existing whole-capture failure/retry explanation.
+    /// A surviving camera is original evidence; only interruption recovery can label a retry.
+    var captureFailureMessages: [String] {
+        var messages = ["front", "rear"].compactMap { camera -> String? in
+            guard let raw = captureFailuresByCamera?[camera],
+                  let reason = CaptureFailureReason(rawValue: raw) else { return nil }
+            let label = camera == "front" ? "Front" : "Rear"
+            return "\(label) camera, original capture: \(reason.summary)."
+        }
+        let hasMedia = mediaFilename != nil || secondaryMediaFilename != nil || thumbnailData != nil
+            || !(cloudMediaManifest ?? []).isEmpty
+        if let why = captureFailureSummary, messages.isEmpty || hasMedia {
+            if !hasMedia {
+                messages.append("No photo or clip - \(why).")
+            } else if captureFailure.flatMap(CaptureFailureReason.init(rawValue:))?.isInterruption == true {
+                messages.append("The first capture failed - \(why). This photo was taken when the camera came back.")
+            } else {
+                messages.append("Capture issue - \(why). Saved evidence is available.")
+            }
+        }
+        return messages
+    }
 
     /// For a MIRRORED event: which camera tokens the capturing device says it uploaded
     /// full-media records under (the payload's manifest, 34's metadataJSON item + B1's
@@ -123,6 +150,20 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// manifest existed — the blind probe remains the fallback. Optional so older saved
     /// events decode fine.
     var cloudMediaManifest: [String]?
+
+    /// How many wrong disarm PINs this record holds (item 49): 1 on the record a wrong PIN on
+    /// the armed screen's pad minted, more when further attempts landed while its capture ran;
+    /// on any other record, the attempts that landed during ITS capture. `nil` on every record
+    /// without one. The typing itself rides the record as a Touch trip (`triggeredSensors`
+    /// holds `.touch`), so a build that predates this field reads the record as a Touch row.
+    /// Optional so older saved events decode fine.
+    var wrongPINCount: Int?
+
+    /// iOS's thermal state when the record was made, as `MonitoringEngine.thermalStateName`
+    /// spells it ("nominal", "fair", "serious", "critical"; item 38, the owner's choice 3):
+    /// context for a clip that stops early or a phone that went dark. `nil` on records from
+    /// before 1.4 and on audit rows. Optional so older saved events decode fine.
+    var thermalState: String?
 
     /// Whether this event came from another device via iCloud rather than this device's own
     /// sensors. Only ever true for merged copies.
@@ -159,7 +200,10 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
          cloudRevision: Int? = nil,
          mediaDiscarded: Bool? = nil,
          captureFailure: String? = nil,
-         cloudMediaManifest: [String]? = nil) {
+         captureFailuresByCamera: [String: String]? = nil,
+         cloudMediaManifest: [String]? = nil,
+         wrongPINCount: Int? = nil,
+         thermalState: String? = nil) {
         self.id = id
         self.startDate = startDate
         self.endDate = endDate
@@ -185,7 +229,10 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         self.cloudRevision = cloudRevision
         self.mediaDiscarded = mediaDiscarded
         self.captureFailure = captureFailure
+        self.captureFailuresByCamera = captureFailuresByCamera
         self.cloudMediaManifest = cloudMediaManifest
+        self.wrongPINCount = wrongPINCount
+        self.thermalState = thermalState
     }
 
     /// The camera token each full-media upload names its record with — "front"/"rear", with
@@ -216,6 +263,18 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         return parts.joined(separator: " · ")
     }
 
+    /// The detail screen's words for `thermalState` (item 38): plain, and saying what iOS does
+    /// at each level. Screen text, so no em-dashes.
+    var thermalStateSummary: String? {
+        switch thermalState {
+        case "nominal":  return "Normal"
+        case "fair":     return "Slightly warm"
+        case "serious":  return "Hot: iOS is slowing the phone"
+        case "critical": return "Overheating: iOS may shut the phone down"
+        default:         return nil
+        }
+    }
+
     /// A monitoring state-change record (armed / disarmed) carries no sensor evidence and is
     /// rendered differently in the log (no media, no sync badge).
     var isStateChange: Bool { stateChange != nil }
@@ -228,8 +287,11 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "cameraError": return "Camera session failed while armed"
         case "armingCancelled":   return "Arming cancelled before going live"
         case "armingInterrupted": return "Arming did not complete: the app ended during the countdown"
+        case "thermalSerious":    return "Phone running hot while armed"                         // item 38
+        case "thermalCritical":   return "Phone overheating while armed: iOS may shut it down"
         default:         break
         }
+        if let kind = stateChange, let words = Self.protectionChangeSummary(kind: kind) { return words }
         if interrupted == true {
             // BACKLOG 53: say what the launch could tell; a cause this build does not know,
             // or none at all (older records, a marker with no stamp), keeps the bare sentence.
@@ -244,10 +306,66 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             }
         }
         // A sensorless event is a connectivity-blackout ("possible jamming") capture.
-        let base = triggeredSensors.isEmpty ? "Signal loss"
+        var base = triggeredSensors.isEmpty ? "Signal loss"
             : triggeredSensors.map { $0.displayName }.joined(separator: ", ")
+        if let attempts = wrongPINCount, attempts > 0 {
+            base = Self.wrongPINSummary(attempts: attempts,
+                                        otherSensors: triggeredSensors.filter { $0 != .touch })
+        }
         if let n = sustainedCount, n > 1 { return "\(base), sustained ×\(n)" }
         return base
+    }
+
+    // MARK: - Protection settings changes (item 91)
+
+    /// The audit kind that records one protection setting switched off or on (item 91):
+    /// "settingOff.camera", "settingOn.requireGuidedAccess".
+    static func protectionChangeKind(_ setting: String, on: Bool) -> String {
+        (on ? "settingOn." : "settingOff.") + setting
+    }
+
+    /// The protection settings a change record can name: the switchable tripwires, by their
+    /// stored names, and three settings by name.
+    static let protectionSettingNames: [String] = SensorType.allCases.filter { $0 != .touch }.map(\.rawValue)
+        + ["requireGuidedAccess", "otherDeviceAlerts", "jammingResponse"]
+
+    /// Every kind a change record can carry: the iCloud decoder's allow-list for them.
+    static let protectionChangeKinds: Set<String> = Set(protectionSettingNames.flatMap {
+        [protectionChangeKind($0, on: false), protectionChangeKind($0, on: true)]
+    })
+
+    /// Pure (unit-tested): the log's words for a change record, or nil for any other kind.
+    static func protectionChangeSummary(kind: String) -> String? {
+        guard protectionChangeKinds.contains(kind) else { return nil }
+        let on = kind.hasPrefix("settingOn.")
+        let name = String(kind.drop { $0 != "." }.dropFirst())
+        let state = on ? "on" : "off"
+        switch name {
+        case "requireGuidedAccess":
+            return on ? "Guided Access required again, in Settings" : "Guided Access no longer required, in Settings"
+        case "otherDeviceAlerts": return "Alerts to your other devices switched \(state) in Settings"
+        case "jammingResponse":   return "Jamming response switched \(state) in Settings"
+        case SensorType.camera.rawValue: return "Camera switched \(state) in Settings"
+        default:
+            guard let tripwire = SensorType(rawValue: name) else { return nil }
+            return "\(tripwire.displayName) tripwire switched \(state) in Settings"
+        }
+    }
+
+    /// Pure (unit-tested): how a record carrying wrong disarm PINs reads (item 49). The typing
+    /// is the record's Touch, so the attempt names the record instead; any other tripwire on it
+    /// fired first (the attempt joined that trip's capture) and is named first.
+    static func wrongPINSummary(attempts: Int, otherSensors: [SensorType]) -> String {
+        let times = attempts == 1 ? "" : " \(attempts) times"
+        guard !otherSensors.isEmpty else { return "Wrong PIN entered" + times }
+        return otherSensors.map { $0.displayName }.joined(separator: ", ") + ", wrong PIN entered" + times
+    }
+
+    /// What the share sheet's sentence says happened ("… detected tampering on <date> -
+    /// <clause>."): "<tripwires> triggered", except on a record carrying a wrong PIN, which
+    /// names the attempt instead (item 49) — an attempt is not something that "triggered".
+    var shareClause: String {
+        (wrongPINCount ?? 0) > 0 ? sensorSummary : "\(sensorSummary) triggered"
     }
 
     /// Compact metadata dictionary pushed as JSON in the first (tiny) CloudKit
@@ -276,6 +394,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             "interrupted": interrupted ?? false
         ]
         if let n = sustainedCount { payload["sustainedCount"] = n }
+        if let n = wrongPINCount, n > 0 { payload["wrongPINCount"] = n }   // item 49
+        if let thermal = thermalState { payload["thermalState"] = thermal }   // item 38, choice 3
         if let cause = interruptionCause { payload["interruptionCause"] = cause }
         if let camera = primaryCamera { payload["primaryCamera"] = camera }
         if let d = primaryDuration { payload["primaryDuration"] = d }
@@ -283,6 +403,9 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         if let d = secondaryDuration { payload["secondaryDuration"] = d }
         if mediaDiscarded == true { payload["mediaDiscarded"] = true }
         if let reason = captureFailure { payload["captureFailure"] = reason }
+        if let failures = captureFailuresByCamera, !failures.isEmpty {
+            payload["captureFailuresByCamera"] = failures
+        }
         let manifest = mediaManifest
         if !manifest.isEmpty { payload["media"] = manifest }
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

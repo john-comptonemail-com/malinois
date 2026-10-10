@@ -52,36 +52,20 @@ final class Item77RegressionTests: XCTestCase {
         let entitlements: ProEntitlements
     }
 
-    // The persisted recovery keys, spelled out (the item 73 precedent): a renamed key on disk
-    // is a behavior change these tests must catch, not absorb.
+    // The persisted recovery key these tests plant and read, spelled out (the item 73
+    // precedent): a renamed key on disk is a behavior change they must catch, not absorb. It,
+    // and every other recovery flag, is cleared around each test by the shared helper, by
+    // prefix (item 84).
     private static let armedMarkerKey = "com.malinois.armedSession.brightness"
-    private static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
-    private static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
-    private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
-    private static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
-    private static let armingInProgressKey = "com.malinois.arming.inProgress"
-    private static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisItem77-" + UUID().uuidString, isDirectory: true)
-        clearPersistedMarkers()
+        TestIsolation.setUp(folderPrefix: "MalinoisItem77")
     }
 
     override func tearDown() {
-        clearPersistedMarkers()
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
-    }
-
-    private func clearPersistedMarkers() {
-        for key in [Self.armedMarkerKey, Self.armedBootTimeKey, Self.armedBootStampAtKey,
-                    Self.pendingReArmKey, Self.recoveryInProgressKey, Self.armingInProgressKey,
-                    Self.backgroundLapseLoggedKey] {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
     }
 
     private func makeRig(timing: EngineTiming = EngineCharacterizationTests.fastTiming,
@@ -95,9 +79,9 @@ final class Item77RegressionTests: XCTestCase {
         configure(settings)
         let camera = FakeCamera()
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: camera, entitlements: entitlements, timing: timing,
-                                      protectedDataAvailable: protectedDataAvailable)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: camera, entitlements: entitlements, timing: timing,
+                                                          protectedDataAvailable: protectedDataAvailable))
         return Rig(engine: engine, camera: camera, store: store, settings: settings, entitlements: entitlements)
     }
 
@@ -479,9 +463,9 @@ final class Item77RegressionTests: XCTestCase {
         XCTAssertTrue(lapse?.sensorSummary.contains("during the countdown") ?? false, "in words, too")
         // The relaunch: a fresh engine over the same store and defaults finds the countdown's
         // marker. It used to add "Arming did not complete" on top of the lapse.
-        let relaunched = MonitoringEngine(settings: rig.settings, eventStore: rig.store, cloud: CloudExfiltrator(),
-                                          camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
-                                          timing: EngineCharacterizationTests.fastTiming)
+        let relaunched = TestIsolation.track(MonitoringEngine(settings: rig.settings, eventStore: rig.store, cloud: CloudExfiltrator(),
+                                                              camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                              timing: EngineCharacterizationTests.fastTiming))
         XCTAssertEqual(relaunched.state, .disarmed)
         let countdownRecords = rig.store.events.filter { ($0.interrupted ?? false) || $0.stateChange == "armingInterrupted" }
         XCTAssertEqual(countdownRecords.count, 1, "one interruption, one record")

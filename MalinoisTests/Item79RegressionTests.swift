@@ -35,13 +35,11 @@ final class Item79RegressionTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisItem79-" + UUID().uuidString, isDirectory: true)
+        TestIsolation.setUp(folderPrefix: "MalinoisItem79")
     }
 
     override func tearDown() {
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
     }
 
@@ -53,10 +51,10 @@ final class Item79RegressionTests: XCTestCase {
         settings.gracePeriodSeconds = 0
         settings.requireGuidedAccess = false
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: FakeCamera(),
-                                      entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: Self.sweepTiming)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(),
+                                                          entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: Self.sweepTiming))
         // Online is pinned, so the host Mac's own network cannot decide a follow-up pass.
         engine.simulateConnectivityForTesting(online: true)
         try? await Task.sleep(nanoseconds: 200_000_000)

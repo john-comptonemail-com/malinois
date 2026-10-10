@@ -15,6 +15,7 @@ import XCTest
 final class FakeCaptureHost: CapturePipelineHost {
     var captureSessionIsOver = false
     var mayFlashScreen = true
+    var audioHandoffNeeded = false
     private(set) var flashStates: [Bool] = []
     private(set) var rearms = 0
     private(set) var audioPauses = 0
@@ -24,7 +25,7 @@ final class FakeCaptureHost: CapturePipelineHost {
     private(set) var notices: [String?] = []
     func setCaptureFlash(_ on: Bool) { flashStates.append(on) }
     func rearmTripwiresDuringCapture() { rearms += 1 }
-    func pauseAudioForCapture() { audioPauses += 1 }
+    @discardableResult func pauseAudioForCapture() -> Bool { audioPauses += 1; return audioHandoffNeeded }
     func resumeAudioAfterCapture() { audioResumes += 1 }
     func suppressVision(for seconds: TimeInterval) { visionSuppressions.append(seconds) }
     func syncVisionTap() { visionSyncs += 1 }
@@ -175,6 +176,65 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertTrue(rig.host.notices.first??.contains("Camera unavailable") == true)
     }
 
+    // MARK: - Build52: warm camera must reacquire audio after Sound yields it
+
+    func testSoundHandoffStopsTheWarmCameraBeforeRewarmingForAClip() async {
+        let rig = makeRig()
+        rig.host.audioHandoffNeeded = true
+        rig.camera.shutDownDelay = 0.02
+        rig.camera.onWarmUpForTesting = { [weak host = rig.host, weak camera = rig.camera] in
+            XCTAssertEqual(host?.audioPauses, 1, "Sound yields before the capture session starts")
+            XCTAssertEqual(camera?.shutDowns, 1, "wait for the old session to stop before rewarming")
+        }
+        let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        XCTAssertNotNil(outcome.capture)
+        XCTAssertEqual(rig.host.audioResumes, 1)
+    }
+
+    func testSoundResumesWhenHandoffWarmupFails() async {
+        let rig = makeRig { $0.warmUpError = CameraController.CameraError.unavailable }
+        rig.host.audioHandoffNeeded = true
+        let outcome = await rig.pipeline.capture(from: .front, mode: .clip3, illumination: .off)
+        XCTAssertEqual(outcome.failure, .cameraUnavailable)
+        XCTAssertEqual(rig.host.audioPauses, 1)
+        XCTAssertEqual(rig.host.audioResumes, 1)
+        XCTAssertTrue(rig.camera.clips.isEmpty)
+    }
+
+    func testSoundHandoffShutdownSharesTheWarmupDeadline() async {
+        let rig = makeRig { $0.shutDownDelay = 0.5 }
+        rig.host.audioHandoffNeeded = true
+        let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        XCTAssertEqual(outcome.failure, .warmUpTimedOut)
+        XCTAssertTrue(rig.camera.clips.isEmpty)
+        XCTAssertEqual(rig.host.audioResumes, 1)
+        try? await Task.sleep(nanoseconds: 550_000_000)
+        XCTAssertTrue(rig.camera.warmUps.isEmpty, "a late shutdown must not restart an abandoned capture")
+    }
+
+    func testVideoOnlyCaptureDoesNotRestartTheCameraForAudio() async {
+        let rig = makeRig()
+        let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        XCTAssertNotNil(outcome.capture)
+        XCTAssertEqual(rig.camera.shutDowns, 0)
+    }
+
+    func testDisarmDuringAnExpiredAudioHandoffCannotRestartCamera() async {
+        let rig = makeRig { $0.shutDownDelay = 0.5 }
+        rig.host.audioHandoffNeeded = true
+        let disarm = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            rig.host.captureSessionIsOver = true
+        }
+        let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        await disarm.value
+        XCTAssertEqual(outcome.failure, .disarmed)
+        try? await Task.sleep(nanoseconds: 550_000_000)
+        XCTAssertTrue(rig.camera.warmUps.isEmpty)
+        XCTAssertTrue(rig.camera.clips.isEmpty)
+        XCTAssertEqual(rig.host.audioResumes, 1, "host state guard prevents Sound resurrection after disarm")
+    }
+
     // MARK: - Until clear
 
     /// A quiet scene ends the clip after the idle window: audio was freed for the clip and
@@ -319,4 +379,45 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertEqual(rig.host.flashStates, [true, false], "screen flash for the front lens")
         XCTAssertEqual(rig.host.notices, [nil], "a working multi-cam clears any earlier notice")
     }
+
+    func testBothCaptureReportsMissingFrontWhileKeepingRear() async {
+        let rig = makeRig { $0.omittedBothCameras = ["front"] }
+        let result = await rig.pipeline.captureBoth(mode: .photo, illumination: .off)
+        XCTAssertNil(result.front)
+        XCTAssertNotNil(result.rear)
+        XCTAssertNil(result.failure, "surviving evidence must not be presented as a total failure")
+        XCTAssertEqual(result.failuresByCamera, ["front": .captureFailed])
+        XCTAssertNotNil(rig.host.notices.last ?? nil)
+    }
+
+    func testBothCaptureReportsMissingRearClipWhileKeepingFront() async {
+        let rig = makeRig { $0.omittedBothCameras = ["rear"] }
+        let result = await rig.pipeline.captureBoth(mode: .clip3, illumination: .off)
+        defer { if case .clip(let url) = result.front?.source { try? FileManager.default.removeItem(at: url) } }
+        XCTAssertNotNil(result.front)
+        XCTAssertNil(result.rear)
+        XCTAssertNil(result.failure)
+        XCTAssertEqual(result.failuresByCamera, ["rear": .captureFailed])
+        XCTAssertNotNil(rig.host.notices.last ?? nil)
+    }
+
+    func testBothCaptureKeepsTheInterruptionReasonForEachMissingLens() async {
+        let rig = makeRig {
+            $0.omittedBothCameras = ["front", "rear"]
+            $0.interruptionReasonValue = .anotherApp
+        }
+        let result = await rig.pipeline.captureBoth(mode: .photo, illumination: .off)
+        XCTAssertEqual(result.failure, .interruptedByAnotherApp)
+        XCTAssertEqual(result.failuresByCamera,
+                       ["front": .interruptedByAnotherApp, "rear": .interruptedByAnotherApp])
+    }
+
+    func testBothFallbackKeepsTheReasonRearCoverageWasUnavailable() async {
+        let rig = makeRig { $0.multiCamWarmUpError = CameraController.CameraError.unavailable }
+        let result = await rig.pipeline.captureBoth(mode: .photo, illumination: .off)
+        XCTAssertNotNil(result.front)
+        XCTAssertNil(result.failure)
+        XCTAssertEqual(result.failuresByCamera, ["rear": .cameraUnavailable])
+    }
+
 }

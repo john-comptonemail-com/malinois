@@ -41,37 +41,21 @@ final class Item73RegressionTests: XCTestCase {
         let settings: AppSettings
     }
 
-    // The persisted keys, spelled out: a renamed key on disk is a behavior change these tests
-    // must catch, not absorb.
+    // The persisted keys these tests plant and read, spelled out: a renamed key on disk is a
+    // behavior change they must catch, not absorb. All of them, and every other recovery flag,
+    // are cleared around each test by the shared helper, by prefix (item 84).
     private static let armedMarkerKey = "com.malinois.armedSession.brightness"
-    private static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
-    private static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
     private static let armingInProgressKey = "com.malinois.arming.inProgress"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
-    private static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
-    private static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
 
     override func setUp() {
         super.setUp()
-        EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MalinoisItem73-" + UUID().uuidString, isDirectory: true)
-        clearPersistedMarkers()
+        TestIsolation.setUp(folderPrefix: "MalinoisItem73")
     }
 
     override func tearDown() {
-        clearPersistedMarkers()
-        if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
-        EventStore.rootOverrideForTesting = nil
+        TestIsolation.tearDown()
         super.tearDown()
-    }
-
-    private func clearPersistedMarkers() {
-        let defaults = UserDefaults.standard
-        for key in [Self.armedMarkerKey, Self.armedBootTimeKey, Self.armedBootStampAtKey,
-                    Self.armingInProgressKey, Self.pendingReArmKey, Self.recoveryInProgressKey,
-                    Self.backgroundLapseLoggedKey] {
-            defaults.removeObject(forKey: key)
-        }
     }
 
     private func makeRig(timing: EngineTiming? = nil,
@@ -83,10 +67,10 @@ final class Item73RegressionTests: XCTestCase {
         configure(settings)
         let camera = FakeCamera()
         let store = EventStore()
-        let engine = MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: camera,
-                                      entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: timing)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: camera,
+                                                          entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: timing))
         return Rig(engine: engine, camera: camera, store: store, settings: settings)
     }
 
@@ -254,9 +238,9 @@ final class Item73RegressionTests: XCTestCase {
     func testAKillDuringTheCountdownIsRecordedAtTheNextLaunchWithoutAReArm() {
         UserDefaults.standard.set(true, forKey: Self.armingInProgressKey)
         let store = EventStore()
-        let engine = MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
-                                      timing: EngineCharacterizationTests.fastTiming)
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming))
         XCTAssertEqual(engine.state, .disarmed, "no re-arm: the countdown never went live")
         XCTAssertTrue(store.events.contains { $0.stateChange == "armingInterrupted" },
                       "the launch says the arm did not complete")
@@ -308,6 +292,72 @@ final class Item73RegressionTests: XCTestCase {
         XCTAssertTrue(audio.isWatching)
         XCTAssertEqual(audio.stops, 0, "never stopped for the clip")
         rig.engine.disarm()
+    }
+
+    // MARK: - Build 51 phone failure: Sound must not deactivate clip audio
+
+    func testCapturePausePreservesTheSharedAudioSessionButStopReleasesIt() {
+        let monitor = AudioMonitor()
+        var deactivations = 0
+        monitor.deactivateAudioSessionForTesting = { deactivations += 1 }
+        monitor.pauseForCapture()
+        XCTAssertEqual(deactivations, 0, "the already-warm camera still needs the shared audio session")
+        monitor.stop()
+        XCTAssertEqual(deactivations, 1, "ordinary stop must still release the session")
+    }
+
+    func testClipBorrowsAudioWithoutAFullStopAndReturnsItAfterCapture() {
+        let rig = makeRig {
+            $0.captureMode = .untilClear
+            $0.cameraPosition = .front
+            $0.responseMode = .alert
+            $0.enabledSensors = [.motion, .audio, .camera]
+        }
+        let audio = FakeSensorMonitor(type: .audio)
+        rig.engine.replaceMonitorForTesting(audio)
+        arm(rig)
+        rig.camera.clipAudio = true
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3))
+        XCTAssertFalse(audio.isWatching)
+        XCTAssertEqual(audio.capturePauses, 1)
+        XCTAssertEqual(audio.stops, 0, "a full stop deactivates the camera's shared audio session")
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 && rig.engine.state == .armed }, timeout: 5))
+        XCTAssertTrue(audio.isWatching, "Sound must listen again after capture")
+        rig.engine.disarm()
+        XCTAssertEqual(audio.stops, 1, "disarm still performs a full stop")
+    }
+
+    func testQueuedSoundTickCannotReadOrRestartAudioAfterPauseOrStop() {
+        checkQueuedSoundTick(calibration: false)
+    }
+
+    func testQueuedCalibrationTickCannotReadOrRestartAudioAfterPauseOrStop() {
+        checkQueuedSoundTick(calibration: true)
+    }
+
+    private func checkQueuedSoundTick(calibration: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        for fullStop in [false, true] {
+            let monitor = AudioMonitor()
+            monitor.deactivateAudioSessionForTesting = {}
+            var reads = 0
+            var trips = 0
+            // Intercept before currentLevel can self-heal/restart the microphone. This must
+            // not pass just because the Simulator happens to deny microphone permission.
+            monitor.currentLevelForTesting = { reads += 1; return 0 }
+            monitor.onTrip = { _ in trips += 1 }
+            if calibration { monitor.beginCalibration() } else { monitor.start() }
+            let queuedTick = monitor.queuedMeterTickForTesting(calibration: calibration)
+            if fullStop { monitor.stop() } else { monitor.pauseForCapture() }
+            queuedTick()
+            XCTAssertEqual(reads, 0, "a queued tick must not reach microphone self-heal", file: file, line: line)
+            XCTAssertEqual(trips, 0, file: file, line: line)
+            XCTAssertTrue(monitor.recentTrace().isEmpty, file: file, line: line)
+            if calibration { monitor.beginCalibration() } else { monitor.start() }
+            monitor.queuedMeterTickForTesting(calibration: calibration)()
+            XCTAssertEqual(reads, 1, "a fresh monitoring cycle must still sample", file: file, line: line)
+            monitor.stop()
+        }
     }
 
     // MARK: - Review 1, R3: no warm-up blindness right after calibration

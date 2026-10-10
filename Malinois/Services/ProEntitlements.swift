@@ -382,9 +382,10 @@ final class ProEntitlements: ObservableObject {
 extension AppSettings {
 
     /// Audio and vision are the Pro *tripwires*; everything else (motion/touch/power/proximity)
-    /// stays free so the free tier still detects the primary threats.
+    /// stays free so the free tier still detects the primary threats. Touch is in the result
+    /// whatever the saved set says (item 83, ADR 0015) — belt and braces for the stored rule.
     static func effectiveSensors(_ enabled: Set<SensorType>, pro: Bool) -> Set<SensorType> {
-        pro ? enabled : enabled.subtracting(SensorType.proTripwires)
+        AppSettings.withTouch(pro ? enabled : enabled.subtracting(SensorType.proTripwires))
     }
 
     /// Multi-cam ("Both") is Pro; free clamps to the front camera.
@@ -410,7 +411,8 @@ extension AppSettings {
     func notifyOtherDevicesEffective(pro: Bool) -> Bool { pro && notifyOtherDevices }
 
     /// Pro-aware version of `hasActiveTripwire`: with the audio sensor Pro-locked, a free user
-    /// whose only enabled tripwire is audio has NO effective tripwire and must be warned.
+    /// whose only enabled tripwire was audio had NO effective tripwire and needed the warning.
+    /// Since item 83 Touch always counts, so this is always true; the warning stays as a guard.
     func hasActiveTripwire(pro: Bool) -> Bool {
         !SensorType.tripwires.filter { effectiveEnabledSensors(pro: pro).contains($0) }.isEmpty
     }

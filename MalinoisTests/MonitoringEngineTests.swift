@@ -15,16 +15,44 @@ import AVFoundation
 @MainActor
 final class MonitoringEngineTests: XCTestCase {
 
+    // A store folder of the test's own, its engines disarmed afterwards and the recovery flags
+    // cleared around it (item 84) — these engines used to write into the test host's real log.
+    override func setUp() {
+        super.setUp()
+        TestIsolation.setUp(folderPrefix: "MalinoisEngine")
+    }
+
+    override func tearDown() {
+        TestIsolation.tearDown()
+        super.tearDown()
+    }
+
     private func makeEngine(_ configure: (AppSettings) -> Void = { _ in }) -> MonitoringEngine {
         let settings = AppSettings()
         configure(settings)
-        return MonitoringEngine(settings: settings,
-                                eventStore: EventStore(),
-                                cloud: CloudExfiltrator(),
-                                camera: CameraController(),
-                                // Pre-resolved: arming waits for the entitlement check, and
-                                // these tests are not testing StoreKit.
-                                entitlements: ProEntitlements(resolvedAs: .trial))
+        return TestIsolation.track(MonitoringEngine(settings: settings,
+                                                    eventStore: EventStore(),
+                                                    cloud: CloudExfiltrator(),
+                                                    camera: CameraController(),
+                                                    // Pre-resolved: arming waits for the entitlement check, and
+                                                    // these tests are not testing StoreKit.
+                                                    entitlements: ProEntitlements(resolvedAs: .trial)))
+    }
+
+    /// Run under Thread Sanitizer: arm/warm-up writes may overlap camera-queue reads.
+    /// The real controller's property must support both directions without a data race.
+    nonisolated func testClipAudioConcurrentAccessIsSynchronized() {
+        let controller = CameraController()
+        DispatchQueue.concurrentPerform(iterations: 8) { worker in
+            for iteration in 0..<2_000 {
+                controller.clipAudio = (worker + iteration).isMultiple(of: 2)
+                _ = controller.clipAudio
+            }
+        }
+        controller.clipAudio = true
+        XCTAssertTrue(controller.clipAudio, "the engine must immediately observe its final setting")
+        controller.clipAudio = false
+        XCTAssertFalse(controller.clipAudio)
     }
 
     func testStartsDisarmed() {
@@ -1112,17 +1140,18 @@ final class MonitoringEngineTests: XCTestCase {
         }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("MalinoisInterruption-" + UUID().uuidString, isDirectory: true)
+        let classFolder = EventStore.rootOverrideForTesting
         EventStore.rootOverrideForTesting = root
         defer {
-            EventStore.rootOverrideForTesting = nil
+            EventStore.rootOverrideForTesting = classFolder   // the class tearDown removes that one (item 84)
             try? FileManager.default.removeItem(at: root)
             defaults.removeObject(forKey: Self.armedMarkerKey)
             defaults.removeObject(forKey: Self.backgroundLapseLoggedKey)
             clearRecoveryDefaults()
         }
         let store = EventStore()
-        let engine = MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
-                                      camera: FakeCamera(), entitlements: ProEntitlements.unresolvedForTesting())
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: ProEntitlements.unresolvedForTesting()))
         XCTAssertEqual(engine.state, .disarmed, "the owed re-arm defers behind the entitlement gate")
         XCTAssertNil(defaults.object(forKey: Self.armedBootTimeKey), "the stamp is consumed with the marker")
         XCTAssertNil(defaults.object(forKey: Self.armedBootStampAtKey))
@@ -1209,9 +1238,9 @@ final class MonitoringEngineTests: XCTestCase {
         UserDefaults.standard.set(true, forKey: Self.pendingReArmKey)
 
         let entitlements = ProEntitlements.unresolvedForTesting()
-        let engine = MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
-                                      cloud: CloudExfiltrator(), camera: CameraController(),
-                                      entitlements: entitlements)
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
+                                                          cloud: CloudExfiltrator(), camera: CameraController(),
+                                                          entitlements: entitlements))
         XCTAssertEqual(engine.state, .disarmed,
                        "unresolved check — the launch-time attempt defers behind the 31.F2 gate")
         XCTAssertTrue(UserDefaults.standard.bool(forKey: Self.pendingReArmKey),
@@ -1239,9 +1268,9 @@ final class MonitoringEngineTests: XCTestCase {
         clearRecoveryDefaults()
         defer { clearRecoveryDefaults() }
         let entitlements = ProEntitlements.unresolvedForTesting()
-        let engine = MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
-                                      cloud: CloudExfiltrator(), camera: CameraController(),
-                                      entitlements: entitlements)
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
+                                                          cloud: CloudExfiltrator(), camera: CameraController(),
+                                                          entitlements: entitlements))
         entitlements.resolveForTesting(as: .free)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(engine.state, .disarmed, "no owed re-arm — resolution alone must not arm")

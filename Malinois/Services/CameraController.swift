@@ -56,6 +56,9 @@ protocol EvidenceCamera: AnyObject, Sendable {
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool
     func warmUpMultiCam(forClips: Bool) async throws -> Bool
     func shutDown()
+    /// Restart and warm on the camera queue after Sound yields its microphone. The deadline
+    /// prevents delayed queued work from starting a capture after the caller has given up.
+    func warmUpForAudioHandoff(camera: CameraChoice, deadline: Date) async throws -> Bool
     func dropMicAndWait() async
     func isLowLight() async -> Bool
     func isLowLightFront() async -> Bool
@@ -86,7 +89,8 @@ extension CameraController: EvidenceCamera {
     var isRecordingActivePublisher: AnyPublisher<Bool, Never> { $isRecordingActive.eraseToAnyPublisher() }
 }
 
-// @unchecked Sendable: all mutable state is confined to `sessionQueue`.
+// @unchecked Sendable: session state is confined to `sessionQueue`; clipAudio uses its own lock.
+// Published state and callbacks retain their documented delivery rules.
 final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
     enum CameraError: Error { case unauthorized, unavailable, captureFailed, timedOut, sessionNotRunning }
@@ -109,8 +113,14 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) private var configuredWithMic = false
     /// See `EvidenceCamera.micUnavailableForClips`.
     nonisolated(unsafe) private(set) var micUnavailableForClips = false
-    /// See `EvidenceCamera.clipAudio`; the engine sets it at arm (item 69).
-    nonisolated(unsafe) var clipAudio = false
+    /// Shared by the engine and the session queue. Lock both reads and writes so an arm or
+    /// readiness change cannot race camera configuration; the engine also reads it to pause audio.
+    private let clipAudioLock = NSLock()
+    nonisolated(unsafe) private var clipAudioValue = false   // protected by clipAudioLock
+    var clipAudio: Bool {
+        get { clipAudioLock.withLock { clipAudioValue } }
+        set { clipAudioLock.withLock { clipAudioValue = newValue } }
+    }
     nonisolated(unsafe) private var configuredVision = false
 
     // MARK: Vision tripwire tap (BACKLOG 16)
@@ -399,6 +409,17 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// avoids blank/stale frames that come from mutating a live session.
     @discardableResult
     nonisolated func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool {
+        try await warmUp(forClips: forClips, camera: camera, audioHandoffDeadline: nil)
+    }
+
+    /// Stop/configure/start is one queue operation, so disarm's shutdown cannot run between
+    /// the stop and restart. Recheck the deadline after blocking stop/configuration work.
+    nonisolated func warmUpForAudioHandoff(camera: CameraChoice, deadline: Date) async throws -> Bool {
+        try await warmUp(forClips: true, camera: camera, audioHandoffDeadline: deadline)
+    }
+
+    nonisolated private func warmUp(forClips: Bool, camera: CameraChoice,
+                                    audioHandoffDeadline: Date?) async throws -> Bool {
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             throw CameraError.unauthorized
         }
@@ -406,7 +427,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
             sessionQueue.async {
                 do {
+                    if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     if self.mcSession.isRunning { self.mcSession.stopRunning() }
+                    if audioHandoffDeadline != nil, self.session.isRunning { self.session.stopRunning() }
+                    if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     let wasRunning = self.session.isRunning
                     // The SAME rule `configure` applies — deliberately not a second copy of
                     // it. This was an inline duplicate, and when `micDropped` was added to the
@@ -421,6 +445,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                         configuredWithMic: self.configuredWithMic, wantMic: forClips && self.wantsMic)
                     if needsReconfig && wasRunning { self.session.stopRunning() }
                     let didReconfigure = try self.configure(forClips: forClips, position: position)
+                    if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     if !self.session.isRunning { self.session.startRunning() }
                     // Settle on a reconfigure OR a cold start — a session that wasn't
                     // running needs the same exposure ramp as a freshly-configured one.

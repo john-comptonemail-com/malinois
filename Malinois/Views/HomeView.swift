@@ -126,7 +126,8 @@ struct HomeView: View {
                     pinGate = nil
                 }
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showSettings, onDismiss: { engine.recordProtectionChanges() },   // item 91
+                   content: { SettingsView() })
             .sheet(isPresented: $showTest) { DryRunView() }
             .sheet(isPresented: $showPaywall) { PaywallView() }
             .navigationDestination(isPresented: $showLog) { EventLogView() }
@@ -198,13 +199,16 @@ struct HomeView: View {
         }
     }
 
-    /// "Event Log (54)" — a glanceable count of real events (routine arm/disarm audit records
-    /// are excluded so the number reads as tampers, not activity). Hidden at 0. This is a
-    /// convenience/baseline, not a tamper-evidence guarantee: it's the local count, which an
-    /// iCloud-only attacker doesn't change (BACKLOG 9a/10).
-    private var eventLogTitle: String {
-        let count = eventStore.events.lazy.filter { !$0.isStateChange }.count
-        return count > 0 ? "Event Log (\(count))" : "Event Log"
+    /// "Event Log (3 new)": the records new since the owner last opened the log (item 81;
+    /// arm/disarm and the other state records never count), hidden at 0. It shows without the
+    /// PIN, a glanceability trade: it reveals how many, never what, and only opening the
+    /// PIN-gated log clears it. A convenience, not a tamper-evidence guarantee: it's the local
+    /// count, which an iCloud-only attacker doesn't change (BACKLOG 9a/10).
+    private var eventLogTitle: String { Self.eventLogTitle(newCount: eventStore.newRecordCount) }
+
+    /// Pure (unit-tested; item 81): the button's words.
+    nonisolated static func eventLogTitle(newCount: Int) -> String {
+        newCount > 0 ? "Event Log (\(newCount) new)" : "Event Log"
     }
 
     /// "Last armed 2:15 PM – 3:42 PM · 1:23:45" when the wall-clock window is known;

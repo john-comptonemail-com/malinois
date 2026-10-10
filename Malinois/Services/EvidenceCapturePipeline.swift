@@ -28,8 +28,8 @@ protocol CapturePipelineHost: AnyObject {
     /// Re-arm the enabled tripwires so continued tampering keeps registering during an
     /// until-clear recording.
     func rearmTripwiresDuringCapture()
-    /// Free the microphone for a clip (F-14), and hand it back afterwards.
-    func pauseAudioForCapture()
+    /// Pause Sound for a clip; true means its recorder yielded microphone ownership. Resume afterwards.
+    @discardableResult func pauseAudioForCapture() -> Bool
     func resumeAudioAfterCapture()
     /// The vision tripwire must not judge the scene being recorded, the screen flash, or a
     /// camera reconfigure; it re-anchors when the window lapses.
@@ -62,29 +62,9 @@ enum CameraSessionEvent: Sendable {
     case runtimeError(String)
 }
 
-/// Why a capture produced no media — the record's honest "why" (item 54). Raw values ride
-/// `Event.captureFailure` and the cloud payload, allow-listed on the way back in.
-enum CaptureFailureReason: String, Sendable, CaseIterable {
-    /// Camera permission is denied in iOS Settings.
-    case unauthorized
-    /// The session could not be configured for the requested lens.
-    case cameraUnavailable
-    /// The bounded warm-up gave up (34's H10 deadline).
-    case warmUpTimedOut
-    /// The shot or clip itself failed, with no interruption seen.
-    case captureFailed
-    case interruptedInBackground
-    case interruptedByAnotherApp
-    case interruptedByAudioClient
-    case interruptedBySystemPressure
-    /// Interrupted for a reason this build does not know.
-    case interrupted
-    /// The media could not be written to the store.
-    case storageFailed
-    /// The owner disarmed while the shot or clip was in flight; the disarm stopped the
-    /// camera, so there is nothing to report as a fault (item 63 leg 6 on 1.3 (39)).
-    case disarmed
-
+/// The two mappings that know the camera's own types stay beside the pipeline; the enum itself
+/// lives in Models/CaptureFailureReason.swift, where the alert extension can compile it (item 76).
+extension CaptureFailureReason {
     /// Pure (unit-tested). The reason a failed warm-up maps to.
     static func forWarmUpFailure(_ error: Error) -> CaptureFailureReason {
         switch error as? CameraController.CameraError {
@@ -104,36 +84,6 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
         case .audioClient:    return .interruptedByAudioClient
         case .systemPressure: return .interruptedBySystemPressure
         case .unknown:        return .interrupted
-        }
-    }
-
-    /// An interruption-class failure is the one the engine retries once when the
-    /// interruption ends (item 54); the others have nothing to wait for.
-    var isInterruption: Bool {
-        switch self {
-        case .interruptedInBackground, .interruptedByAnotherApp, .interruptedByAudioClient,
-             .interruptedBySystemPressure, .interrupted:
-            return true
-        case .unauthorized, .cameraUnavailable, .warmUpTimedOut, .captureFailed, .storageFailed,
-             .disarmed:
-            return false
-        }
-    }
-
-    /// Owner-facing wording for the record.
-    var summary: String {
-        switch self {
-        case .unauthorized:                return "camera access is denied in iOS Settings"
-        case .cameraUnavailable:           return "the camera could not be started"
-        case .warmUpTimedOut:              return "the camera did not start in time"
-        case .captureFailed:               return "the camera failed while capturing"
-        case .interruptedInBackground:     return "iOS took the camera away because the app was no longer in the foreground"
-        case .interruptedByAnotherApp:     return "another app was using the camera"
-        case .interruptedByAudioClient:    return "another app was using the microphone"
-        case .interruptedBySystemPressure: return "iOS shed the camera under system pressure (heat or load)"
-        case .interrupted:                 return "the camera session was interrupted"
-        case .storageFailed:               return "the capture could not be written to storage"
-        case .disarmed:                    return "monitoring was disarmed during the capture"
         }
     }
 }
@@ -156,11 +106,13 @@ final class EvidenceCapturePipeline {
         var failure: CaptureFailureReason? { if case .failed(let r) = self { return r } else { return nil } }
     }
 
-    /// The both-cameras result: whatever each lens produced and, when neither did, why.
+    /// Preserves every successful capture. Global failure is only for a total failure;
+    /// per-camera reasons also describe partial capture and front-only fallback coverage.
     struct BothOutcome {
         let front: Capture?
         let rear: Capture?
         let failure: CaptureFailureReason?
+        var failuresByCamera: [String: CaptureFailureReason] = [:]
     }
 
     private let camera: any EvidenceCamera
@@ -252,6 +204,12 @@ final class EvidenceCapturePipeline {
         // green dot on, no badge on Home — until the next arm.
         defer { if endedByDisarm { camera.shutDown() } }
 
+        // Sound must yield before a microphone-bearing session starts. A camera that was
+        // kept warm alongside its recorder must restart to reacquire audio cleanly.
+        let audioHandoff = mode.isClip && (host?.pauseAudioForCapture() ?? false)
+        defer { if mode.isClip { host?.resumeAudioAfterCapture() } }
+        let warmDeadline = Date().addingTimeInterval(timing.warmUpDeadline)
+
         // Point the session at the requested camera. If that fails, return nil — never
         // silently capture from whatever camera happened to be configured (that produced
         // duplicate/wrong-camera "old" captures).
@@ -263,7 +221,10 @@ final class EvidenceCapturePipeline {
             // capture fails cleanly; the stale warm-up finishing later is harmless here (the
             // response is over) and the engine's stand-down still runs after it.
             reconfigured = try await Self.withDeadline(timing.warmUpDeadline) { [camera] in
-                try await camera.warmUp(forClips: mode.isClip, camera: position)
+                if audioHandoff {
+                    return try await camera.warmUpForAudioHandoff(camera: position, deadline: warmDeadline)
+                }
+                return try await camera.warmUp(forClips: mode.isClip, camera: position)
             }
         } catch {
             if endedByDisarm {
@@ -303,8 +264,6 @@ final class EvidenceCapturePipeline {
 
         if mode.isClip {
             let recordStart = Date()
-            host?.pauseAudioForCapture()                 // free the mic for the clip (F-14)
-            defer { host?.resumeAudioAfterCapture() }
             camera.beginClip(torch: useHardwareLight)
             await recordClipDuration(mode)
             do {
@@ -360,8 +319,13 @@ final class EvidenceCapturePipeline {
         } catch {
             host?.report(cameraNotice: "Multi-cam capture unavailable - recorded the front camera only. (\((error as NSError).localizedDescription))")
             Log.engine.error("Multi-cam warm-up failed, falling back to front only: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
+            let rearFailure = CaptureFailureReason.forWarmUpFailure(error)
             let fallback = await capture(from: .front, mode: mode, illumination: illumination)
-            return BothOutcome(front: fallback.capture, rear: nil, failure: fallback.failure)
+            var failures = ["rear": rearFailure]
+            if let reason = fallback.failure { failures["front"] = reason }
+            if !endedByDisarm { host?.report(cameraNotice: "Rear camera unavailable - see the event for capture details.") }
+            return BothOutcome(front: fallback.capture, rear: nil, failure: fallback.failure,
+                               failuresByCamera: failures)
         }
         if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }   // R3.1, as in capture(from:)
 
@@ -394,21 +358,28 @@ final class EvidenceCapturePipeline {
             // (potentially huge) clip into memory here.
             let front = urls?.front.map { Capture(source: .clip($0), ext: "mov", duration: elapsed, camera: .front) }
             let rear = urls?.rear.map { Capture(source: .clip($0), ext: "mov", duration: elapsed, camera: .rear) }
-            return BothOutcome(front: front, rear: rear, failure: await bothFailure(front, rear))
+            return await bothOutcome(front, rear)
         } else {
             let both = try? await camera.captureBothStills(rearHardwareFlash: rearLight)
             let front = both?.front.map { Capture(source: .still($0), ext: "jpg", duration: 0, camera: .front) }
             let rear = both?.rear.map { Capture(source: .still($0), ext: "jpg", duration: 0, camera: .rear) }
-            return BothOutcome(front: front, rear: rear, failure: await bothFailure(front, rear))
+            return await bothOutcome(front, rear)
         }
     }
 
-    /// Both lenses came back empty: the reason, from the session's interruption state.
-    private func bothFailure(_ front: Capture?, _ rear: Capture?) async -> CaptureFailureReason? {
-        guard front == nil, rear == nil else { return nil }
-        if endedByDisarm { return .disarmed }
-        host?.report(cameraNotice: "A camera capture failed - an event may be missing its photo or clip.")
-        return CaptureFailureReason.forCaptureFailure(interruption: await camera.interruptionReason())
+    /// Records missing coverage without discarding a surviving capture or classifying it as a retry.
+    private func bothOutcome(_ front: Capture?, _ rear: Capture?) async -> BothOutcome {
+        guard front == nil || rear == nil else { return BothOutcome(front: front, rear: rear, failure: nil) }
+        let reason: CaptureFailureReason = endedByDisarm ? .disarmed
+            : CaptureFailureReason.forCaptureFailure(interruption: await camera.interruptionReason())
+        var failures: [String: CaptureFailureReason] = [:]
+        if front == nil { failures["front"] = reason }
+        if rear == nil { failures["rear"] = reason }
+        if !endedByDisarm {
+            host?.report(cameraNotice: "A camera capture failed - see the event for missing camera coverage.")
+        }
+        return BothOutcome(front: front, rear: rear, failure: front == nil && rear == nil ? reason : nil,
+                           failuresByCamera: failures)
     }
 
     // MARK: - Clip length and illumination

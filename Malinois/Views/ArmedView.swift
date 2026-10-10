@@ -41,7 +41,8 @@ struct ArmedView: View {
                     engine.disarm()   // restores brightness + returns to Home
                 }, onCancel: {
                     engine.endDisarmEntry()   // back to covert black
-                }, onActivity: { engine.noteDisarmActivity() })
+                }, onActivity: { engine.noteDisarmActivity() },
+                onFailure: { engine.noteWrongDisarmPIN() })   // a wrong PIN is on the record (item 49)
                 .overlay(alignment: .top) { armedDurationBadge }
                 .transition(.opacity)
             } else {
@@ -142,8 +143,9 @@ struct ArmedView: View {
         engine.noteDisarmCandidate()
         // Any contact counts as a touch trip (F-08): report on press-DOWN, not only on a
         // sub-second release. A lingering finger, a drag, or the start of the disarm hold
-        // itself is exactly the interaction a snoop makes — and it must be logged.
-        if settings.isEnabled(.touch) { engine.reportTouch() }
+        // itself is exactly the interaction a snoop makes — and it must be logged. Touch has
+        // no switch (item 83, ADR 0015), so there is no setting to ask.
+        engine.reportTouch()
     }
 
     /// Release. If the pad didn't open, this was a tap rather than a disarm, so close the

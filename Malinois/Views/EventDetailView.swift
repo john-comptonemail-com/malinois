@@ -20,6 +20,9 @@ struct EventDetailView: View {
     /// A download ran but some iCloud slots went unchecked (R3-3) — keeps the download
     /// section up for a retry even after a capture landed.
     @State private var downloadIncomplete = false
+    /// Item 52: when the phone that armed this watch was last heard from (an arm record from
+    /// another phone, on Pro); nil until the reader answers.
+    @State private var lastHeard: LastHeard?
 
     /// The live copy from the store — the view renders THIS, so a download that attaches
     /// media (34.B1) reflows the screen the moment the store updates. Falls back to the
@@ -53,6 +56,10 @@ struct EventDetailView: View {
             }
         }
         .sheet(isPresented: $showShare) { ShareSheet(items: shareItems) }
+        .task(id: current.id) {   // item 52
+            guard Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive) else { return }
+            lastHeard = await engine.lastHeard(session: current.id)
+        }
     }
 
     /// Text summary + the media file (if present) to hand to the system share sheet
@@ -61,7 +68,7 @@ struct EventDetailView: View {
         // The formatted value already carries its own "at" ("Aug 3, 2026 at 2:15 PM"), so the
         // sentence takes "on" — otherwise it reads "tampering at … at …".
         let timestamp = current.startDate.formatted(date: .abbreviated, time: .shortened)
-        var text = "Malinois detected tampering on \(timestamp) - \(current.sensorSummary) triggered."
+        var text = "Malinois detected tampering on \(timestamp) - \(current.shareClause)."
         if !current.durationSummary.isEmpty { text += " Recording: \(current.durationSummary)." }
         var items: [Any] = [text]
         // Share BOTH captures for a "Both" event — the secondary is often the face shot
@@ -98,13 +105,10 @@ struct EventDetailView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
-            // Item 54: a capture that produced nothing says why — and a photo attached by the
-            // one bounded retry after an interruption says it is the second attempt.
-            if let why = current.captureFailureSummary {
-                let hasMedia = current.mediaFilename != nil || current.thumbnailData != nil
-                Label(hasMedia ? "The first capture failed - \(why). This photo was taken when the camera came back."
-                               : "No photo or clip - \(why).",
-                      systemImage: "camera.badge.ellipsis")
+            // Original per-camera coverage remains visible alongside successful evidence.
+            // Only a whole-capture failure can describe an attached photo as the bounded retry.
+            ForEach(current.captureFailureMessages, id: \.self) { message in
+                Label(message, systemImage: "camera.badge.ellipsis")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
@@ -177,6 +181,12 @@ struct EventDetailView: View {
             row(current.durationSummary.isEmpty ? "Duration" : "Recording",
                 current.durationSummary.isEmpty ? String(format: "%.2f s", current.duration) : current.durationSummary)
             row("Triggered by", current.sensorSummary)
+            if let thermal = current.thermalStateSummary {
+                row("Phone temperature", thermal)   // item 38, choice 3
+            }
+            if Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive) {
+                row("Last heard from", Heartbeat.lastHeardText(lastHeard))
+            }
             HStack {
                 Text("Exfiltration").foregroundStyle(.secondary)
                 Spacer()
