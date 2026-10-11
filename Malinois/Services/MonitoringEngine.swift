@@ -1010,6 +1010,10 @@ final class MonitoringEngine: ObservableObject {
         connectivity.simulateForTesting(online: online)
     }
 
+    /// Test-only: supplies a classified full-evidence upload result without CloudKit.
+    /// Exercises the real upload completion and interference response; absent in Release.
+    var evidencePushForTesting: ((Event) async -> CloudExfiltrator.ExfilOutcome)?
+
     /// Test-only (item 79): stands in for iCloud inside the pending sweep — the account check
     /// and each record's upload. The simulator has no CloudKit container, so without it no test
     /// can drive a pass. The closure returns the sync state the record lands in and, like
@@ -1438,7 +1442,7 @@ final class MonitoringEngine: ObservableObject {
         let generation = cameraWarmGeneration
         if effectiveCameraPosition == .both && camera.supportsMultiCam {
             Task { [camera] in
-                do { try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUpMultiCam(forClips: forClips) } }
+                do { _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUpMultiCam(forClips: forClips) } }
                 catch { if generation == cameraWarmGeneration { reportCameraWarmupFailure(error) } }
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
@@ -1453,7 +1457,7 @@ final class MonitoringEngine: ObservableObject {
             default:    warmCamera = .front   // front, both-unsupported
             }
             Task { [camera] in
-                do { try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUp(forClips: forClips, camera: warmCamera) } }
+                do { _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUp(forClips: forClips, camera: warmCamera) } }
                 catch { if generation == cameraWarmGeneration { reportCameraWarmupFailure(error) } }
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
@@ -2169,10 +2173,12 @@ final class MonitoringEngine: ObservableObject {
     private var heartbeatTimer: Timer?
 
     /// Starts at go-live: the first beat at once, so the session's latest record exists from the
-    /// start, then one every `heartbeatInterval`.
+    /// start, then one every `heartbeatInterval`. A Pro watch joins the list the retention pass
+    /// trims old trails from (item 52's follow-up 2).
     private func startHeartbeat(session: UUID) {
         stopHeartbeat()
         heartbeatSession = session
+        if armedPro { registerBeatSession(BeatSession(id: session, start: armedSince ?? Date())) }
         beat()
         heartbeatTimer = Timer.commonMode(interval: timing.heartbeatInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.beat() }
@@ -2195,7 +2201,8 @@ final class MonitoringEngine: ObservableObject {
         guard Heartbeat.beatAllowed(sessionPro: armedPro, online: connectivity.observedOnline) else { return }
         let beat = HeartbeatBeat(session: session, sequence: heartbeatSequence, deviceName: DeviceInfo.name,
                                  batteryLevel: Heartbeat.batteryLevel(fromIOS: UIDevice.current.batteryLevel),
-                                 charging: isCharging)
+                                 charging: isCharging,
+                                 thermalState: Self.thermalStateName(thermalState()))   // follow-up 1, item 38's words
         Task { _ = await sendBeat(beat) }
     }
 
@@ -2219,6 +2226,9 @@ final class MonitoringEngine: ObservableObject {
     /// reader asks for a session's latest beat. The simulator has no CloudKit container.
     var beatSendForTesting: ((HeartbeatBeat) async -> Bool)?
     var latestBeatFetchForTesting: ((UUID) async -> LastHeard)?
+    /// Test-only (item 52's follow-up 2): stands in for iCloud when a pass trims the trails of the
+    /// watches it hands over, answering for each.
+    var beatTrailsTrimForTesting: (@MainActor ([BeatSession]) async -> [UUID: BeatTrimOutcome])?
     #endif
 
     // MARK: - Tamper response (alert / siren)
@@ -2462,15 +2472,9 @@ final class MonitoringEngine: ObservableObject {
                                           hadConnectivityAtArm: hadConnectivityAtArm,
                                           stationary: isStationary,
                                           alreadyEscalated: blackoutEscalated) else { return }
-        // Evidence precedes response (SECURITY.md): the interference record is in the log
-        // before the siren sounds; the frame grab follows it (item 65, finding 16). The
-        // session's cloud authorization is decided WITH the record (sixth-review F3), so a
-        // disarm or trial expiry during the grab can't split the event across tiers.
-        let record = logBlackoutRecord()
-        let sessionAllowed = cloudAllowed
-        escalate(.blackout)
-        // A jammer setting up is likely nearby — grab a frame while we're loud.
-        Task { await captureBlackoutEvidence(for: record, cloudAllowed: sessionAllowed) }
+        // This path has no triggering capture, so request a best-effort frame. All paths
+        // share the synchronous interference record written by `escalate` before alerting.
+        escalate(.blackout, captureBlackoutFrame: true)
     }
 
     /// Pure decision (unit-tested): a stationary armed device that had a path at arm
@@ -2506,15 +2510,21 @@ final class MonitoringEngine: ObservableObject {
         lastMotionTrip.map { Date().timeIntervalSince($0) > stationaryWindow } ?? true
     }
 
-    /// Abandon covertness. Blackout (jamming) sirens and persists until the PIN;
-    /// flood shows a visible warning (siren only in siren mode) that fades like a
-    /// normal alert but re-extends while the flood continues.
-    private func escalate(_ reason: Escalation) {
+    /// Abandon covertness. Each new blackout writes its signal-loss record before the
+    /// warning/siren, including trigger-time and observed-upload failures. Repeated requests
+    /// while escalated do not add records; reconnect/disarm allows a later incident.
+    /// Only the timed canary requests a frame: trigger/upload paths already have an event
+    /// and must not start another capture. Blackout lasts until disarm or reconnect; a flood
+    /// shows a warning (siren only in Siren mode) that extends while tampering continues.
+    private func escalate(_ reason: Escalation, captureBlackoutFrame: Bool = false) {
         if escalation == .blackout { return }        // strongest state; don't downgrade
         if escalation == reason {
             if !reason.persists { scheduleAlertDismiss() }   // extend the flood window
             return
         }
+        // Snapshot cloud authorization with the record, before any asynchronous work.
+        let record = reason == .blackout ? logBlackoutRecord() : nil
+        let sessionAllowed = cloudAllowed
         if reason == .blackout { blackoutEscalated = true }
         escalation = reason
         alertActive = true
@@ -2528,6 +2538,15 @@ final class MonitoringEngine: ObservableObject {
             soundSiren(fullVolume: true)
         }
         if !reason.persists { scheduleAlertDismiss() }
+        if let record {
+            Task {
+                if captureBlackoutFrame {
+                    await captureBlackoutEvidence(for: record, cloudAllowed: sessionAllowed)
+                } else {
+                    await exfiltrate(record, cloudAllowedOverride: sessionAllowed)
+                }
+            }
+        }
     }
 
     /// Stand down a *blackout* escalation when connectivity returns (a benign outage
@@ -2546,16 +2565,11 @@ final class MonitoringEngine: ObservableObject {
         refreshBrightness()
     }
 
-    /// Logs a suspected-jamming blackout (a sensorless record, flagged offline) and gets the
-    /// fact out — synchronously, so the record exists BEFORE the escalation that follows it
-    /// (item 65, finding 16). Always, even with the camera OFF: the *fact* of the interference
-    /// matters more than the photo, and the whole point is that it survives (F-16). Only the
-    /// frame grab, `captureBlackoutEvidence(for:cloudAllowed:)`, is camera-gated.
-    ///
-    /// Carries the sensor traces (as the flood path does). For a suspected jamming record the
-    /// motion trace is the most probative thing available: it evidences that the device was
-    /// sitting still while every network path vanished, which is the whole basis for calling
-    /// it jamming rather than a device carried out of coverage.
+    /// Writes the sensorless "Signal loss" record synchronously before any interference
+    /// warning, even with the camera off, and schedules the Pro fact upload. Connectivity
+    /// reflects the observed path: a network-class upload failure can escalate while that
+    /// path still looks online, so it must not be labelled captured offline.
+    /// Sensor traces preserve context; this records suspected interference, not its cause.
     private func logBlackoutRecord() -> Event {
         let event = Event(startDate: Date(), endDate: Date(),
                           triggeredSensors: [],
@@ -2563,7 +2577,7 @@ final class MonitoringEngine: ObservableObject {
                           audioTrace: monitors[.audio]?.recentTrace() ?? [],
                           visionTrace: monitors[.vision]?.recentTrace(),
                           cloudSyncState: .pending,
-                          capturedOffline: true,
+                          capturedOffline: !connectivity.isOnline,
                           thermalState: Self.thermalStateName(thermalState()))   // item 38, choice 3
         eventStore.add(event)
         eventCount = eventStore.events.count
@@ -2592,7 +2606,8 @@ final class MonitoringEngine: ObservableObject {
             // a still cannot contend for the movie output. In practice the blackout already
             // forces stills via the escalation (F4); this makes it structural, not incidental.
             let outcome = await capturePipeline.capture(from: cam, mode: .photo, illumination: settings.illumination)
-            if let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext) {
+            if let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext,
+                    attachingTo: event, camera: cap.camera.rawValue) {
                 event.mediaFilename = stored.filename
                 event.primaryCamera = cam.rawValue
                 event.thumbnailData = stored.thumbnail
@@ -2705,17 +2720,17 @@ final class MonitoringEngine: ObservableObject {
         !handlingTrigger && !capturingUntilClear && !cadenceBusy
     }
 
-    /// True while a blackout or flood-cadence capture is using the camera (ADR 0003).
-    private var cadenceCaptureBusy = false
+    /// True while a blackout, flood-cadence or retry capture is using the camera (ADR 0003).
+    private var cadenceCaptureBusy = false {
+        didSet {
+            // The interruption's end may have arrived during a flood/blackout still.
+            // Its release is the next opportunity; no polling or extra end is needed.
+            if oldValue && !cadenceCaptureBusy { scheduleInterruptedCaptureRetry() }
+        }
+    }
 
     /// A capture that failed for an interruption, waiting for the interruption to end
     /// (item 54). One slot: the latest such failure; consumed by the one bounded retry.
-    private struct CaptureRetry {
-        let eventID: UUID
-        let camera: CameraChoice
-        let failedAt: Date
-        let cloudAllowed: Bool
-    }
     private var captureRetry: CaptureRetry?
     /// True while the Home camera notice is this handler's interruption text, so the end of
     /// the interruption clears it without wiping a capture-failure notice.
@@ -2744,19 +2759,21 @@ final class MonitoringEngine: ObservableObject {
         case .interrupted(let reason):
             Log.engine.warning("Camera session interrupted: \(reason.rawValue, privacy: .public)")
             lastInterruption = (reason, Date())   // an attempt in flight may be its casualty (item 65, finding 2)
+            captureRetry?.interruptionEnded = false   // a newer interruption postpones the same slot
             guard state.isActive else { return }
             cameraNotice = Self.interruptionNotice(reason)
             interruptionNoticeShowing = true
         case .interruptionEnded:
             Log.engine.info("Camera session interruption ended")
             lastInterruptionEndedAt = Date()
+            captureRetry?.interruptionEnded = true
+            scheduleInterruptedCaptureRetry()
             if interruptionNoticeShowing {
                 cameraNotice = nil
                 interruptionNoticeShowing = false
             }
             guard state == .armed else { return }
             if cameraShouldBeWarm && !isHandlingTrigger { warmActiveCamera() }
-            Task { await retryInterruptedCapture() }
         case .runtimeError(let description):
             Log.engine.error("Camera session runtime error: \(description, privacy: .public)")
             guard state.isActive else { return }
@@ -2774,7 +2791,9 @@ final class MonitoringEngine: ObservableObject {
     private func storeInitialCapture(_ capture: EvidenceCapturePipeline.Capture?, secondary: Bool,
                                      in event: inout Event) async -> Bool {
         guard let capture else { return true }
-        guard let stored = await eventStore.store(capture.source, ext: capture.ext) else {
+        guard let stored = await eventStore.store(capture.source, ext: capture.ext,
+                attachingTo: event, secondary: secondary, camera: capture.camera.rawValue,
+                duration: capture.ext == "mov" ? capture.duration : nil) else {
             report(cameraNotice: "A capture could not be saved - see the event for details.")
             return false
         }
@@ -2793,28 +2812,41 @@ final class MonitoringEngine: ObservableObject {
 
     /// Item 54's one bounded retry: after an interruption ends, the capture that failed for
     /// it gets a single still — if the session is still armed, the event is recent and still
-    /// without media, and no other capture owns the camera. The slot is cleared BEFORE the
-    /// attempt: one try, whatever happens, never a loop. The record keeps its reason either
-    /// way; a photo that lands is labelled as the second attempt in the detail view. The photo
-    /// joins the record as it is when the photo lands, not as it was before the capture: a
+    /// without media, and no other capture owns the camera. Busy captures preserve the slot
+    /// until their release; an expired, disabled or ended watch discards it. The slot is
+    /// cleared BEFORE the eligible attempt: one try, whatever happens, never a loop.
+    /// The record keeps its reason either way; a photo that lands is labelled as the second
+    /// attempt in the detail view. The photo joins the record as it is when the photo lands,
+    /// not as it was before the capture: a
     /// flood's anchor gains coalesced trips meanwhile, and writing back the earlier copy walked
     /// them back (item 95).
     private func retryInterruptedCapture() async {
         guard let retry = captureRetry else { return }
-        captureRetry = nil
-        guard state == .armed, settings.isEnabled(.camera),
+        guard retry.session == armSession, state == .armed || state == .triggered,
+              settings.isEnabled(.camera),
               Date().timeIntervalSince(retry.failedAt) <= timing.captureRetryWindow,
               let before = eventStore.events.first(where: { $0.id == retry.eventID }),
-              before.mediaFilename == nil, before.secondaryMediaFilename == nil,
+              before.mediaFilename == nil, before.secondaryMediaFilename == nil else {
+            captureRetry = nil
+            return
+        }
+        guard retry.interruptionEnded, state == .armed,
               Self.mayRunCadenceCapture(handlingTrigger: isHandlingTrigger,
                                         capturingUntilClear: isCapturingUntilClear,
-                                        cadenceBusy: cadenceCaptureBusy)
-        else { return }
+                                        cadenceBusy: cadenceCaptureBusy) else { return }
+        // No suspension between claiming the slot and claiming the camera: duplicate
+        // notifications and release callbacks can spend this opportunity only once.
+        captureRetry = nil
         cadenceCaptureBusy = true
         defer { cadenceCaptureBusy = false }
         let outcome = await capturePipeline.capture(from: retry.camera, mode: .photo, illumination: settings.illumination)
-        defer { standDownCameraIfNeeded() }
-        guard let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext) else {
+        defer {
+            // A capture already started may still preserve evidence after disarm, but its
+            // completion must not stand down the camera belonging to a replacement watch.
+            if retry.session == armSession { standDownCameraIfNeeded() }
+        }
+        guard let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext,
+                attachingTo: before, camera: cap.camera.rawValue) else {
             Log.engine.warning("Retry capture after the interruption failed too — the record keeps its reason")
             return
         }
@@ -2842,14 +2874,6 @@ final class MonitoringEngine: ObservableObject {
         guard failure == .captureFailed, let interruptedAt, let reason,
               interruptedAt >= attemptStartedAt else { return failure }
         return CaptureFailureReason.forCaptureFailure(interruption: reason)
-    }
-
-    /// Pure (unit-tested; item 65, finding 2). Whether the one bounded retry should run now
-    /// rather than wait for `.interruptionEnded`: the interruption that failed the attempt has
-    /// already ended, so no end is coming. A newer interruption still live keeps the wait.
-    nonisolated static func retryIsDueNow(interruptedAt: Date?, interruptionEndedAt: Date?) -> Bool {
-        guard let interruptedAt, let interruptionEndedAt else { return false }
-        return interruptionEndedAt >= interruptedAt
     }
 
     // MARK: - Test Sensors (dry run)
@@ -3209,7 +3233,8 @@ final class MonitoringEngine: ObservableObject {
         default:    cam = .front   // front / both → one grab is enough here
         }
         let outcome = await capturePipeline.capture(from: cam, mode: .photo, illumination: settings.illumination)
-        if let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext) {
+        if let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext,
+                    attachingTo: event, camera: cap.camera.rawValue) {
             event.mediaFilename = stored.filename
             event.primaryCamera = cam.rawValue
             event.thumbnailData = stored.thumbnail
@@ -3368,7 +3393,9 @@ final class MonitoringEngine: ObservableObject {
         // (item 65, finding 11).
         if let failure, failure.isInterruption, session == armSession {
             captureRetry = CaptureRetry(eventID: event.id, camera: captureCamera,
-                                        failedAt: Date(), cloudAllowed: sessionAllowed)
+                                        failedAt: Date(), cloudAllowed: sessionAllowed, session: session,
+                                        interruptionEnded: Self.retryIsDueNow(interruptedAt: lastInterruption?.at,
+                                                                             interruptionEndedAt: lastInterruptionEndedAt))
         }
         // Trips that landed during this capture join the record (34-review M1) — the
         // flood coalescer's precedent: coalesce log spam, never evidence. Folded before the
@@ -3416,12 +3443,6 @@ final class MonitoringEngine: ObservableObject {
 
         // 5. Re-arm the sensors NOW so the next tamper is caught immediately.
         reArm()
-        // Item 65, finding 2: if the interruption that failed this capture is already over, no
-        // `.interruptionEnded` will arrive to run the retry — take it now that the engine is armed.
-        if captureRetry != nil,
-           Self.retryIsDueNow(interruptedAt: lastInterruption?.at, interruptionEndedAt: lastInterruptionEndedAt) {
-            Task { await retryInterruptedCapture() }
-        }
 
         // 5a. Return the camera to cold standby if the readiness policy says so
         //     (Battery saver, or Auto on battery) — this capture is the reason it was
@@ -3492,7 +3513,16 @@ final class MonitoringEngine: ObservableObject {
         }
         let mediaURL = event.mediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
         let secondaryURL = event.secondaryMediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
-        let outcome = await cloud.exfiltrate(event, fullMediaURL: mediaURL, secondaryMediaURL: secondaryURL)
+        let outcome: CloudExfiltrator.ExfilOutcome
+        #if DEBUG
+        if let push = evidencePushForTesting {
+            outcome = await push(event)
+        } else {
+            outcome = await cloud.exfiltrate(event, fullMediaURL: mediaURL, secondaryMediaURL: secondaryURL)
+        }
+        #else
+        outcome = await cloud.exfiltrate(event, fullMediaURL: mediaURL, secondaryMediaURL: secondaryURL)
+        #endif
         eventStore.setSyncState(outcome.syncState, for: event.id)
         handleEncryptedDataResetIfNeeded()
         if outcome.syncState == .synced { cloudPushRefused = false }
@@ -3509,6 +3539,11 @@ final class MonitoringEngine: ObservableObject {
                                         hadConnectivityAtArm: hadConnectivityAtArm,
                                         online: connectivity.isOnline,
                                         watching: state == .armed || state == .triggered) {
+        case .goLoud where event.isSignalLoss:
+            // The diagnostic records an alarm already raised, not a new tamper. Its
+            // completion can arrive after reconnect or in a later watch; never let its
+            // failed upload create another diagnostic/alarm. Sync/refusal handling stays.
+            break
         case .goLoud:
             Log.engine.error("Evidence push failed while the network path looks up — going loud")
             escalate(.blackout)
@@ -3658,50 +3693,72 @@ final class MonitoringEngine: ObservableObject {
     /// (BACKLOG 34.B1) — the retrieval half of the Pro backup promise, Pro-gated like every
     /// cloud path. The store takes ownership exactly as it does for a fresh capture: UUID
     /// filename, evidence-grade protection, derived thumbnail. Also recovers media the
-    /// byte cap evicted locally — the cloud copy outlives the local eviction by design.
+    /// byte cap evicted locally — the cloud copy outlives the local eviction by design. The
+    /// files join the record as it is when they land: a fetch can replace a mirror while the
+    /// download runs, and writing back the copy read before it undid that (item 96). Camera
+    /// placement also uses that current record, after staging and storage have finished, so
+    /// newly learned labels and captures from another download cannot be overwritten.
     func downloadFullEvidence(for id: UUID) async -> EvidenceDownload {
         guard entitlements.proActive else { return EvidenceDownload(landed: false, complete: true) }
         guard let event = eventStore.events.first(where: { $0.id == id }) else {
             return EvidenceDownload(landed: false, complete: true)
         }
-        guard let fetch = await cloud.fetchFullMedia(for: id, manifest: event.cloudMediaManifest) else {
+        guard let fetch = await fetchFullMedia(for: id, manifest: event.cloudMediaManifest) else {
             // The fetch never ran (account, network, thrown) — nothing was checked.
             return EvidenceDownload(landed: false, complete: false)
         }
         guard !fetch.media.isEmpty else {
             return EvidenceDownload(landed: false, complete: fetch.complete)
         }
-        var updated = event
         var landed = false
         for item in fetch.media {
-            // Placement by identity — camera label or legacy slot token — never by
-            // arrival order (ext-review #2): order put rear bytes under a "Front" label,
-            // and a retry after a partial download duplicated the already-held camera
-            // into the missing slot.
-            let placement = Self.mediaPlacement(itemCamera: item.camera, itemSlot: item.slot,
-                                                primaryFilled: updated.mediaFilename != nil,
-                                                secondaryFilled: updated.secondaryMediaFilename != nil,
-                                                primaryCamera: updated.primaryCamera,
-                                                secondaryCamera: updated.secondaryCamera)
-            guard placement != .skip else { continue }
+            // Skip known duplicates before copying bytes, but decide again after every await:
+            // a cloud merge or another download may fill or name a slot while storage runs.
+            func placement(in record: Event) -> MediaPlacement {
+                Self.mediaPlacement(itemCamera: item.camera, itemSlot: item.slot,
+                                    primaryFilled: record.mediaFilename != nil,
+                                    secondaryFilled: record.secondaryMediaFilename != nil,
+                                    primaryCamera: record.primaryCamera, secondaryCamera: record.secondaryCamera)
+            }
+            guard let before = eventStore.events.first(where: { $0.id == id }) else { break }
+            guard placement(in: before) != .skip else { continue }
             guard let staged = await Self.stageDownloadedAsset(at: item.fileURL) else { continue }
             guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { continue }
-            switch placement {
+            guard var current = eventStore.events.first(where: { $0.id == id }) else { break }
+            // Placement and attachment use one current snapshot with no suspension between
+            // them. A newly learned rear label must not be overwritten by a stale front-slot
+            // decision (item 96 integration). If a competing download won, the unused file
+            // remains unreferenced and the store's existing orphan sweep reclaims it.
+            switch placement(in: current) {
             case .primary(let setLabel):
-                updated.mediaFilename = stored.filename
-                if setLabel { updated.primaryCamera = item.camera }
-                if updated.thumbnailData == nil { updated.thumbnailData = stored.thumbnail }
+                current.mediaFilename = stored.filename
+                if setLabel { current.primaryCamera = item.camera }
+                if current.thumbnailData == nil { current.thumbnailData = stored.thumbnail }
             case .secondary(let setLabel):
-                updated.secondaryMediaFilename = stored.filename
-                if setLabel { updated.secondaryCamera = item.camera }
+                current.secondaryMediaFilename = stored.filename
+                if setLabel { current.secondaryCamera = item.camera }
             case .skip:
-                break
+                continue
             }
+            eventStore.update(current)
             landed = true
         }
-        if landed { eventStore.update(updated) }
         return EvidenceDownload(landed: landed, complete: fetch.complete)
     }
+
+    /// iCloud's full-media fetch for one event, or the test's stand-in.
+    private func fetchFullMedia(for id: UUID, manifest: [String]?) async -> CloudExfiltrator.FullMediaFetch? {
+        #if DEBUG
+        if let fetch = fullMediaFetchForTesting { return await fetch(id, manifest) }
+        #endif
+        return await cloud.fetchFullMedia(for: id, manifest: manifest)
+    }
+
+    #if DEBUG
+    /// Test-only (item 96): stands in for iCloud when full evidence is fetched for an event.
+    /// The simulator has no CloudKit container.
+    var fullMediaFetchForTesting: (@MainActor (UUID, [String]?) async -> CloudExfiltrator.FullMediaFetch?)?
+    #endif
 
     /// Classifies a downloaded asset from its leading bytes and stages it for the store:
     /// stills as Data, movies copied to a temp file the store may consume by move (CloudKit
@@ -3768,10 +3825,80 @@ final class MonitoringEngine: ObservableObject {
         return true
     }
 
+    /// The most watches one retention pass hands over for trimming: a year of nightly watches is
+    /// hundreds, and each is a fetch and a delete, so a first pass works through them over a few
+    /// days (item 52's follow-up 2).
+    nonisolated static let beatTrimSessionsPerPass = 50
+
+    /// The watches waiting for their trails to be trimmed, shared with log migration.
+    static func beatSessions() -> [BeatSession] { BeatSessionRegistry.read() }
+
+    private static func saveBeatSessions(_ sessions: [BeatSession]) {
+        BeatSessionRegistry.save(sessions)
+    }
+
+    /// A Pro watch going live joins the list (a free watch never beats, so it never does), after
+    /// the log's own arm records if they were never added.
+    private func registerBeatSession(_ session: BeatSession) {
+        seedBeatSessionsIfNeeded()
+        var sessions = Self.beatSessions()
+        guard !sessions.contains(where: { $0.id == session.id }) else { return }
+        sessions.append(session)
+        Self.saveBeatSessions(sessions)
+    }
+
+    /// Pure (unit-tested): the watches waiting, with the log's own arm records added that are
+    /// not there yet (once, for watches from before the list existed). Another phone's arm
+    /// record is not this phone's watch.
+    nonisolated static func seededBeatSessions(_ sessions: [BeatSession], from events: [Event]) -> [BeatSession] {
+        BeatSessionRegistry.addingLegacyWatches(sessions, from: events)
+    }
+
+    /// Seeds legacy watches from a complete, readable log. EventStore normally does
+    /// this before count migration; the engine remains a fallback for a later readable
+    /// store. A sealed or fresh log cannot complete one-time seeding.
+    private func seedBeatSessionsIfNeeded() {
+        guard eventStore.hasReadTheLog else { return }
+        BeatSessionRegistry.seedIfNeeded(from: eventStore.events)
+    }
+
+    /// Pure (unit-tested): the watches due for a trim, oldest first: begun before `cutoff`, and
+    /// not the watch that is live. Whether a due watch's trail goes is the cloud's call, on the
+    /// server time of its last beat (`CloudExfiltrator.trimBeatTrails`).
+    nonisolated static func sessionsDueForBeatTrim(sessions: [BeatSession], cutoff: Date, live: UUID?) -> [BeatSession] {
+        sessions.filter { $0.start < cutoff && $0.id != live }.sorted { $0.start < $1.start }
+    }
+
+    /// Hands the due watches, oldest first and at most `beatTrimSessionsPerPass`, to the cloud,
+    /// and drops from the list those it trimmed. A watch whose last beat is still inside the
+    /// window, or whose trim failed, stays for a later pass; the pass's cadence is the media
+    /// purge's alone, so a trim's leftovers never make the pass run sooner.
+    private func trimOldBeatTrails(olderThan cutoff: Date, monthsOld months: Int) async {
+        seedBeatSessionsIfNeeded()
+        let due = Array(Self.sessionsDueForBeatTrim(sessions: Self.beatSessions(), cutoff: cutoff, live: heartbeatSession)
+            .prefix(Self.beatTrimSessionsPerPass))
+        guard !due.isEmpty else { return }
+        let outcomes = await trimBeatTrails(due, monthsOld: months)
+        let trimmed = Set(outcomes.filter { $0.value == .trimmed }.map(\.key))
+        // Read again: a watch may have gone live and joined the list while the trims ran.
+        Self.saveBeatSessions(Self.beatSessions().filter { !trimmed.contains($0.id) })
+    }
+
+    /// The batch's trims: iCloud's, or the test's stand-in.
+    private func trimBeatTrails(_ sessions: [BeatSession], monthsOld months: Int) async -> [UUID: BeatTrimOutcome] {
+        #if DEBUG
+        if let trim = beatTrailsTrimForTesting { return await trim(sessions) }
+        #endif
+        return await cloud.trimBeatTrails(sessions, monthsOld: months)
+    }
+
     /// Enforces the automatic cloud-retention policy (32.R2), quietly and at most daily.
     /// Only the auto modes delete anything here — Manual deletes solely through the owner's
     /// explicit Settings action, and Keep-forever never deletes at all. Pro-gated like every
-    /// cloud path; the 30-day protection floor is enforced inside `purgeCutoff`.
+    /// cloud path; device dates schedule attempts and shortlist sessions, but each deleting
+    /// call derives the policy and 30-day floor from CloudKit system timestamps. What it deletes: full-resolution media past the setting,
+    /// and (item 52's follow-up 2) the per-beat trails of this phone's watches whose last beat
+    /// is past it, each watch keeping its latest beat.
     func enforceCloudRetentionIfDue() async {
         guard entitlements.proActive, let months = settings.cloudRetention.autoMonths else { return }
         let defaults = UserDefaults.standard
@@ -3784,11 +3911,12 @@ final class MonitoringEngine: ObservableObject {
         // a walk that couldn't read every record now reports failure, so the retry it
         // earns actually happens on the shorter cadence).
         defaults.set(Date(), forKey: Self.cloudRetentionLastAttemptKey)
-        let result = await cloud.purgeFullMedia(
-            olderThan: CloudExfiltrator.purgeCutoff(monthsOld: months, now: Date()))
+        let cutoff = CloudExfiltrator.purgeCutoff(monthsOld: months, now: Date())
+        let result = await cloud.purgeFullMedia(monthsOld: months)
         if !result.failed {
             defaults.set(Date(), forKey: Self.cloudRetentionLastRunKey)
         }
+        await trimOldBeatTrails(olderThan: cutoff, monthsOld: months)   // its progress is kept per watch, not in the stamp
     }
 
     /// Single-flight guard for `retryPendingSync` (1.2 coordinator): foreground, reconnect
@@ -4011,6 +4139,9 @@ final class MonitoringEngine: ObservableObject {
         isHandlingTrigger = false
         state = .armed
         recheckBlackoutOnReturnToArmed()   // a path lost during the capture (item 65, finding 8)
+        // Also wakes a retry whose end notification raced with this trigger, including
+        // an until-clear clip. A still-active interruption leaves its slot parked.
+        scheduleInterruptedCaptureRetry()
     }
 
     // MARK: - Disarm (PIN-gated by caller)
@@ -4111,6 +4242,34 @@ final class MonitoringEngine: ObservableObject {
 // MARK: - Camera session events (item 54)
 
 extension MonitoringEngine {
+    /// Pure (unit-tested; item 65, finding 2). Whether the one bounded retry should run now
+    /// rather than wait for `.interruptionEnded`: the interruption that failed the attempt has
+    /// already ended, so no end is coming. A newer interruption still live keeps the wait.
+    nonisolated static func retryIsDueNow(interruptedAt: Date?, interruptionEndedAt: Date?) -> Bool {
+        guard let interruptedAt, let interruptionEndedAt else { return false }
+        return interruptionEndedAt >= interruptedAt
+    }
+
+    private struct CaptureRetry {
+        let eventID: UUID
+        let camera: CameraChoice
+        let failedAt: Date
+        let cloudAllowed: Bool
+        let session: Int
+        var interruptionEnded: Bool
+    }
+
+    /// Queue an opportunity for this slot only. A queued callback from an older incident or
+    /// watch must not spend a replacement slot. Eligibility is checked when the task runs.
+    private func scheduleInterruptedCaptureRetry() {
+        guard let retry = captureRetry, retry.interruptionEnded else { return }
+        Task { [weak self] in
+            guard let self, self.armSession == retry.session,
+                  self.captureRetry?.eventID == retry.eventID else { return }
+            await self.retryInterruptedCapture()
+        }
+    }
+
     /// Owner-facing wording for a session interruption while armed (pure, unit-tested).
     nonisolated static func interruptionNotice(_ reason: CaptureInterruptionReason) -> String {
         let why: String

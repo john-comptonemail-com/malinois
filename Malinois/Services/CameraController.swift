@@ -261,7 +261,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                 // Read the reason here, on the notification's thread — `Notification` does
                 // not cross into the session queue or the main actor.
                 let reason = Self.interruptionReason(fromUserInfo: note.userInfo)
-                self?.sessionQueue.async {
+                self?.sessionQueue.async { [weak self] in
                     self?.clipInterrupted = true
                     self?.clipInterruptionReasonValue = reason
                     self?.currentInterruption = reason
@@ -272,7 +272,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             // its one bounded retry; a runtime error (32.R9) is its cue to say so and re-warm.
             nc.addObserver(forName: AVCaptureSession.interruptionEndedNotification,
                            object: s, queue: nil) { [weak self] _ in
-                self?.sessionQueue.async { self?.currentInterruption = nil }
+                self?.sessionQueue.async { [weak self] in self?.currentInterruption = nil }
                 self?.deliverSessionEvent(.interruptionEnded)
             }
             nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification,
@@ -353,6 +353,9 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         case .videoDeviceInUseByAnotherClient,
              .videoDeviceNotAvailableWithMultipleForegroundApps: return .anotherApp
         case .videoDeviceNotAvailableDueToSystemPressure:        return .systemPressure
+        // iOS 26: raised only by Apple's sensitive-content analyzer, which the app never uses
+        // (the 1.4 audit); named so the switch is complete, read as `.unknown` as before.
+        case .sensitiveContentMitigationActivated:               return .unknown
         @unknown default:                                        return .unknown
         }
     }

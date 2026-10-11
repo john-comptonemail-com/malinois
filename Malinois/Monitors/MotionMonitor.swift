@@ -89,7 +89,9 @@ final class MotionMonitor: SensorMonitor {
 
     /// The update stream itself, separated out so the watchdog can restart it in place.
     private func startUpdates() {
-        manager.startDeviceMotionUpdates(to: queue) { [weak self] motion, _ in
+        // @Sendable: CoreMotion calls this on `queue`, never the main actor; unmarked, Swift 6 would
+        // take it for main-actor code and stop the app at its first call (item 97).
+        manager.startDeviceMotionUpdates(to: queue) { @Sendable [weak self] motion, _ in
             guard let self, let motion else { return }
             let g = motion.gravity
             let a = motion.userAcceleration
@@ -154,7 +156,9 @@ final class MotionMonitor: SensorMonitor {
         hasTripped = false
         gravitySamples.removeAll()
         accelSamples.removeAll()
-        manager.startDeviceMotionUpdates(to: queue) { [weak self] motion, _ in
+        // @Sendable: CoreMotion calls this on `queue`, never the main actor; unmarked, Swift 6 would
+        // take it for main-actor code and stop the app at its first call (item 97).
+        manager.startDeviceMotionUpdates(to: queue) { @Sendable [weak self] motion, _ in
             guard let self, let motion else { return }
             let g = motion.gravity
             let a = motion.userAcceleration

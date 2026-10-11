@@ -119,6 +119,48 @@ final class EngineCharacterizationTests: XCTestCase {
         rig.engine.disarm()
     }
 
+    func testFrontCaptureHasRecoveryDestinationBeforeEngineAttachment() {
+        assertRecoverableCapture(camera: .front, expected: 1)
+    }
+
+    func testBothCapturesHaveRecoveryDestinationsBeforeEngineAttachment() {
+        assertRecoverableCapture(camera: .both, expected: 2)
+    }
+
+    private func assertRecoverableCapture(camera: CameraChoice, expected: Int,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        let rig = makeRig { $0.captureMode = .photo; $0.cameraPosition = camera }
+        rig.camera.supportsMultiCam = true
+        var observed = 0
+        rig.store.attachmentPublishedForTesting = { eventID, filename in
+            observed += 1
+            guard let originalRoot = EventStore.rootOverrideForTesting else { return XCTFail("missing isolated root") }
+            let copiedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer {
+                EventStore.rootOverrideForTesting = originalRoot
+                try? FileManager.default.removeItem(at: copiedRoot)
+            }
+            do {
+                // A separate snapshot stops the live engine from repairing the simulated
+                // crash window before the new store has demonstrated its own recovery.
+                try FileManager.default.copyItem(at: originalRoot, to: copiedRoot)
+                EventStore.rootOverrideForTesting = copiedRoot
+                let relaunched = EventStore()
+                let recovered = try XCTUnwrap(relaunched.events.first { $0.id == eventID })
+                XCTAssertTrue([recovered.mediaFilename, recovered.secondaryMediaFilename].contains(filename),
+                              "restart attaches already-saved evidence without engine write-back", file: file, line: line)
+                XCTAssertEqual(recovered.cloudSyncState, .pending)
+                relaunched.flush()
+                relaunched.drainIOForTesting()
+            } catch { XCTFail("snapshot recovery failed: \(error)", file: file, line: line) }
+        }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed && rig.camera.stills.count + rig.camera.bothStills * 2 >= expected }, timeout: 5))
+        XCTAssertEqual(observed, expected, "each real capture path supplies its recoverable destination", file: file, line: line)
+        rig.engine.disarm()
+    }
+
     // MARK: - Arming
 
     /// Grace (0 s) → calibration → the review card → covert, armed. `lastCalibration` is the

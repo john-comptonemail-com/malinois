@@ -25,7 +25,9 @@ final class SirenPlayer {
 
     private var player: AVAudioPlayer?
     private let fileURL: URL
-    private var interruptionObserver: NSObjectProtocol?
+    /// Set in `init` and read in `deinit`, never concurrently: `deinit` runs when nothing else
+    /// holds the player, and it cannot be main-actor isolated on iOS 17 (item 97).
+    nonisolated(unsafe) private var interruptionObserver: NSObjectProtocol?
 
     /// What the alarm SHOULD be doing, independent of whether the OS has paused our
     /// player. A phone call (or Siri, or another app) posts an audio *interruption* that
@@ -45,7 +47,9 @@ final class SirenPlayer {
         }
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-                Task { @MainActor in self?.handleInterruption(note) }
+                // Read the type here: a `Notification` does not cross into the main actor (item 97).
+                let type = Self.interruptionType(fromUserInfo: note.userInfo)
+                Task { @MainActor in self?.handleInterruption(type) }
             }
     }
 
@@ -192,9 +196,13 @@ final class SirenPlayer {
 
     // MARK: - Interruption handling (a phone call must not silence a running siren)
 
-    private func handleInterruption(_ note: Notification) {
-        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+    /// The interruption's type, read from the notification where it arrives.
+    nonisolated private static func interruptionType(fromUserInfo userInfo: [AnyHashable: Any]?) -> AVAudioSession.InterruptionType? {
+        (userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+    }
+
+    private func handleInterruption(_ type: AVAudioSession.InterruptionType?) {
+        guard let type else { return }
         switch type {
         case .began:
             // The OS has already paused our player (a call, Siri, another app). Nothing to

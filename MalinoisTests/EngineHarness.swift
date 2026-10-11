@@ -166,7 +166,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     func endClip() async throws -> URL {
         lock.withLock { _clipEnds += 1 }
         if let clipEndError { throw clipEndError }
-        return try Self.emptyClipFile()
+        return try Self.placeholderClipFile()
     }
 
     func captureBothStills(rearHardwareFlash: Bool) async throws -> (front: Data?, rear: Data?) {
@@ -183,7 +183,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
             if invalidBothClipFiles.contains(lens) {
                 return FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
             }
-            return try Self.emptyClipFile()
+            return try Self.placeholderClipFile()
         }
         return (try file("front"), try file("rear"))
     }
@@ -192,11 +192,11 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     func interruptionReason() async -> CaptureInterruptionReason? { interruptionReasonValue }
     func beginCaptureAttempt() { lock.withLock { _attemptBegins += 1 } }
 
-    /// A zero-byte movie the store can move into place — the clip path's behavior is what a
-    /// test observes, not the footage.
-    private static func emptyClipFile() throws -> URL {
+    /// A nonempty opaque placeholder for storage/control-flow tests, not playable footage.
+    /// Zero bytes represent an incomplete save and are deliberately rejected by recovery.
+    private static func placeholderClipFile() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
-        try Data().write(to: url)
+        try Data("fake-clip-payload".utf8).write(to: url)
         return url
     }
 }
@@ -212,10 +212,12 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 enum TestIsolation {
     /// Every key an engine keeps about a session and its recovery, matched by prefix so a flag
     /// added later is covered without editing a list: the armed marker and boot stamp, the
-    /// lapse-logged flag, the countdown marker, the owed re-arm and the crash-loop timestamp.
+    /// lapse-logged flag, the countdown marker, the owed re-arm and the crash-loop timestamp; and
+    /// the heartbeat's watches waiting for their trails to be trimmed (item 52's follow-up 2).
     nonisolated static let recoveryFlagPrefixes = ["com.malinois.armedSession.", "com.malinois.armed.",
                                                    "com.malinois.arming.", "com.malinois.recovery.",
-                                                   "com.malinois.protection."]   // item 91's recorded settings
+                                                   "com.malinois.protection.",   // item 91's recorded settings
+                                                   "com.malinois.beats."]
 
     @MainActor private static var engines: [MonitoringEngine] = []
 
@@ -226,9 +228,12 @@ enum TestIsolation {
         clearRecoveryFlags()
     }
 
-    /// The test's engines disarmed, then its flags cleared and its folder removed.
-    @MainActor static func tearDown() {
-        disarmTrackedEngines()
+    /// The test's engines disarmed, then its flags cleared and its folder removed. Called from
+    /// XCTest's `tearDown`, which is not main-actor isolated but runs on the main thread (item 97).
+    /// Keep the callers' setUp and tearDown synchronous: XCTest runs the async forms on another
+    /// thread, where `MainActor.assumeIsolated` would stop the test.
+    nonisolated static func tearDown() {
+        MainActor.assumeIsolated { disarmTrackedEngines() }
         tearDownFolderAndFlags()
     }
 
@@ -260,4 +265,12 @@ enum TestIsolation {
             defaults.removeObject(forKey: key)
         }
     }
+}
+
+/// A phone's lock state that a test flips while the code under test reads it through a closure
+/// (items 77, 85 and 86). A holder rather than a local `var`: Swift 6 warns when a `var` is changed
+/// after a Sendable closure captured it (item 97).
+@MainActor
+final class LockState {
+    var unlocked = false
 }

@@ -171,6 +171,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // The handler type is not Sendable, so the task takes it under nonisolated(unsafe): it is
+        // called once, on the main actor, as before (item 97). The async form of this method would
+        // serve too; the handler form is kept so nothing changes in how iOS calls the app.
+        nonisolated(unsafe) let completionHandler = completionHandler
         Task { @MainActor in
             completionHandler(PrivacyCover.shared.isCovert ? [] : [.banner, .sound, .list])
         }

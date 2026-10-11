@@ -130,7 +130,7 @@ struct HomeView: View {
                    content: { SettingsView() })
             .sheet(isPresented: $showTest) { DryRunView() }
             .sheet(isPresented: $showPaywall) { PaywallView() }
-            .navigationDestination(isPresented: $showLog) { EventLogView() }
+            .navigationDestination(isPresented: eventLogPresentation) { EventLogView() }
             .task { await cloud.refreshAccountState() }
             // A PIN-opened area must not outlive the foreground session. Without this the gate
             // is first-open only: unlock the log, background the app for an hour, come back,
@@ -143,7 +143,7 @@ struct HomeView: View {
             // cover handles those transient cases — it is a different job with a different hook.
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .background else { return }
-                showLog = false
+                eventLogPresentation.wrappedValue = false
                 showSettings = false
                 showTest = false
                 pinGate = nil
@@ -188,12 +188,29 @@ struct HomeView: View {
         pinGate = .log
     }
 
+    private var eventLogPresentation: Binding<Bool> {
+        Self.eventLogPresentation($showLog, store: eventStore)
+    }
+
+    /// A real log transition acknowledges the current records BEFORE navigation
+    /// publishes its new state. Opening is reached only after authentication; Back
+    /// and backgrounding close the same visit. Redundant closes (including a cancelled
+    /// PIN prompt) cannot acknowledge events that arrived after the visit ended.
+    @MainActor
+    static func eventLogPresentation(_ destination: Binding<Bool>, store: EventStore) -> Binding<Bool> {
+        Binding(get: { destination.wrappedValue }, set: { presented in
+            guard presented != destination.wrappedValue else { return }
+            store.markAllSeen()
+            destination.wrappedValue = presented
+        })
+    }
+
     /// Opens the area unlocked by a successful PIN, once the prompt has dismissed.
     private func openUnlocked() {
         guard let dest = unlocked else { return }
         unlocked = nil
         switch dest {
-        case .log:      showLog = true
+        case .log:      eventLogPresentation.wrappedValue = true
         case .settings: showSettings = true
         case .test:     showTest = true
         }

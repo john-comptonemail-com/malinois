@@ -461,8 +461,9 @@ final class AppSettings: ObservableObject, Codable {
     /// defaults the owner never chose. Surfaced rather than silently accepted: the defaults
     /// include Guided Access enforcement **off**, PIN-pad scrambling **off** and the Sound and
     /// Vision tripwires **off**, so a silent reset quietly reduces protection — the one thing
-    /// this app's settings must never do without saying so.
-    static private(set) var loadWasReset = false
+    /// this app's settings must never do without saying so. Written only by `load()` at
+    /// launch, before any screen reads it (item 97: Swift 6 asks for the promise in words).
+    nonisolated(unsafe) static private(set) var loadWasReset = false
 
     static func load() -> AppSettings {
         reapStaleCorruptStashes()

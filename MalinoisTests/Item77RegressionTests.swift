@@ -68,10 +68,12 @@ final class Item77RegressionTests: XCTestCase {
         super.tearDown()
     }
 
+    /// `configure` comes before `protectedDataAvailable` so a trailing closure binds to it (item 97:
+    /// Swift 6 matches trailing closures forward only).
     private func makeRig(timing: EngineTiming = EngineCharacterizationTests.fastTiming,
                          entitlements: ProEntitlements? = nil,
-                         protectedDataAvailable: @escaping @MainActor () -> Bool = { true },
-                         _ configure: (AppSettings) -> Void = { _ in }) -> Rig {
+                         _ configure: (AppSettings) -> Void = { _ in },
+                         protectedDataAvailable: @escaping @MainActor () -> Bool = { true }) -> Rig {
         let entitlements = entitlements ?? ProEntitlements(resolvedAs: .trial)
         let settings = AppSettings()
         settings.gracePeriodSeconds = 0
@@ -153,6 +155,198 @@ final class Item77RegressionTests: XCTestCase {
         XCTAssertEqual(recordsWhenEscalated, 1, "the interference record is in the log before the siren sounds")
         sub.cancel()
         rig.engine.disarm()
+    }
+
+    /// A trip after the short offline filter can beat the 30-second canary. It must still
+    /// leave a separate signal-loss record before showing the interference warning.
+    func testOfflineTriggerLogsInterferenceOncePerOutageBeforeAlerting() {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.blackoutDebounce = 60   // this test must reach the trigger-time path
+        let rig = makeRig(timing: timing) {
+            $0.jammingResponse = true
+            $0.captureMode = .photo
+            $0.cameraPosition = .front
+            $0.cameraReadiness = .batterySaver
+        }
+        rig.engine.evidencePushForTesting = { _ in
+            .init(syncState: .localOnly, metaFailureWasInterference: nil)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        var countsAtEscalation: [Int] = []
+        let sub = rig.engine.$escalation.sink { reason in
+            guard reason == .blackout else { return }
+            MainActor.assumeIsolated {
+                countsAtEscalation.append(rig.store.events.filter {
+                    $0.triggeredSensors.isEmpty && !$0.isStateChange
+                }.count)
+            }
+        }
+        defer { sub.cancel(); rig.engine.disarm() }
+        rig.engine.simulateConnectivityForTesting(online: false)
+        settle(MonitoringEngine.offlineBlipFilter + 0.1)
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { rig.engine.escalation == .blackout }, timeout: 3))
+        XCTAssertEqual(countsAtEscalation, [1], "the reason is stored before the warning is published")
+        var records = rig.store.events.filter { $0.triggeredSensors.isEmpty && !$0.isStateChange }
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.capturedOffline, true)
+        XCTAssertEqual(records.first?.sensorSummary, "Signal loss")
+        XCTAssertEqual(rig.camera.stills.count, 1, "the triggering photo suffices; no extra capture")
+
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { rig.camera.stills.count == 2 && rig.engine.state == .armed }, timeout: 3))
+        records = rig.store.events.filter { $0.triggeredSensors.isEmpty && !$0.isStateChange }
+        XCTAssertEqual(records.count, 1, "further triggers in the same outage must not duplicate its record")
+
+        rig.engine.simulateConnectivityForTesting(online: true)
+        XCTAssertNil(rig.engine.escalation)
+        rig.engine.simulateConnectivityForTesting(online: false)
+        settle(MonitoringEngine.offlineBlipFilter + 0.1)
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { rig.engine.escalation == .blackout }, timeout: 3))
+        XCTAssertEqual(countsAtEscalation, [1, 2], "a later outage must leave its own record")
+    }
+
+    /// Terminal network failures can escalate even while reachability still says online.
+    /// Camera-off watches still need the fact, with truthful connectivity and no upload loop.
+    func testNetworkFailureLogsInterferenceWithoutCameraOrFalseOfflineFlag() throws {
+        let rig = makeRig {
+            $0.jammingResponse = true
+            $0.enabledSensors.remove(.camera)
+        }
+        var pushes = 0
+        rig.engine.evidencePushForTesting = { _ in
+            pushes += 1
+            return .init(syncState: .localOnly, metaFailureWasInterference: true)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        var recordExistedAtEscalation = false
+        let sub = rig.engine.$escalation.sink { reason in
+            guard reason == .blackout else { return }
+            MainActor.assumeIsolated {
+                recordExistedAtEscalation = rig.store.events.contains {
+                    $0.triggeredSensors.isEmpty && !$0.isStateChange
+                }
+            }
+        }
+        defer { sub.cancel(); rig.engine.disarm() }
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { rig.engine.escalation == .blackout }, timeout: 3))
+        settle(0.2)   // allow the new record's upload to fail too
+        XCTAssertTrue(recordExistedAtEscalation)
+        let records = rig.store.events.filter { $0.triggeredSensors.isEmpty && !$0.isStateChange }
+        XCTAssertEqual(records.count, 1)
+        if let record = records.first {
+            XCTAssertEqual(record.capturedOffline, false, "a failed request is not proof the network path is down")
+            XCTAssertEqual(record.cloudSyncState, .localOnly, "the reason stays retryable on this device")
+            let restored = try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(record))
+            XCTAssertEqual(restored.sensorSummary, "Signal loss")
+        }
+        XCTAssertEqual(pushes, 2, "one trigger plus one reason; a failed reason upload must not recurse")
+        XCTAssertTrue(rig.camera.stills.isEmpty)
+    }
+
+    func testDelayedSignalLossUploadCannotRestartAlarmAfterReconnect() {
+        checkDelayedSignalLossUpload(rearm: false)
+    }
+
+    func testDelayedSignalLossUploadCannotStartAlarmInNewWatch() {
+        checkDelayedSignalLossUpload(rearm: true)
+    }
+
+    /// The diagnostic describes an alarm already raised; its delayed upload failure is not
+    /// another tamper and must not create a new alarm/record after the original one ends.
+    private func checkDelayedSignalLossUpload(rearm: Bool) {
+        let rig = makeRig {
+            $0.jammingResponse = true
+            $0.enabledSensors.remove(.camera)
+        }
+        var completion: CheckedContinuation<CloudExfiltrator.ExfilOutcome, Never>?
+        var diagnosticUploads = 0
+        rig.engine.evidencePushForTesting = { event in
+            if event.triggeredSensors.isEmpty && !event.isStateChange {
+                diagnosticUploads += 1
+                if diagnosticUploads == 1 {
+                    return await withCheckedContinuation { completion = $0 }
+                }
+            }
+            return .init(syncState: .localOnly, metaFailureWasInterference: true)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        defer {
+            completion?.resume(returning: .init(syncState: .localOnly, metaFailureWasInterference: nil))
+            rig.engine.disarm()
+        }
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { completion != nil }, timeout: 3))
+        let diagnostic = rig.store.events.first { $0.triggeredSensors.isEmpty && !$0.isStateChange }
+        if rearm {
+            rig.engine.disarm()
+            arm(rig)
+        } else {
+            rig.engine.simulateConnectivityForTesting(online: false)
+            rig.engine.simulateConnectivityForTesting(online: true)
+        }
+        XCTAssertNil(rig.engine.escalation)
+        let held = completion
+        completion = nil
+        held?.resume(returning: .init(syncState: .localOnly, metaFailureWasInterference: true))
+        XCTAssertTrue(pump(until: {
+            rig.store.events.first { $0.id == diagnostic?.id }?.cloudSyncState == .localOnly
+        }, timeout: 3), "the old record's completion must still update its sync status")
+        settle(0.2)
+        XCTAssertNil(rig.engine.escalation, "a diagnostic upload must not reignite the alarm")
+        XCTAssertEqual(rig.store.events.filter { $0.triggeredSensors.isEmpty && !$0.isStateChange }.count, 1)
+        XCTAssertEqual(diagnosticUploads, 1, "no new diagnostic upload feedback chain")
+    }
+
+    func testTimedCanaryAttachesOnePhotoToItsOriginalSignalLossRecord() throws {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.blackoutDebounce = 0.1
+        let rig = makeRig(timing: timing) {
+            $0.jammingResponse = true
+            $0.captureMode = .photo
+            $0.cameraPosition = .front
+            $0.cameraReadiness = .batterySaver
+        }
+        rig.engine.evidencePushForTesting = { _ in
+            .init(syncState: .localOnly, metaFailureWasInterference: nil)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        defer { rig.engine.disarm() }
+        rig.camera.holdStills = true
+        defer { rig.camera.releaseStills() }
+        rig.engine.simulateConnectivityForTesting(online: false)
+        XCTAssertTrue(pump(until: { rig.camera.stills.count == 1 }, timeout: 3))
+        let record = try XCTUnwrap(rig.store.events.first { $0.triggeredSensors.isEmpty && !$0.isStateChange })
+        rig.camera.releaseStills()
+        XCTAssertTrue(pump(until: {
+            rig.store.events.first { $0.id == record.id }?.mediaFilename != nil
+        }, timeout: 3), "the frame must enrich the original record")
+        XCTAssertEqual(rig.store.events.filter { $0.triggeredSensors.isEmpty && !$0.isStateChange }.count, 1)
+        XCTAssertEqual(rig.camera.stills.count, 1)
+    }
+
+    /// CloudKit refusals (quota/auth/schema) must not acquire an interference record or alarm.
+    func testCloudRefusalDoesNotCreateAnInterferenceRecord() {
+        let rig = makeRig {
+            $0.jammingResponse = true
+            $0.enabledSensors.remove(.camera)
+        }
+        rig.engine.evidencePushForTesting = { _ in
+            .init(syncState: .localOnly, metaFailureWasInterference: false)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        defer { rig.engine.disarm() }
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { rig.engine.cloudPushRefused }, timeout: 3))
+        XCTAssertNil(rig.engine.escalation)
+        XCTAssertFalse(rig.store.events.contains { $0.triggeredSensors.isEmpty && !$0.isStateChange })
     }
 
     /// The same promise for a flood: the onset record comes first, then the visible warning.
@@ -433,13 +627,13 @@ final class Item77RegressionTests: XCTestCase {
     /// for the unlock, marker untouched, then run once.
     func testALockedLaunchKeepsTheMarkerUntilTheDeviceUnlocksThenRecovers() {
         UserDefaults.standard.set(0.5, forKey: Self.armedMarkerKey)   // an armed session the process died out of
-        var unlocked = false
-        let rig = makeRig(protectedDataAvailable: { unlocked })
+        let phone = LockState()
+        let rig = makeRig(protectedDataAvailable: { phone.unlocked })
         XCTAssertNotNil(UserDefaults.standard.object(forKey: Self.armedMarkerKey),
                         "locked: the marker stays until the record can be persisted")
         XCTAssertFalse(rig.store.events.contains { $0.interrupted ?? false },
                        "no record yet — written now, it would die with the process")
-        unlocked = true
+        phone.unlocked = true
         NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
         XCTAssertTrue(pump(until: { rig.store.events.contains { $0.interrupted ?? false } }, timeout: 3),
                       "the unlock runs the deferred recovery")

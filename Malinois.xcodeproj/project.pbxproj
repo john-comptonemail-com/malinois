@@ -55,9 +55,11 @@
 		E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */; };
 		E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */; };
 		E1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */; };
+		E1D2C3D4E5F6000000000021 /* Item52BeatTrimTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000021 /* Item52BeatTrimTests.swift */; };
 		E1D2C3D4E5F6000000000007 /* EngineHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000007 /* EngineHarness.swift */; };
 		E1D2C3D4E5F6000000000008 /* EngineCharacterizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000008 /* EngineCharacterizationTests.swift */; };
 		E1D2C3D4E5F600000000001F /* Item95FloodAnchorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001F /* Item95FloodAnchorTests.swift */; };
+		E1D2C3D4E5F6000000000020 /* Item96DownloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000020 /* Item96DownloadTests.swift */; };
 		E1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */; };
 		E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */; };
 		E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */; };
@@ -72,6 +74,7 @@
 		E1D2C3D4E5F600000000001D /* Item92GuidedAccessScreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001D /* Item92GuidedAccessScreenTests.swift */; };
 		E1D2C3D4E5F6000000000012 /* Item85RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000012 /* Item85RegressionTests.swift */; };
 		E1D2C3D4E5F6000000000015 /* Item86RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000015 /* Item86RegressionTests.swift */; };
+		E1D2C3D4E5F600000000001E /* Item94MirrorFailureReasonTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001E /* Item94MirrorFailureReasonTests.swift */; };
 		E1D2C3D4E5F6000000000018 /* Item88RegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000018 /* Item88RegressionTests.swift */; };
 		E1D2C3D4E5F6000000000019 /* Item74DisarmBurstTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000019 /* Item74DisarmBurstTests.swift */; };
 		E1D2C3D4E5F600000000001A /* Item87CloudWipeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001A /* Item87CloudWipeTests.swift */; };
@@ -172,9 +175,11 @@
 		D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTypesTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngineTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudExfiltratorTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000021 /* Item52BeatTrimTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item52BeatTrimTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000007 /* EngineHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineHarness.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000008 /* EngineCharacterizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineCharacterizationTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000001F /* Item95FloodAnchorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item95FloodAnchorTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000020 /* Item96DownloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item96DownloadTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceCapturePipelineTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisarmEntryCoordinatorTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item65RegressionTests.swift; sourceTree = "<group>"; };
@@ -189,6 +194,7 @@
 		D1D2C3D4E5F600000000001D /* Item92GuidedAccessScreenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item92GuidedAccessScreenTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000012 /* Item85RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item85RegressionTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000015 /* Item86RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item86RegressionTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000001E /* Item94MirrorFailureReasonTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item94MirrorFailureReasonTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000018 /* Item88RegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item88RegressionTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000019 /* Item74DisarmBurstTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item74DisarmBurstTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000001A /* Item87CloudWipeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item87CloudWipeTests.swift; sourceTree = "<group>"; };
@@ -350,9 +356,11 @@
 				D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */,
 				D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */,
 				D1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift */,
+				D1D2C3D4E5F6000000000021 /* Item52BeatTrimTests.swift */,
 				D1D2C3D4E5F6000000000007 /* EngineHarness.swift */,
 				D1D2C3D4E5F6000000000008 /* EngineCharacterizationTests.swift */,
 				D1D2C3D4E5F600000000001F /* Item95FloodAnchorTests.swift */,
+				D1D2C3D4E5F6000000000020 /* Item96DownloadTests.swift */,
 				D1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift */,
 				D1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift */,
 				D1D2C3D4E5F600000000000B /* Item65RegressionTests.swift */,
@@ -367,6 +375,7 @@
 				D1D2C3D4E5F600000000001D /* Item92GuidedAccessScreenTests.swift */,
 				D1D2C3D4E5F6000000000012 /* Item85RegressionTests.swift */,
 				D1D2C3D4E5F6000000000015 /* Item86RegressionTests.swift */,
+				D1D2C3D4E5F600000000001E /* Item94MirrorFailureReasonTests.swift */,
 				D1D2C3D4E5F6000000000018 /* Item88RegressionTests.swift */,
 				D1D2C3D4E5F6000000000019 /* Item74DisarmBurstTests.swift */,
 				D1D2C3D4E5F600000000001A /* Item87CloudWipeTests.swift */,
@@ -571,9 +580,11 @@
 				E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */,
 				E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */,
 				E1D2C3D4E5F6000000000006 /* CloudExfiltratorTests.swift in Sources */,
+				E1D2C3D4E5F6000000000021 /* Item52BeatTrimTests.swift in Sources */,
 				E1D2C3D4E5F6000000000007 /* EngineHarness.swift in Sources */,
 				E1D2C3D4E5F6000000000008 /* EngineCharacterizationTests.swift in Sources */,
 				E1D2C3D4E5F600000000001F /* Item95FloodAnchorTests.swift in Sources */,
+				E1D2C3D4E5F6000000000020 /* Item96DownloadTests.swift in Sources */,
 				E1D2C3D4E5F6000000000009 /* EvidenceCapturePipelineTests.swift in Sources */,
 				E1D2C3D4E5F600000000000A /* DisarmEntryCoordinatorTests.swift in Sources */,
 				E1D2C3D4E5F600000000000B /* Item65RegressionTests.swift in Sources */,
@@ -588,6 +599,7 @@
 				E1D2C3D4E5F600000000001D /* Item92GuidedAccessScreenTests.swift in Sources */,
 				E1D2C3D4E5F6000000000012 /* Item85RegressionTests.swift in Sources */,
 				E1D2C3D4E5F6000000000015 /* Item86RegressionTests.swift in Sources */,
+				E1D2C3D4E5F600000000001E /* Item94MirrorFailureReasonTests.swift in Sources */,
 				E1D2C3D4E5F6000000000018 /* Item88RegressionTests.swift in Sources */,
 				E1D2C3D4E5F6000000000019 /* Item74DisarmBurstTests.swift in Sources */,
 				E1D2C3D4E5F600000000001A /* Item87CloudWipeTests.swift in Sources */,
@@ -741,7 +753,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 53;
+				CURRENT_PROJECT_VERSION = 55;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -751,13 +763,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
@@ -769,7 +781,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 53;
+				CURRENT_PROJECT_VERSION = 55;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -779,13 +791,13 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
@@ -798,10 +810,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Malinois.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Malinois";
 			};
@@ -815,10 +827,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Malinois.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Malinois";
 			};
@@ -830,7 +842,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 53;
+				CURRENT_PROJECT_VERSION = 55;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -839,12 +851,12 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
@@ -855,7 +867,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 53;
+				CURRENT_PROJECT_VERSION = 55;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -864,12 +876,12 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 1.5;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;

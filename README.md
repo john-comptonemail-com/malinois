@@ -63,6 +63,18 @@ A clearer record of what happened, and more useful alerts on your other devices.
 
 This update also improves clip audio when Sound detection is enabled, explains partial camera captures while preserving successful evidence, clarifies iCloud Photo & Video Storage, and fixes several event-log and recovery issues. Touch detection is always enabled while armed.
 
+**Shipped in 1.5**
+
+More reliable event history and iCloud syncing.
+
+- Incident history now has its own space: up to 500 incidents and 100 recent status entries, so routine arming and settings changes no longer crowd incidents out of the Event Log.
+- Fixed the new-event count sometimes needing a second Event Log visit to clear.
+- Signal-loss alarms now leave their own entry in the Event Log.
+- Improved reliability when saving captured evidence and managing older iCloud media.
+- Improved syncing of capture-failure explanations between devices, and fixed downloads overwriting newer event information. (Pro)
+- Heartbeat records now include the phone’s temperature status. (Pro)
+- Automatic iCloud storage cleanup can trim eligible old heartbeat history while keeping the latest heartbeat from each watch. Manual and Keep forever settings are respected. (Pro)
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.

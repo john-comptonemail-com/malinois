@@ -20,20 +20,24 @@ import UIKit
 @MainActor
 final class Item92GuidedAccessScreenTests: XCTestCase {
 
-    private var engines: [MonitoringEngine] = []
+    /// Used by the test and tearDown, which XCTest runs one after the other on the main thread;
+    /// tearDown is not main-actor isolated, so this is not either (item 97).
+    nonisolated(unsafe) private var engines: [MonitoringEngine] = []
 
+    // XCTest's setUp and tearDown are not main-actor isolated but run on the main thread (item 97).
     override func setUp() {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem92")
-        UIApplication.shared.isIdleTimerDisabled = false
+        MainActor.assumeIsolated { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     override func tearDown() {
         // Guided Access off first, so the disarms in the shared tearDown leave no hold running.
-        for engine in engines { engine.simulateGuidedAccessForTesting(on: false) }
-        engines.removeAll()
+        let engines = self.engines
+        MainActor.assumeIsolated { for engine in engines { engine.simulateGuidedAccessForTesting(on: false) } }
+        self.engines.removeAll()
         TestIsolation.tearDown()
-        UIApplication.shared.isIdleTimerDisabled = false
+        MainActor.assumeIsolated { UIApplication.shared.isIdleTimerDisabled = false }
         super.tearDown()
     }
 

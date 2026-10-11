@@ -84,6 +84,175 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNil(CloudExfiltrator.retryDelay(for: permPartial, attempt: 1))
     }
 
+    // MARK: - Retention must not trust the phone's wall clock
+
+    func testRetentionUsesServerObservationInsteadOfCurrentPhoneTime() throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let cutoff = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(
+            monthsOld: 0, observedServerDate: server))
+        XCTAssertEqual(cutoff, server.addingTimeInterval(-30 * 86_400))
+        XCTAssertGreaterThan(server.addingTimeInterval(-60), cutoff,
+                             "recent cloud evidence stays protected even when the phone clock is years ahead")
+    }
+
+    func testRetentionWithoutFiniteServerTimeRefusesDeletion() {
+        for observation in [nil, Date(timeIntervalSince1970: .nan),
+                            Date(timeIntervalSince1970: .infinity), Date(timeIntervalSince1970: -.infinity)] {
+            XCTAssertNil(CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: 1, observedServerDate: observation))
+        }
+    }
+
+    func testRetentionPreservesSelectedMonthsAndRejectsInvalidPolicy() throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cutoff = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(
+            monthsOld: 12, observedServerDate: server))
+        XCTAssertEqual(cutoff, calendar.date(byAdding: .month, value: -12, to: server))
+        XCTAssertNil(CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: -1, observedServerDate: server))
+        XCTAssertNil(CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: Int.max, observedServerDate: server))
+    }
+
+    func testOldServerObservationOnlyDelaysCleanup() throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let older = server.addingTimeInterval(-90 * 86_400)
+        let oldCutoff = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(
+            monthsOld: 1, observedServerDate: older))
+        let newerCutoff = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(
+            monthsOld: 1, observedServerDate: server))
+        XCTAssertGreaterThan(newerCutoff.timeIntervalSince(oldCutoff), 80 * 86_400)
+    }
+
+    func testServerCutoffProtectsRecentBeatAndUncommittedTail() throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let cutoff = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: 1, observedServerDate: server))
+        let oldStart = server.addingTimeInterval(-100 * 86_400)
+        let recent = server.addingTimeInterval(-60)
+        XCTAssertEqual(CloudExfiltrator.beatTrimStep(start: oldStart,
+            latest: .success(FetchedBeat(modified: recent, sequence: 1)),
+            requestedCutoff: cutoff, now: server), .stop(.notYet))
+        XCTAssertEqual(CloudExfiltrator.beatTailVerdict([.at(recent)],
+            requestedCutoff: cutoff, now: server), .notYet)
+        XCTAssertEqual(CloudExfiltrator.beatTrimStep(start: oldStart,
+            latest: .success(FetchedBeat(modified: oldStart, sequence: 1)),
+            requestedCutoff: cutoff, now: server), .deleteThrough(13))
+    }
+
+    @MainActor
+    private func retentionRig(observations: [String: Date]) -> (CloudExfiltrator, RetentionProbe) {
+        let cloud = CloudExfiltrator()
+        let probe = RetentionProbe()
+        cloud.retentionAccessForTesting = CloudExfiltrator.RetentionAccess(
+            serverDate: { type in
+                probe.queries.append(type)
+                return observations[type]
+            },
+            mediaEvents: { cutoff, type in
+                probe.cutoffs.append(cutoff)
+                return (type == CloudExfiltrator.metaRecordTypeV2 ? [probe.eventID] : [], true)
+            },
+            beatRecords: { names, _ in
+                probe.beatReads += 1
+                return Dictionary(uniqueKeysWithValues: names.map { name in
+                    (name, name.hasPrefix("beat-latest-")
+                        ? .success(FetchedBeat(modified: probe.beatDate, sequence: 1))
+                        : .failure(CKError(.unknownItem)))
+                })
+            },
+            delete: { ids in
+                probe.deleted.append(contentsOf: ids)
+                return (ids.count, false)
+            })
+        return (cloud, probe)
+    }
+
+    @MainActor
+    private final class RetentionProbe {
+        let eventID = UUID()
+        var queries: [String] = []
+        var cutoffs: [Date] = []
+        var deleted: [CKRecord.ID] = []
+        var beatReads = 0
+        var beatDate: Date?
+    }
+
+    @MainActor
+    func testDeletionEntryPointsFailClosedWithoutServerTime() async {
+        let (cloud, probe) = retentionRig(observations: [:])
+        let result = await cloud.purgeFullMedia(monthsOld: 1)
+        XCTAssertTrue(result.failed)
+        let session = BeatSession(id: UUID(), start: .distantPast)
+        let beats = await cloud.trimBeatTrails([session], monthsOld: 1)
+        XCTAssertEqual(beats[session.id], .failed)
+        XCTAssertTrue(probe.cutoffs.isEmpty)
+        XCTAssertEqual(probe.beatReads, 0)
+        XCTAssertTrue(probe.deleted.isEmpty)
+    }
+
+    @MainActor
+    func testMediaEntryPointUsesLatestUsableV2SystemDate() async throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let (cloud, probe) = retentionRig(observations: [
+            CloudExfiltrator.stateRecordTypeV2: server,
+            CloudExfiltrator.metaRecordTypeV2: server.addingTimeInterval(-90 * 86_400)])
+        let result = await cloud.purgeFullMedia(monthsOld: 12)
+        XCTAssertFalse(result.failed)
+        XCTAssertEqual(probe.cutoffs.count, 2)
+        let expected = try XCTUnwrap(CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: 12, observedServerDate: server))
+        XCTAssertTrue(probe.cutoffs.allSatisfy { $0 == expected })
+        XCTAssertEqual(probe.deleted.count, CloudExfiltrator.fullMediaRecordNames(for: probe.eventID).count)
+        XCTAssertFalse(probe.queries.contains(CloudExfiltrator.metaRecordType))
+    }
+
+    @MainActor
+    func testOneFailedClockQueryStillUsesOtherSafeObservation() async throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let (cloud, probe) = retentionRig(observations: [CloudExfiltrator.metaRecordTypeV2: server])
+        let result = await cloud.purgeFullMedia(monthsOld: 1)
+        XCTAssertFalse(result.failed)
+        XCTAssertEqual(probe.cutoffs.first, CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: 1, observedServerDate: server))
+        XCTAssertFalse(probe.queries.contains(CloudExfiltrator.metaRecordType))
+    }
+
+    @MainActor
+    func testLegacyObservationCanConservativelyAuthorizeCleanup() async {
+        let server = Date(timeIntervalSince1970: 1_600_000_000)
+        let (cloud, probe) = retentionRig(observations: [CloudExfiltrator.metaRecordType: server])
+        let result = await cloud.purgeFullMedia(monthsOld: 1)
+        XCTAssertFalse(result.failed)
+        XCTAssertTrue(probe.queries.contains(CloudExfiltrator.metaRecordType))
+        XCTAssertEqual(probe.cutoffs.first, CloudExfiltrator.serverAnchoredPurgeCutoff(monthsOld: 1, observedServerDate: server))
+    }
+
+    @MainActor
+    func testBeatEntryPointPreservesRecentTrailAndDeletesOnlyOldTrail() async {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let (cloud, probe) = retentionRig(observations: [CloudExfiltrator.stateRecordTypeV2: server])
+        let session = BeatSession(id: UUID(), start: server.addingTimeInterval(-100 * 86_400))
+        probe.beatDate = server.addingTimeInterval(-60)
+        let recent = await cloud.trimBeatTrails([session], monthsOld: 1)
+        XCTAssertEqual(recent[session.id], .notYet)
+        XCTAssertTrue(probe.deleted.isEmpty)
+        probe.beatDate = session.start
+        let old = await cloud.trimBeatTrails([session], monthsOld: 1)
+        XCTAssertEqual(old[session.id], .trimmed)
+        XCTAssertEqual(probe.deleted.count, 13)
+        XCTAssertFalse(probe.deleted.contains { $0.recordName.hasPrefix("beat-latest-") })
+    }
+
+    @MainActor
+    func testInvalidRetentionPolicyNeverReachesDeletion() async {
+        let (cloud, probe) = retentionRig(observations: [CloudExfiltrator.stateRecordTypeV2: Date()])
+        let result = await cloud.purgeFullMedia(monthsOld: Int.max)
+        XCTAssertTrue(result.failed)
+        let session = BeatSession(id: UUID(), start: .distantPast)
+        let beats = await cloud.trimBeatTrails([session], monthsOld: -1)
+        XCTAssertEqual(beats[session.id], .failed)
+        XCTAssertTrue(probe.cutoffs.isEmpty)
+        XCTAssertTrue(probe.deleted.isEmpty)
+        XCTAssertEqual(probe.beatReads, 0)
+    }
+
     // MARK: - Cloud input validation (34 review, 1.2)
 
     /// Mirrored input is data, not instructions: unknown state kinds are dropped (they used
@@ -172,7 +341,7 @@ final class CloudExfiltratorTests: XCTestCase {
     func testUploadsForOneEventRunStrictlyInOrder() async {
         let cloud = CloudExfiltrator()
         let id = UUID()
-        var log: [Int] = []
+        let log = RunOrder<Int>()
         async let first: Void = cloud.enqueue(id) {
             log.append(1)
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -181,14 +350,14 @@ final class CloudExfiltratorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 30_000_000)   // let the first op begin
         async let second: Void = cloud.enqueue(id) { log.append(3) }
         _ = await (first, second)
-        XCTAssertEqual(log, [1, 2, 3], "the second write waits for the first to FINISH, not just start")
+        XCTAssertEqual(log.entries, [1, 2, 3], "the second write waits for the first to FINISH, not just start")
     }
 
     /// Serialization is per event — one slow event must not stall another's evidence.
     @MainActor
     func testChainsForDifferentEventsStayConcurrent() async {
         let cloud = CloudExfiltrator()
-        var log: [String] = []
+        let log = RunOrder<String>()
         async let slow: Void = cloud.enqueue(UUID()) {
             try? await Task.sleep(nanoseconds: 200_000_000)
             log.append("slow")
@@ -196,7 +365,7 @@ final class CloudExfiltratorTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 30_000_000)
         async let fast: Void = cloud.enqueue(UUID()) { log.append("fast") }
         _ = await (slow, fast)
-        XCTAssertEqual(log, ["fast", "slow"], "a different event's write does not queue behind it")
+        XCTAssertEqual(log.entries, ["fast", "slow"], "a different event's write does not queue behind it")
     }
 
     // MARK: - Cloud retention (32.R2)
@@ -1215,4 +1384,12 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNil(CloudExfiltrator.event(from: metaRecord())?.captureFailuresByCamera)
     }
 
+}
+
+/// The order the chained writes ran in, kept on the main actor where they run: a plain array
+/// captured by the `async let` children would be shared across tasks (item 97).
+@MainActor
+private final class RunOrder<Entry> {
+    private(set) var entries: [Entry] = []
+    func append(_ entry: Entry) { entries.append(entry) }
 }

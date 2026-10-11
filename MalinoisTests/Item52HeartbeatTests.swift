@@ -8,7 +8,8 @@
 //  Another of the owner's phones shows "Last heard from" on that watch's arm record, from the
 //  latest record's server time. A beat that cannot be sent is dropped, never sent late. iCloud
 //  cannot run in the Simulator, so the engine is driven through its stand-ins. Written before
-//  the change, red at that commit.
+//  the change, red at that commit. Follow-up 1 (after 1.4): each beat also carries iOS's thermal
+//  state, in item 38's words, context for a phone that went quiet; red at its own commit.
 //
 
 import XCTest
@@ -40,7 +41,9 @@ final class Item52HeartbeatTests: XCTestCase {
         let store: EventStore
     }
 
-    private func makeRig(pro: Bool = true) -> Rig {
+    /// `thermal`: iOS's answer, injected so a hot Mac cannot flake the beat's temperature (item 38's rig).
+    private func makeRig(pro: Bool = true,
+                         thermal: @escaping @MainActor () -> ProcessInfo.ThermalState = { .nominal }) -> Rig {
         let settings = AppSettings()
         settings.gracePeriodSeconds = 0
         settings.requireGuidedAccess = false
@@ -49,7 +52,7 @@ final class Item52HeartbeatTests: XCTestCase {
         let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
                                                           camera: FakeCamera(),
                                                           entitlements: ProEntitlements(resolvedAs: pro ? .trial : .free),
-                                                          timing: Self.beatTiming))
+                                                          timing: Self.beatTiming, thermalState: thermal))
         engine.simulateConnectivityForTesting(online: true)
         return Rig(engine: engine, store: store)
     }
@@ -91,7 +94,7 @@ final class Item52HeartbeatTests: XCTestCase {
             XCTAssertEqual(record.recordType, "TamperEventBeatV2")
             // Absent from the clear namespace, key by key, as `testEveryCustomFieldOnATamperRecordIsEncrypted`
             // checks the tamper record (`allKeys()` lists the encrypted keys too).
-            for key in ["sessionID", "sequence", "deviceName", "batteryLevel", "charging"] {
+            for key in ["sessionID", "sequence", "deviceName", "batteryLevel", "charging", "thermalState"] {
                 XCTAssertNil(record[key], "\(key) must not be readable in the clear")
             }
             XCTAssertEqual(record.encryptedValues["sessionID"] as? String, session.uuidString)
@@ -108,6 +111,24 @@ final class Item52HeartbeatTests: XCTestCase {
         XCTAssertEqual(Heartbeat.batteryLevel(fromIOS: 0.5), 0.5)
         let beat = HeartbeatBeat(session: session, sequence: 1, deviceName: "iPhone Air", batteryLevel: nil, charging: false)
         XCTAssertNil(CloudExfiltrator.makeBeatRecords(beat).first?.encryptedValues["batteryLevel"])
+    }
+
+    /// Follow-up 1: both records of a beat carry the phone's temperature, encrypted, in the tamper
+    /// records' words.
+    func testABeatCarriesThePhonesTemperature() {
+        let beat = HeartbeatBeat(session: session, sequence: 2, deviceName: "iPhone Air", batteryLevel: 0.9,
+                                 charging: false, thermalState: "serious")
+        for record in CloudExfiltrator.makeBeatRecords(beat) {
+            XCTAssertEqual(record.encryptedValues["thermalState"] as? String, "serious")
+            XCTAssertNil(record["thermalState"], "not readable in the clear")
+        }
+    }
+
+    /// A state iOS adds later has no name, and the beat leaves the field out rather than guess.
+    func testATemperatureWithNoNameIsLeftOut() {
+        let beat = HeartbeatBeat(session: session, sequence: 1, deviceName: "iPhone Air", batteryLevel: nil,
+                                 charging: false, thermalState: nil)
+        XCTAssertNil(CloudExfiltrator.makeBeatRecords(beat).first?.encryptedValues["thermalState"])
     }
 
     /// A beat goes out only on a Pro session, and only online.
@@ -131,6 +152,17 @@ final class Item52HeartbeatTests: XCTestCase {
         XCTAssertNotNil(armed)
         XCTAssertEqual(beats.map(\.sequence), Array(1...max(beats.count, 1)))
         XCTAssertTrue(beats.allSatisfy { $0.session == armed?.id }, "every beat names the watch's arm record")
+        rig.engine.disarm()
+    }
+
+    /// Each beat carries the temperature iOS reports as it goes out, named as item 38 names it.
+    func testEachBeatCarriesTheTemperatureAsItGoesOut() {
+        let rig = makeRig(thermal: { .fair })
+        var beats: [HeartbeatBeat] = []
+        rig.engine.beatSendForTesting = { beat in beats.append(beat); return true }
+        arm(rig)
+        XCTAssertTrue(pump(until: { !beats.isEmpty }, timeout: 3), "a beat")
+        XCTAssertEqual(beats.first?.thermalState, "fair")
         rig.engine.disarm()
     }
 

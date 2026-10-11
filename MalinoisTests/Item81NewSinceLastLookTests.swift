@@ -14,6 +14,7 @@
 //
 
 import XCTest
+import SwiftUI
 @testable import Malinois
 
 @MainActor
@@ -147,6 +148,48 @@ final class Item81NewSinceLastLookTests: XCTestCase {
         first.add(tamper())
         let relaunched = EventStore()
         XCTAssertEqual(relaunched.newRecordCount, 1, "two seen before the relaunch, one new")
+    }
+
+    /// The authenticated route must clear the badge before publishing the new screen,
+    /// without waiting for SwiftUI's appearance/disappearance callbacks to catch up.
+    func testLogNavigationClearsSeenCountBeforePublishingOpenAndClose() {
+        let store = EventStore()
+        store.completeRestore()
+        store.add(tamper())
+        var presented = false
+        var countsAtTransition: [Int] = []
+        let destination = Binding(get: { presented }, set: {
+            countsAtTransition.append(store.newRecordCount)
+            presented = $0
+        })
+        let route = HomeView.eventLogPresentation(destination, store: store)
+        route.wrappedValue = true  // called only after PIN/biometric success
+        XCTAssertTrue(presented)
+        XCTAssertEqual(countsAtTransition, [0], "the opening screen must observe the cleared count")
+        store.mergeFromCloud([mirror(600)])  // a delayed arrival during the visit
+        route.wrappedValue = false          // Back or backgrounding
+        XCTAssertFalse(presented)
+        XCTAssertEqual(countsAtTransition, [0, 0], "Home must see zero on the first return")
+        XCTAssertEqual(store.newRecordCount, 0)
+    }
+
+    /// A delayed cloud pull that completes after the visit remains unread. Neither a
+    /// duplicate dismissal nor a cancelled PIN request is permission to mark it seen.
+    func testLateCloudArrivalAfterLogExitStaysNewUntilNextAuthenticatedVisit() async {
+        let store = EventStore()
+        store.completeRestore()
+        var presented = true
+        let route = HomeView.eventLogPresentation(Binding(get: { presented }, set: { presented = $0 }), store: store)
+        route.wrappedValue = false
+        await Task.yield()   // stand in for the suspended pull resuming after navigation
+        store.mergeFromCloud([mirror(3600)])
+        XCTAssertEqual(store.newRecordCount, 1)
+        route.wrappedValue = false   // already closed / PIN cancelled
+        XCTAssertEqual(store.newRecordCount, 1, "closing an area that was never reopened cannot acknowledge news")
+        route.wrappedValue = true
+        XCTAssertEqual(store.newRecordCount, 0, "one authenticated visit suffices")
+        route.wrappedValue = false
+        XCTAssertEqual(store.newRecordCount, 0)
     }
 
     // MARK: - The launch pull (the 1.4 review, item 89, C1)

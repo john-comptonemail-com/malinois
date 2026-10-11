@@ -403,31 +403,48 @@ final class Item79RegressionTests: XCTestCase {
         XCTAssertEqual(EventStore.seedRoom(requested: 100, current: 500, cap: 500, mirrored: -5), 0)
     }
 
+    @MainActor
+    func testSeedCannotUseIncidentRoomToEvictOwnedStatus() {
+        let store = EventStore()
+        let now = Date()
+        for _ in 0..<EventStore.maxAuditEvents {
+            store.add(Event(startDate: now, endDate: now, triggeredSensors: [], stateChange: "armed"))
+        }
+        let incident = Event(startDate: now, endDate: now, triggeredSensors: [.motion],
+                             cloudSyncState: .synced, sourceDevice: "Other phone")
+        _ = store.merge([incident])
+        let before = Set(store.events.map(\.id))
+        let result = store.seedUnsyncedBacklogForTesting(count: 100)
+        XCTAssertEqual(result.added, 0)
+        XCTAssertEqual(result.droppedCopies, 0)
+        XCTAssertEqual(Set(store.events.map(\.id)), before)
+    }
+
     /// The owner's Air, 2026-09-25: the log was at its cap and the seed added nothing. Through the
     /// real store at the real cap: seeding drops only the oldest mirrored copies, and every event
     /// this device captured stays.
     func testSeedingAtTheCapDropsOnlyCopies() {
         let store = EventStore()
         let old = Date().addingTimeInterval(-86_400)
-        let copies = (0..<(EventStore.maxEvents - 3)).map { i in
+        let copies = (0..<(EventStore.maxAuditEvents - 3)).map { i in
             Event(startDate: old.addingTimeInterval(Double(i)), endDate: old.addingTimeInterval(Double(i)),
-                  triggeredSensors: [.motion], cloudSyncState: .synced, sourceDevice: "Another iPhone")
+                  triggeredSensors: [], cloudSyncState: .synced, stateChange: "armed", sourceDevice: "Another iPhone")
         }
         _ = store.merge(copies)
         let ownIDs = (0..<3).map { _ in
             let e = Event(startDate: Date().addingTimeInterval(-600), endDate: Date().addingTimeInterval(-600),
-                          triggeredSensors: [.touch], cloudSyncState: .localOnly)
+                          triggeredSensors: [], cloudSyncState: .localOnly, stateChange: "disarmed")
             store.add(e)
             return e.id
         }
-        XCTAssertEqual(store.events.count, EventStore.maxEvents, "the log starts full")
+        XCTAssertEqual(store.events.count, EventStore.maxAuditEvents, "the log starts full")
 
         let result = store.seedUnsyncedBacklogForTesting(count: 100)
 
-        XCTAssertEqual(result.added, 100)
-        XCTAssertEqual(result.droppedCopies, 100)
-        XCTAssertEqual(store.events.count, EventStore.maxEvents)
-        XCTAssertEqual(store.events.filter(\.isMirrored).count, EventStore.maxEvents - 3 - 100)
+        XCTAssertEqual(result.added, 97)
+        XCTAssertEqual(result.droppedCopies, 97)
+        XCTAssertEqual(store.events.count, EventStore.maxAuditEvents)
+        XCTAssertEqual(store.events.filter(\.isMirrored).count, 0)
         XCTAssertTrue(ownIDs.allSatisfy { id in store.events.contains { $0.id == id } },
                       "every event this device captured stays")
     }

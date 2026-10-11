@@ -20,7 +20,7 @@ import XCTest
 @MainActor
 final class Item87CloudWipeTests: XCTestCase {
 
-    private static let accountKey = "com.malinois.cloud.accountRecordName"
+    nonisolated private static let accountKey = "com.malinois.cloud.accountRecordName"
 
     override func setUp() {
         super.setUp()

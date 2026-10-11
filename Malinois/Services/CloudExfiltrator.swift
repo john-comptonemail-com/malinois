@@ -103,11 +103,11 @@ final class CloudExfiltrator: ObservableObject {
     /// devices subscribed to a type nothing writes to any more — cross-device push would go
     /// quiet with no error raised anywhere. The old subscription is deleted whenever this one
     /// is established.
-    private static let subscriptionID = "malinois-tamper-meta-v2-sub"
-    private static let legacySubscriptionID = "malinois-tamper-meta-sub"
+    nonisolated private static let subscriptionID = "malinois-tamper-meta-v2-sub"
+    nonisolated private static let legacySubscriptionID = "malinois-tamper-meta-sub"
     /// Watches `disarmSignalRecordTypeV2` (BACKLOG 59). Its own ID for the reason above: a
     /// subscription's record type is fixed at creation.
-    private static let disarmSubscriptionID = "malinois-disarm-v2-sub"
+    nonisolated private static let disarmSubscriptionID = "malinois-disarm-v2-sub"
     /// Every ID this app has ever created — what the explicit OFF flip must delete, or a
     /// device that armed under an older build keeps pushing after the owner opted out.
     nonisolated static let subscriptionIDsToRemove = [subscriptionID, disarmSubscriptionID, legacySubscriptionID]
@@ -305,7 +305,7 @@ final class CloudExfiltrator: ObservableObject {
 
     /// Runs `op` after everything already queued for `id`. Internal rather than private
     /// only so the ordering property is pinned by a test.
-    func enqueue<T>(_ id: UUID, _ op: @escaping @MainActor () async -> T) async -> T {
+    func enqueue<T: Sendable>(_ id: UUID, _ op: @escaping @MainActor () async -> T) async -> T {
         let previous = uploadChains[id]
         let token = (uploadChainTokens[id] ?? 0) + 1
         uploadChainTokens[id] = token
@@ -1176,7 +1176,8 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     /// Pure (unit-tested): the two records one beat writes, the trail's and the session's latest, of
-    /// one type, every field encrypted like every other field this app writes.
+    /// one type, every field encrypted like every other field this app writes. A value iOS does not
+    /// give (the battery level, a thermal state with no name) is left out rather than guessed.
     nonisolated static func makeBeatRecords(_ beat: HeartbeatBeat) -> [CKRecord] {
         [beatRecordName(session: beat.session, sequence: beat.sequence), latestBeatRecordName(session: beat.session)]
             .map { name in
@@ -1186,6 +1187,7 @@ final class CloudExfiltrator: ObservableObject {
                 record.encryptedValues["deviceName"] = beat.deviceName as CKRecordValue
                 if let level = beat.batteryLevel { record.encryptedValues["batteryLevel"] = level as CKRecordValue }
                 record.encryptedValues["charging"] = beat.charging as CKRecordValue
+                if let thermal = beat.thermalState { record.encryptedValues["thermalState"] = thermal as CKRecordValue }
                 return record
             }
     }
@@ -1234,16 +1236,321 @@ final class CloudExfiltrator: ObservableObject {
         }
     }
 
+    /// Pure (unit-tested; item 52's follow-up 2): the names of one session's per-beat trail
+    /// records, from the first beat to `sequence`, the number its latest record carries. Never
+    /// the latest record itself.
+    nonisolated static func beatTrailRecordNames(session: UUID, through sequence: Int) -> [String] {
+        guard sequence > 0 else { return [] }
+        return (1...sequence).map { beatRecordName(session: session, sequence: $0) }
+    }
+
+    /// Beats past the latest record's number that may still exist: a beat whose trail record
+    /// saved while its latest record did not (the two save non-atomically), at the end of a watch.
+    /// A trim fetches them first and goes ahead only when each found is older than the cutoff
+    /// (`beatTailVerdict`): a phone asleep for days between its latest record's beat and them
+    /// makes one newer than the latest.
+    nonisolated static let beatTrailTailMargin = 12
+    /// The most beats one watch can have: a year of beats five minutes apart. A latest record
+    /// claiming more is not believed past this.
+    nonisolated static let maxBeatsPerSession = 105_120
+
+    /// Pure (unit-tested; item 52's follow-up 2): the last trail number a trim deletes through,
+    /// given the latest record's `sequence`: capped, with the tail margin; nil when the record
+    /// carries none it can be sure of.
+    nonisolated static func beatTrailUpperBound(sequence: Int?) -> Int? {
+        guard let sequence else { return nil }
+        return min(max(sequence, 0), maxBeatsPerSession) + beatTrailTailMargin
+    }
+
+    /// Pure (unit-tested; item 52's follow-up 2): what one watch's latest record says to do, under
+    /// the 30-day floor whatever cutoff is asked. Begun at or after the cutoff, or last heard from
+    /// at or after it by the server's clock: not yet. No such record: nothing to trim (it never
+    /// beat). A failed fetch, an answer that leaves the record out, or a record without its time
+    /// or its number: failed, asked again at a later pass. Otherwise: look at the numbers past
+    /// the latest's, then delete the trail through the bound.
+    nonisolated static func beatTrimStep(start: Date, latest: Result<FetchedBeat, Error>?,
+                                         requestedCutoff: Date, now: Date) -> BeatTrimStep {
+        let cutoff = effectivePurgeCutoff(requested: requestedCutoff, now: now)
+        guard start < cutoff else { return .stop(.notYet) }
+        switch latest {
+        case nil:
+            return .stop(.failed)
+        case .failure(let error)?:
+            return .stop((error as? CKError)?.code == .unknownItem ? .trimmed : .failed)
+        case .success(let beat)?:
+            guard let lastBeat = beat.modified else { return .stop(.failed) }
+            guard lastBeat < cutoff else { return .stop(.notYet) }   // it beat inside the window: the whole trail waits
+            guard let upper = beatTrailUpperBound(sequence: beat.sequence) else { return .stop(.failed) }
+            return .deleteThrough(upper)
+        }
+    }
+
+    /// Pure (unit-tested; item 52's follow-up 2): the names a trim looks at before deleting, the
+    /// last `beatTrailTailMargin` numbers through `upper`, which are those past the latest record's.
+    nonisolated static func beatTailRecordNames(session: UUID, through upper: Int) -> [String] {
+        guard upper > 0 else { return [] }
+        return (max(1, upper - beatTrailTailMargin + 1)...upper).map { beatRecordName(session: session, sequence: $0) }
+    }
+
+    /// Pure (unit-tested; item 52's follow-up 2): the tail's answers, name by name. A time is a
+    /// beat; "not found" is absence; anything else, a record without its time or a name the
+    /// answer leaves out included, is unreadable (failure is not absence, R3-3).
+    nonisolated static func beatTailRecords(_ names: [String], answers: [String: Result<FetchedBeat, Error>]) -> [BeatTailRecord] {
+        names.map { name in
+            switch answers[name] {
+            case .success(let beat)?:
+                return beat.modified.map(BeatTailRecord.at) ?? .unreadable
+            case .failure(let error)?:
+                return (error as? CKError)?.code == .unknownItem ? .absent : .unreadable
+            case nil:
+                return .unreadable
+            }
+        }
+    }
+
+    /// Pure (unit-tested; item 52's follow-up 2): whether the beats found past the latest record's
+    /// number let a trim go ahead (nil) or stop it, under the 30-day floor whatever cutoff is
+    /// asked: one at or after the cutoff means the watch beat inside the window after all (not
+    /// yet); one that could not be read means ask again (failed).
+    nonisolated static func beatTailVerdict(_ tail: [BeatTailRecord], requestedCutoff: Date, now: Date) -> BeatTrimOutcome? {
+        let cutoff = effectivePurgeCutoff(requested: requestedCutoff, now: now)
+        let beatInside = tail.contains { record in
+            if case .at(let date) = record { return date >= cutoff }
+            return false
+        }
+        if beatInside { return .notYet }
+        return tail.contains(.unreadable) ? .failed : nil
+    }
+
+    /// Item 52's follow-up 2 (the owner's ruling (b), for 1.5): trims the per-beat trails of the
+    /// given watches, keeping each one's latest record, which is all "Last heard from" reads. One
+    /// account check and one background-task assertion for the batch. The decision is keyed on the
+    /// server's time of each watch's LAST beat, never on its start alone: a watch begun before the
+    /// cutoff may have beaten inside it. The 30-day floor lives inside each decision this makes
+    /// (`beatTrimStep`, `beatTailVerdict`), whatever the caller asks (as in `purgeFullMedia`), so
+    /// every beat newer than it is kept, in any mode. The month policy is evaluated against
+    /// a CloudKit system-date lower bound; device time only influences the caller's scheduling.
+    func trimBeatTrails(_ sessions: [BeatSession], monthsOld months: Int) async -> [UUID: BeatTrimOutcome] {
+        var outcomes: [UUID: BeatTrimOutcome] = [:]
+        guard !sessions.isEmpty else { return outcomes }
+        guard let access = await retentionAccess() else {
+            for session in sessions { outcomes[session.id] = .failed }
+            return outcomes
+        }
+        let bgTask = beginBackgroundTask()
+        defer { endBackgroundTask(bgTask) }
+        guard let serverDate = await retentionServerDate(using: access),
+              let cutoff = Self.serverAnchoredPurgeCutoff(monthsOld: months, observedServerDate: serverDate) else {
+            return Dictionary(sessions.map { ($0.id, .failed) }, uniquingKeysWith: { _, last in last })
+        }
+        for session in sessions {
+            outcomes[session.id] = await trimBeatTrail(session, requestedCutoff: cutoff, now: serverDate, using: access)
+        }
+        let done = outcomes.values.filter { $0 == .trimmed }.count
+        Log.cloud.info("Beat trails: \(done, privacy: .public) of \(sessions.count, privacy: .public) watch(es) trimmed")
+        return outcomes
+    }
+
+    /// One watch's trim (see `trimBeatTrails`), its decisions made by the pure functions above:
+    /// trimmed when nothing of its trail is left (deleted, already gone, or it never beat); not yet
+    /// when its last beat is inside the cutoff, counted or not by its latest record; failed when a
+    /// fetch or a delete failed or stalled, or its latest record came back without its time or
+    /// its number.
+    private func trimBeatTrail(_ session: BeatSession, requestedCutoff: Date, now: Date,
+                               using access: RetentionAccess) async -> BeatTrimOutcome {
+        let latestName = Self.latestBeatRecordName(session: session.id)
+        guard let latest = await access.beatRecords([latestName], false) else { return .failed }
+        let upper: Int
+        switch Self.beatTrimStep(start: session.start, latest: latest[latestName], requestedCutoff: requestedCutoff, now: now) {
+        case .stop(let outcome):
+            if outcome == .failed {
+                Log.cloud.error("Beat trail: the latest record was not read whole; the trail waits for a later pass")
+            }
+            return outcome
+        case .deleteThrough(let number):
+            upper = number
+        }
+        let tailNames = Self.beatTailRecordNames(session: session.id, through: upper)
+        guard let tail = await access.beatRecords(tailNames, true) else { return .failed }
+        if let stop = Self.beatTailVerdict(Self.beatTailRecords(tailNames, answers: tail),
+                                           requestedCutoff: requestedCutoff, now: now) {
+            return stop
+        }
+        let ids = Self.beatTrailRecordNames(session: session.id, through: upper).map { CKRecord.ID(recordName: $0) }
+        var failed = false
+        for chunk in stride(from: 0, to: ids.count, by: 200).map({ Array(ids[$0..<min($0 + 200, ids.count)]) }) {
+            failed = await access.delete(chunk).failed || failed
+        }
+        return failed ? .failed : .trimmed
+    }
+
+    /// Fetches beat records by name under the save deadline, as a trim reads them (item 52's
+    /// follow-up 2): per name, its server time and number, or its own error (a missing record
+    /// answers `unknownItem`); nil when the fetch as a whole failed or stalled. `timesOnly` asks
+    /// for no fields. A stalled fetch is cancelled, as a stalled delete is, so it cannot hold the
+    /// pass and its background task open. CloudKit runs both result callbacks on its own
+    /// queue; their Sendable closures share only the locked collector and completion handler.
+    private func fetchBeats(named names: [String], timesOnly: Bool,
+                            in database: CKDatabase) async -> [String: Result<FetchedBeat, Error>]? {
+        let op = CKFetchRecordsOperation(recordIDs: names.map { CKRecord.ID(recordName: $0) })
+        if timesOnly { op.desiredKeys = [] }
+        op.qualityOfService = .utility
+        let results = PerRecordBeatResults()
+        op.perRecordResultBlock = { @Sendable id, result in results.record(id, result) }
+        do {
+            return try await Self.awaitWithDeadline(
+                Self.saveAttemptDeadline,
+                onDeadline: { [weak op] in
+                    Log.cloud.error("Beat fetch stalled — cancelling the operation")
+                    op?.cancel()
+                },
+                timeoutError: CKError(.networkFailure),
+                start: { (resume: @escaping @Sendable (Result<[String: Result<FetchedBeat, Error>], Error>) -> Void) in
+                    op.fetchRecordsResultBlock = { @Sendable result in
+                        switch result {
+                        case .success:
+                            resume(.success(results.snapshot()))
+                        case .failure(let error):
+                            // A partial failure is answered record by record, above; any other
+                            // failure is the fetch's as a whole.
+                            if (error as? CKError)?.code == .partialFailure {
+                                resume(.success(results.snapshot()))
+                            } else {
+                                resume(.failure(error))
+                            }
+                        }
+                    }
+                    database.add(op)
+                })
+        } catch {
+            return nil
+        }
+    }
+
+    /// Thread-safe collector for per-record FETCH results of beat records (item 52's follow-up 2),
+    /// kept as a trim reads each: its server time and its number.
+    private final class PerRecordBeatResults: @unchecked Sendable {
+        private let lock = NSLock()
+        private var answers: [String: Result<FetchedBeat, Error>] = [:]
+
+        func record(_ id: CKRecord.ID, _ result: Result<CKRecord, Error>) {
+            let answer = result.map { FetchedBeat(modified: $0.modificationDate, sequence: $0.encryptedValues["sequence"] as? Int) }
+            lock.lock(); defer { lock.unlock() }
+            answers[id.recordName] = answer
+        }
+
+        func snapshot() -> [String: Result<FetchedBeat, Error>] {
+            lock.lock(); defer { lock.unlock() }
+            return answers
+        }
+    }
+
+    /// Narrow transport boundary shared by both retention entry points. Production operations
+    /// remain CloudKit-backed; tests replace transport to verify that unsafe time never reaches
+    /// candidate selection or deletion, without needing a signed CloudKit account.
+    struct RetentionAccess: Sendable {
+        var serverDate: @MainActor @Sendable (String) async -> Date?
+        var mediaEvents: @MainActor @Sendable (Date, String) async -> (ids: [UUID], ok: Bool)
+        var beatRecords: @MainActor @Sendable ([String], Bool) async -> [String: Result<FetchedBeat, Error>]?
+        var delete: @MainActor @Sendable ([CKRecord.ID]) async -> (deleted: Int, failed: Bool)
+    }
+
+    #if DEBUG
+    var retentionAccessForTesting: RetentionAccess?
+    #endif
+
+    private func retentionAccess() async -> RetentionAccess? {
+        #if DEBUG
+        if let retentionAccessForTesting { return retentionAccessForTesting }
+        #endif
+        await refreshAccountState()
+        guard accountState.isReady, let database else { return nil }
+        return RetentionAccess(
+            serverDate: { await self.newestServerCreationDate(type: $0, in: database) },
+            mediaEvents: { await self.eventIDsOfMetaRecords(olderThan: $0, type: $1, database: database) },
+            beatRecords: { await self.fetchBeats(named: $0, timesOnly: $1, in: database) },
+            delete: { await self.delete($0, from: database) })
+    }
+
+    /// Reads system creation timestamps from existing, already-indexed audit/fact types.
+    /// This is a lower bound on server time, NOT a claim that an old record is current time.
+    /// Stale observations delay deletion. No device date, custom field, new record or schema
+    /// participates, and an unavailable observation disables deletion for this pass.
+    private func retentionServerDate(using access: RetentionAccess) async -> Date? {
+        async let audit = access.serverDate(Self.stateRecordTypeV2)
+        async let fact = access.serverDate(Self.metaRecordTypeV2)
+        let dates = await [audit, fact].compactMap { $0 }
+        if let newest = dates.max() { return newest }
+        // A legacy-only account can still clean up conservatively using its existing facts.
+        return await access.serverDate(Self.metaRecordType)
+    }
+
+    private func newestServerCreationDate(type: String, in database: CKDatabase) async -> Date? {
+        let query = CKQuery(recordType: type, predicate: NSPredicate(value: true))
+        query.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let operation = CKQueryOperation(query: query)
+        operation.resultsLimit = 1
+        operation.desiredKeys = []
+        operation.qualityOfService = .utility
+        let observation = RetentionClockObservation()
+        operation.recordMatchedBlock = { @Sendable _, result in
+            if case .success(let record) = result { observation.record(record.creationDate) }
+        }
+        do {
+            return try await Self.awaitWithDeadline(
+                Self.saveAttemptDeadline, onDeadline: { [weak operation] in operation?.cancel() },
+                timeoutError: CKError(.networkFailure),
+                start: { (resume: @escaping @Sendable (Result<Date?, Error>) -> Void) in
+                    operation.queryResultBlock = { @Sendable result in
+                        switch result {
+                        case .success: resume(.success(observation.snapshot()))
+                        case .failure(let error): resume(.failure(error))
+                        }
+                    }
+                    database.add(operation)
+                })
+        } catch { return nil }
+    }
+
+    /// CloudKit invokes its callbacks off the main actor; the observed system date is
+    /// guarded independently of operation completion and deadline cancellation.
+    private final class RetentionClockObservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var date: Date?
+
+        func record(_ candidate: Date?) {
+            guard let candidate, candidate.timeIntervalSince1970.isFinite else { return }
+            lock.lock(); defer { lock.unlock() }
+            date = max(date ?? candidate, candidate)
+        }
+
+        func snapshot() -> Date? {
+            lock.lock(); defer { lock.unlock() }
+            return date
+        }
+    }
+
     // MARK: - Full-media retention (32.R2)
 
-    /// The absolute protection floor: nothing newer than this many days can be deleted from
-    /// iCloud in ANY retention mode, by anyone. Its job is anti-tamper, not tidiness: a
+    /// The protection floor for Malinois cleanup: no event/beat newer than this many days
+    /// according to CloudKit system time is eligible. External iCloud deletion is separate. Its job is anti-tamper, not tidiness: a
     /// PIN-holder must not be able to "free up iCloud space" to destroy the evidence of
     /// what they just did. Enforced structurally inside `purgeFullMedia` itself (eighth
     /// review, L1) — `purgeCutoff` clamps too, but the entry point no longer trusts its
     /// callers to have used it, so no caller — UI, automation, or future code — can pass
     /// a date that violates it.
     nonisolated static let retentionFloorDays = 30
+
+    /// A deletion cutoff derived only from a CloudKit system timestamp. Missing time
+    /// must stop cleanup; an older observation can delay cleanup but cannot age evidence.
+    nonisolated static func serverAnchoredPurgeCutoff(monthsOld months: Int, observedServerDate: Date?) -> Date? {
+        guard (0...12).contains(months), let observedServerDate,
+              observedServerDate.timeIntervalSince1970.isFinite else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let requested = calendar.date(byAdding: .month, value: -months, to: observedServerDate) else { return nil }
+        return effectivePurgeCutoff(requested: requested, now: observedServerDate)
+    }
 
     /// Pure (unit-tested): the cutoff a purge actually runs with — whatever was requested,
     /// clamped to the protection floor.
@@ -1266,26 +1573,30 @@ final class CloudExfiltrator: ObservableObject {
         let failed: Bool
     }
 
-    /// Deletes **full-resolution photo records** older than `cutoff` from the owner's
-    /// private database — and nothing else, ever: meta facts, thumbnails, and arm/disarm
+    /// Deletes **full-resolution photo records** past the selected month policy from the
+    /// owner's private database. A CloudKit system-date lower bound anchors both policy and
+    /// protection floor; unavailable time fails closed, and stale time only delays cleanup.
+    /// No other records are deleted: meta facts, thumbnails, and arm/disarm
     /// audit records are kept in every retention mode. Old events are found by paging the
     /// (indexed) meta records oldest-first, and their photo records are addressed by their
     /// deterministic names — the same no-query, no-schema-dependency trick as retrieval
     /// (ADR 0002), so this touches nothing that could fail silently in Production.
-    func purgeFullMedia(olderThan requestedCutoff: Date) async -> CloudPurgeResult {
-        // The 30-day floor is a property of THIS function, not a caller convention (L1).
-        let cutoff = Self.effectivePurgeCutoff(requested: requestedCutoff, now: Date())
-        await refreshAccountState()
-        guard accountState.isReady, let database else {
+    func purgeFullMedia(monthsOld months: Int) async -> CloudPurgeResult {
+        guard let access = await retentionAccess() else {
             return CloudPurgeResult(eventsExamined: 0, recordsDeleted: 0, failed: true)
         }
         let bgTask = beginBackgroundTask()
         defer { endBackgroundTask(bgTask) }
 
+        guard let cutoff = Self.serverAnchoredPurgeCutoff(
+            monthsOld: months, observedServerDate: await retentionServerDate(using: access)) else {
+            Log.cloud.error("Retention deferred: no usable CloudKit time observation")
+            return CloudPurgeResult(eventsExamined: 0, recordsDeleted: 0, failed: true)
+        }
         var eventIDs: [UUID] = []
         var anyQueryFailed = false
         for type in [Self.metaRecordTypeV2, Self.metaRecordType] {
-            let page = await eventIDsOfMetaRecords(olderThan: cutoff, type: type, database: database)
+            let page = await access.mediaEvents(cutoff, type)
             eventIDs += page.ids
             anyQueryFailed = anyQueryFailed || !page.ok
         }
@@ -1298,7 +1609,7 @@ final class CloudExfiltrator: ObservableObject {
         var deleteFailed = false
         for chunk in stride(from: 0, to: photoIDs.count, by: 200)
             .map({ Array(photoIDs[$0..<min($0 + 200, photoIDs.count)]) }) {
-            let result = await delete(chunk, from: database)
+            let result = await access.delete(chunk)
             deleted += result.deleted
             deleteFailed = deleteFailed || result.failed
         }
@@ -1444,7 +1755,9 @@ final class CloudExfiltrator: ObservableObject {
         let op = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: ids)
         op.qualityOfService = .utility
         let results = PerRecordDeleteResults()
-        op.perRecordDeleteBlock = { id, result in results.record(id, result) }
+        // CloudKit calls an operation's blocks on its own queue: @Sendable, so Swift 6 never takes
+        // them for main-actor code and the compiler checks what they touch (item 97).
+        op.perRecordDeleteBlock = { @Sendable id, result in results.record(id, result) }
         do {
             return try await Self.awaitWithDeadline(
                 Self.saveAttemptDeadline,
@@ -1454,7 +1767,7 @@ final class CloudExfiltrator: ObservableObject {
                 },
                 timeoutError: CKError(.networkFailure),
                 start: { (resume: @escaping @Sendable (Result<(deleted: Int, failed: Bool), Error>) -> Void) in
-                    op.modifyRecordsResultBlock = { result in
+                    op.modifyRecordsResultBlock = { @Sendable result in
                         let operationError: Error?
                         switch result {
                         case .success:            operationError = nil
@@ -1521,8 +1834,10 @@ final class CloudExfiltrator: ObservableObject {
     /// and if the deadline wins the race, `onDeadline` runs (cancelling the operation) and
     /// the wait ends with `timeoutError`. Exactly one resume wins; the loser's callback is
     /// a no-op. Unit-tested directly — including with a start that never calls back, which
-    /// is the stall this exists to bound.
-    nonisolated static func awaitWithDeadline<T: Sendable>(
+    /// is the stall this exists to bound. On the main actor, where every caller is, so `start`
+    /// runs there (item 97: Swift 6 will not send a main-actor closure off it); the deadline
+    /// runs off the main actor, as it did before, so a busy main thread cannot hold it back.
+    static func awaitWithDeadline<T: Sendable>(
         _ seconds: TimeInterval,
         onDeadline: @escaping @Sendable () -> Void,
         timeoutError: Error,
@@ -1534,7 +1849,7 @@ final class CloudExfiltrator: ObservableObject {
                 guard latch.claim() else { return }
                 cont.resume(with: result)
             }
-            Task {
+            Task.detached {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 guard latch.claim() else { return }
                 onDeadline()
@@ -1566,7 +1881,8 @@ final class CloudExfiltrator: ObservableObject {
                 op.qualityOfService = .userInitiated   // jump the queue
                 op.savePolicy = .allKeys
                 let results = PerRecordResults()
-                op.perRecordSaveBlock = { id, result in results.record(id, result) }
+                // On CloudKit's queue, as the delete's blocks are (item 97).
+                op.perRecordSaveBlock = { @Sendable id, result in results.record(id, result) }
                 try await Self.awaitWithDeadline(
                     Self.saveAttemptDeadline,
                     onDeadline: { [weak op] in
@@ -1576,7 +1892,7 @@ final class CloudExfiltrator: ObservableObject {
                     timeoutError: CKError(.networkFailure),  // stall ≈ lost path: retry, count, escalate
                     start: { (resume: @escaping @Sendable (Result<Void, Error>) -> Void) in
                     // Fires after every perRecordSaveBlock — the final word on the operation.
-                    op.modifyRecordsResultBlock = { result in
+                    op.modifyRecordsResultBlock = { @Sendable result in
                         let operationError: Error?
                         switch result {
                         case .success:                operationError = nil
@@ -1850,7 +2166,7 @@ final class CloudExfiltrator: ObservableObject {
             let op = CKModifySubscriptionsOperation(subscriptionsToSave: [subscription])
             op.qualityOfService = .utility
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                op.modifySubscriptionsResultBlock = { result in
+                op.modifySubscriptionsResultBlock = { @Sendable result in
                     switch result {
                     case .success: cont.resume()
                     case .failure(let e): cont.resume(throwing: e)
@@ -1886,7 +2202,7 @@ final class CloudExfiltrator: ObservableObject {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
                 let op = CKModifySubscriptionsOperation(subscriptionIDsToDelete: ids)
                 op.qualityOfService = .utility
-                op.modifySubscriptionsResultBlock = { result in
+                op.modifySubscriptionsResultBlock = { @Sendable result in
                     switch result {
                     case .success: cont.resume()
                     case .failure(let e): cont.resume(throwing: e)

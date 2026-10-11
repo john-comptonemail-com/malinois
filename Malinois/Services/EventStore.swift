@@ -32,11 +32,18 @@ final class EventStore: ObservableObject {
     /// (item 86 and its review, ADR 0016).
     private var awaitingUnlock = false
 
-    /// True only when `load()` decoded the on-disk log THIS launch — the one state in which
-    /// an unreferenced media file is provably a leak rather than evidence whose metadata was
-    /// lost. Gates the orphan sweep; deliberately left false on a first launch (no file) and
+    /// True only when `load()` decoded the on-disk log THIS launch. Together with resolved
+    /// attachment intents, this distinguishes leaks from evidence awaiting attachment.
+    /// Gates the orphan sweep; deliberately left false on a first launch (no file) and
     /// on every failed/deferred load.
     private var loadedCleanly = false
+
+    /// Whether the in-memory log is this launch's reading of the log on disk, with no load
+    /// deferred or failed since: the one state in which a record missing from it is provably
+    /// not on disk either. Item 52's follow-up 2 adds the log's own arm records to the
+    /// heartbeat's list of watches only then, before count migration can remove arm rows;
+    /// a log still locked after a restart, or one started fresh, reads as empty.
+    var hasReadTheLog: Bool { loadedCleanly && !loadFailed && !awaitingUnlock }
 
     /// True after a RUNTIME persist failure (disk full, I/O error) until the next successful
     /// write (F6): "written to disk" is an async dispatch, and a failed write used to be
@@ -59,14 +66,18 @@ final class EventStore: ObservableObject {
     /// same seam).
     private let protectedDataAvailable: @MainActor () -> Bool
 
-    /// Retention cap — oldest events (and their media) are pruned past this, so
-    /// the log and its media directory can't grow without bound.
-    static let maxEvents = 500
+    /// Independent count budgets: routine status history must not crowd out incidents,
+    /// and a stream of incidents must not erase the separate status history (ADR 0035).
+    static let maxIncidentEvents = 500
+    static let maxAuditEvents = 100
+    /// Combined bound, requested per record type from iCloud. Neither pool borrows
+    /// unused capacity from the other; media remains subject to its separate byte cap.
+    static let maxEvents = maxIncidentEvents + maxAuditEvents
 
     /// Media-size cap. With video the default, 500 clips could be ~15 GB, so the
     /// oldest events' *media* is dropped past this budget (the log entries — thumbnail
     /// + metadata — are kept, so the forensic record survives; only the heavy files go).
-    static let maxMediaBytes: Int64 = 2_000_000_000   // ~2 GB
+    nonisolated static let maxMediaBytes: Int64 = 2_000_000_000   // ~2 GB
 
     /// Data-Protection level for evidence at rest: encrypted while the device is
     /// locked, unless the file is currently open (so an in-flight upload/read
@@ -103,6 +114,10 @@ final class EventStore: ObservableObject {
     /// outlived its test used to follow it into the next test's folder, or into the test host's
     /// real log. Compiled out of Release, so no shipped path can ever consult it.
     nonisolated(unsafe) static var rootOverrideForTesting: URL?
+    /// Observes the crash window after committed media, before the caller can attach it.
+    var attachmentPublishedForTesting: ((UUID, String) -> Void)?
+    /// Drains queued disk writes before a test removes a crash-snapshot directory.
+    func drainIOForTesting() { ioQueue.sync {} }
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -144,6 +159,8 @@ final class EventStore: ObservableObject {
         self.protectedDataAvailable = protectedDataAvailable
         load()
         recoverFromJournal()
+        enforceCountCapsAfterLoad()
+        recoverMediaAttachments()
         sweepOrphanedMedia()
         establishSeenMark()   // item 81
     }
@@ -162,15 +179,18 @@ final class EventStore: ObservableObject {
         scheduleByteCapPrune()        // byte cap statting runs OFF the trigger path (F-19)
     }
 
-    /// Folds events mirrored from iCloud into the log, newest-first, skipping anything
-    /// already present. Returns the number actually added.
+    /// Folds events mirrored from iCloud into the log, newest-first: a new id is added, and a
+    /// copy of one already held replaces it only as `supersedes` allows.
     ///
-    /// **A local event always wins.** If an incoming copy shares an id with one already in
-    /// the log, the incoming one is discarded outright rather than merged field-by-field.
-    /// This is the safety property the whole feature rests on: the log is the most critical
-    /// structure in the app, first-hand evidence captured on this device outranks a claim
-    /// arriving over the network, and an update path is exactly where a merge bug would be
-    /// able to damage real evidence. Adding is the only thing a fetch can ever do.
+    /// **First-hand evidence always wins.** An incoming copy never replaces an event captured
+    /// on this device, whatever it claims; it is discarded outright, never merged field by
+    /// field. This is the safety property the whole feature rests on: the log is the most
+    /// critical structure in the app, first-hand evidence captured on this device outranks a
+    /// claim arriving over the network, and an update path is exactly where a merge bug would
+    /// be able to damage real evidence. A MIRROR (another device's event held here) may be
+    /// replaced by a copy of itself that knows more, a later revision or an equal one with a
+    /// grown count or a new failure reason, and keeps the media downloaded onto it
+    /// (`inheritingLocalEnrichment`).
     ///
     /// Pure so it can be tested without CloudKit, which cannot run in the Simulator at all.
     nonisolated static func merged(local: [Event], incoming: [Event]) -> [Event] {
@@ -199,8 +219,10 @@ final class EventStore: ObservableObject {
     /// creation and the fast fact is what creates it — so the other device kept a thumbnail-less
     /// stub of every event, permanently, and no later fetch could repair it.
     ///
-    /// A mirror may therefore be superseded by a strictly later revision of the same event. A
-    /// mirror still never displaces first-hand evidence, whatever its revision.
+    /// A mirror may therefore be superseded by a strictly later revision of the same event, or
+    /// by an equal revision that has learned more: a count that grew, or a capture's failure
+    /// reason it did not have (item 94). A mirror still never displaces first-hand evidence,
+    /// whatever its revision.
     nonisolated static func supersedes(incoming: Event, existing: Event) -> Bool {
         guard existing.isMirrored, incoming.isMirrored else { return false }
         let incomingRev = incoming.cloudRevision ?? 0
@@ -213,13 +235,19 @@ final class EventStore: ObservableObject {
         // every later fetch carried the same revision, failed strictly-greater, and the
         // receiving device showed a plain row while the capturing device said "sustained ×14"
         // (found live 2026-08-30 on the build-25 pair; 34.H8's thumbnail freeze, resurfaced
-        // through count progress). Monotonic on purpose: a count must strictly grow and neither
-        // may shrink, so replays and stale duplicates still lose.
+        // through count progress). The capture's failure reason froze the same way (item 94:
+        // a failed capture attaches no evidence, so its push keeps the fact's revision, and the
+        // other phone never said why there was no photo). Monotonic on purpose: a count must
+        // strictly grow or the reason newly appear, no count may shrink and the reason may not
+        // go away, so replays and stale duplicates still lose.
         guard incomingRev == existingRev else { return false }
         let floods = (incoming: incoming.sustainedCount ?? 0, existing: existing.sustainedCount ?? 0)
         let attempts = (incoming: incoming.wrongPINCount ?? 0, existing: existing.wrongPINCount ?? 0)
-        return floods.incoming >= floods.existing && attempts.incoming >= attempts.existing
-            && (floods.incoming > floods.existing || attempts.incoming > attempts.existing)
+        let reason = (incoming: incoming.captureFailure != nil, existing: existing.captureFailure != nil)
+        guard floods.incoming >= floods.existing, attempts.incoming >= attempts.existing,
+              reason.incoming || !reason.existing else { return false }
+        return floods.incoming > floods.existing || attempts.incoming > attempts.existing
+            || (reason.incoming && !reason.existing)
     }
 
     /// Pure (unit-tested): what a superseding mirror copy inherits from the copy it replaces.
@@ -327,8 +355,8 @@ final class EventStore: ObservableObject {
     /// What Home's Event Log button counts.
     var newRecordCount: Int { Self.newRecordCount(in: events, seen: seenIDs) }
 
-    /// The owner has looked: everything in the log now is seen. The Event Log calls this when
-    /// it opens and when it closes.
+    /// The owner has looked: everything in the log now is seen. Home's authenticated
+    /// log navigation calls this before publishing an open or close transition.
     func markAllSeen() {
         saveSeenIDs(Set(events.map(\.id)))
     }
@@ -410,25 +438,22 @@ final class EventStore: ObservableObject {
         return (inserted, updated)
     }
 
-    /// Drops events past the count cap. When over cap, coalesced "sustained activity"
-    /// (flood) events are dropped FIRST — synthetic noise from a flooding attack must
-    /// never evict genuine tamper evidence past the retention boundary. Only if removing
-    /// every flood event still leaves the log over cap are the oldest genuine removed —
-    /// and the newest event is never a candidate, whatever its class (39.R1.6: the
-    /// just-added flood record used to evict itself at birth when the log sat at cap).
-    /// In-memory only (no disk I/O), so it's safe to run inline on the trigger path. Returns
-    /// the evicted events' media names rather than deleting them itself — the caller deletes
-    /// AFTER its `persist()`, so the checkpoint that drops the references lands first (34.H4).
+    /// Enforces independent incident and status budgets. Class priority applies within
+    /// a pool, never across it: old status entries cannot evict a recent incident.
+    /// Returns media names for deletion after the caller has queued its metadata write.
     @discardableResult
     private func pruneToCountCap() -> [String] {
-        guard events.count > Self.maxEvents else { return [] }
+        // Preserve every legacy first-hand watch before a smaller status budget drops
+        // its arm row. The shared registry's marker makes this a one-time operation.
+        if hasReadTheLog { BeatSessionRegistry.seedIfNeeded(from: events) }
         let victims = Set(Self.countEvictionOrder(
             events: events.map { EvictionRow(id: $0.id,
                                              isFlood: $0.sustainedCount != nil,
                                              isSynced: $0.cloudSyncState == .synced,
                                              isAudit: $0.isStateChange || $0.interrupted == true,
                                              isMirrored: $0.isMirrored) },
-            cap: Self.maxEvents))
+            incidentCap: Self.maxIncidentEvents, auditCap: Self.maxAuditEvents))
+        guard !victims.isEmpty else { return [] }
         var removedNames: [String] = []
         events.removeAll { e in
             guard victims.contains(e.id) else { return false }
@@ -438,36 +463,22 @@ final class EventStore: ObservableObject {
         return removedNames
     }
 
-    /// Pure (unit-tested): which events the count cap evicts, oldest-first within each class.
-    ///
-    /// Classes are ordered by what the log can least afford to lose (34.H5 + the paced
-    /// sub-flood finding): mirrored copies go first of all (fourth-pass R3-4 — the origin
-    /// device and the cloud still hold them, so nothing owned is lost), then coalesced flood
-    /// records (synthetic noise), then genuine events whose evidence already reached iCloud
-    /// (the cloud keeps a copy), then genuine events still **waiting to upload**, and the
-    /// arm/disarm/interruption audit rows last of all — they are tiny, and they are exactly
-    /// what a paced attacker generating ordinary-looking events wants pushed over the
-    /// boundary.
-    ///
-    /// **The newest event is exempt from every FIRST-HAND pass** (39.R1.6). Retention exists
-    /// to shed the OLDEST, but the flood-first pass used to walk all the way to the front —
-    /// so at cap, with no older flood rows retained (the steady state; flood rows always
-    /// evict first), the just-added coalesced flood record evicted ITSELF at birth: the
-    /// onset vanished, every later count update no-oped against a missing id, and each
-    /// cadence still wrote a Media file nothing referenced. The record of the incident in
-    /// progress outranks even an audit row in the degenerate everything-else-exhausted
-    /// corner; the bound therefore holds at max(cap, 1), which at the real cap (500) is the
-    /// same hard bound.
-    ///
-    /// The MIRROR pass is the one exception (ext-review #1, 2026-08-31): the exemption's
-    /// rationale is first-hand-only — a mirror is never "the incident in progress" on this
-    /// device — and shielding a newest mirror let one merged record per sync slip past the
-    /// mirror pass and push first-hand evidence (and its media) out instead, bypassing
-    /// R3-4 at exactly the one-newest-mirror boundary. A newest mirror evicting itself
-    /// just means "the cloud row didn't fit"; a re-fetch re-attempts it, nothing owned is
-    /// lost, and the max(cap, 1) bound still holds (an all-mirror store prunes to cap).
-    /// One event's eviction-relevant facts — a struct rather than a tuple since the mirror
-    /// class (R3-4) took the field count to five.
+    /// Migrates a readable legacy log without waiting for another incident. A sealed or
+    /// unreadable log is never overwritten. Unlock reconciliation enforces the same budgets.
+    private func enforceCountCapsAfterLoad() {
+        guard hasReadTheLog else { return }
+        let before = Set(events.map(\.id))
+        let removedMedia = pruneToCountCap()
+        let retired = before.subtracting(events.map(\.id))
+        guard !retired.isEmpty else { return }
+        // Existing journal lines may already match the loaded snapshot, so recovery did
+        // not touch them. Retire trimmed rows only after their absence is saved durably.
+        persist(alsoRetiring: retired)
+        deleteMediaNames(removedMedia)
+    }
+
+    /// The count-retention facts for one row. Status includes arm/disarm, settings changes
+    /// and interruption records; all other rows use the incident budget.
     struct EvictionRow {
         let id: UUID
         var isFlood = false
@@ -476,36 +487,40 @@ final class EventStore: ObservableObject {
         var isMirrored = false
     }
 
-    nonisolated static func countEvictionOrder(events: [EvictionRow], cap: Int) -> [UUID] {
-        var overflow = events.count - cap
-        guard overflow > 0 else { return [] }
-        var out: [UUID] = []
-        var taken = Set<UUID>()
-        func pass(includeNewest: Bool = false, _ matches: (EvictionRow) -> Bool) {
-            // Newest-first input → oldest-first scan; the newest row is exempt from
-            // first-hand passes only (see the doc comment — the mirror pass includes it).
-            let rows: [EvictionRow] = includeNewest ? events.reversed() : events.dropFirst().reversed()
-            for e in rows {
-                guard overflow > 0 else { return }
-                if matches(e), !taken.contains(e.id) {
-                    out.append(e.id)
-                    taken.insert(e.id)
+    /// Pure retention policy, with newest-first input. Each pool first discards mirrored
+    /// copies, including its newest mirror, so cloud input cannot displace owned evidence.
+    /// Incidents then discard floods, synced evidence and finally pending evidence, oldest
+    /// first within each class. Status entries discard the oldest owned status entries.
+    /// The newest first-hand row in EACH pool is protected from eviction, including an
+    /// in-flight flood anchor. A first-hand pool therefore retains at least one row even
+    /// if a caller supplies a zero cap; production budgets are 500 incidents / 100 status.
+    nonisolated static func countEvictionOrder(events: [EvictionRow], incidentCap: Int,
+                                               auditCap: Int) -> [UUID] {
+        func evict(_ rows: [EvictionRow], cap: Int, incidents: Bool) -> [UUID] {
+            var overflow = rows.count - max(0, cap)
+            guard overflow > 0 else { return [] }
+            let protected = rows.first { !$0.isMirrored }?.id
+            var result: [UUID] = []
+            var taken = Set<UUID>()
+            func pass(_ matches: (EvictionRow) -> Bool) {
+                for row in rows.reversed() {
+                    guard overflow > 0 else { return }
+                    guard row.id != protected, !taken.contains(row.id), matches(row) else { continue }
+                    result.append(row.id)
+                    taken.insert(row.id)
                     overflow -= 1
                 }
             }
+            pass { $0.isMirrored }
+            if incidents {
+                pass { $0.isFlood }
+                pass { $0.isSynced }
+            }
+            pass { _ in true }
+            return result
         }
-        // Mirrors go before ANY first-hand class (fourth-pass R3-4): they are copies — the
-        // capturing device and the cloud still hold them, and a re-fetch brings them back —
-        // while every later class is evidence only THIS device owns. Without this pass,
-        // bulk-inserted future-dated mirrors at cap evicted first-hand events and their
-        // local media: cloud credentials reaching on-device evidence, the exact thing
-        // tier-2 promises they cannot do (ADR 0006, extended to eviction).
-        pass(includeNewest: true) { $0.isMirrored }
-        pass { $0.isFlood }
-        pass { !$0.isAudit && $0.isSynced }
-        pass { !$0.isAudit }
-        pass { _ in true }
-        return out
+        return evict(events.filter { !$0.isAudit }, cap: incidentCap, incidents: true)
+            + evict(events.filter(\.isAudit), cap: auditCap, incidents: false)
     }
 
     private var byteCapPruneRunning = false
@@ -630,12 +645,28 @@ final class EventStore: ObservableObject {
     /// media may be real evidence whose metadata was lost — the F-11 backup is the tombstone
     /// that says so), touches only files this store named (UUID basenames, the tmp sweeper's
     /// P3 lesson), and only past an age floor — a capture is stored moments before its event
-    /// update lands, and the sweep must never race that window. The rule itself is pure
+    /// update lands, and the sweep must never race that window. Unresolved attachment
+    /// intents additionally suspend sweeping until recovery/checkpoint or bounded aging. The rule itself is pure
     /// (`orphanedMediaNames`).
     private func sweepOrphanedMedia() {
         guard loadedCleanly, !loadFailed, !awaitingUnlock else { return }
-        let referenced = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
-        ioQueue.async { [storeRoot = root] in
+        let inMemoryReferences = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        ioQueue.async { [self, storeRoot = root] in
+            // Recovery may have changed memory while its atomic log replacement failed.
+            // Only the snapshot actually on disk can authorize retirement. This read and
+            // the checkpoint's sync run on the metadata writer's serial queue.
+            let logURL = storeRoot.appendingPathComponent("events.json")
+            guard let data = try? Data(contentsOf: logURL),
+                  let persisted = try? JSONDecoder().decode([Event].self, from: data) else { return }
+            checkpointAttachments(persistedSnapshot: persisted, cleanLoad: true, logURL: logURL,
+                                  protectedReferences: inMemoryReferences)
+            let referenced = inMemoryReferences.union(persisted.flatMap {
+                [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 }
+            })
+            let pending = storeRoot.appendingPathComponent("MediaAttachments")
+            if FileManager.default.fileExists(atPath: pending.path) {
+                guard let files = attachmentFiles(), files.isEmpty else { return }
+            }
             let fm = FileManager.default
             let root = Self.ensured(storeRoot)
             let rootNames = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
@@ -824,15 +855,17 @@ final class EventStore: ObservableObject {
         let missing = Self.journaledEvents(in: data).filter { !known.contains($0.id) }
         guard !missing.isEmpty else { return }
         events = Self.merged(local: events, incoming: missing)
-        let recoveredIDs = Set(missing.map(\.id))
+        let beforePrune = Set(events.map(\.id))
         let removedMedia = pruneToCountCap()
         // A recovered line whose event the cap immediately re-evicts must still retire
         // (ext-review #3's second path): it used to survive every checkpoint, so each
         // launch resurrected it, evicted it again, and left the line — churn forever and
         // an unbounded journal. Retired only via the SUCCESS path of the persist that
         // durably records the absence; a failed persist keeps the line, the safe direction.
-        let evictedRecovered = recoveredIDs.subtracting(Set(events.map(\.id)))
-        persist(alsoRetiring: evictedRecovered)
+        // Include previously known rows removed by an upgrade, not only recovered
+        // rows: their journal lines must not resurrect on another launch either.
+        let retired = beforePrune.subtracting(events.map(\.id))
+        persist(alsoRetiring: retired)
         deleteMediaNames(removedMedia)
         Log.store.warning("Recovered \(missing.count, privacy: .public) event(s) from the journal — their log write never landed")
     }
@@ -1058,6 +1091,274 @@ final class EventStore: ObservableObject {
         let thumbnail: Data?
     }
 
+    /// A first-hand capture's destination, recorded before its media is published. No event
+    /// is created from this file: recovery requires an existing log/journal identity.
+    private struct AttachmentIntent: Codable, Sendable {
+        var version = 1
+        let eventID: UUID
+        let startDate: Date
+        let secondary: Bool
+        let camera: String
+        let duration: Double?
+        let filename: String
+        var byteCount: Int64 = 0
+        var thumbnail: Data?
+    }
+
+    nonisolated private var attachmentDirectory: URL { root.appendingPathComponent("MediaAttachments") }
+    nonisolated private static let attachmentLimit = 1_200
+    nonisolated private static let intentByteLimit: Int64 = 512_000
+
+    /// Stores first-hand evidence with an explicit recovery destination. Pass the logged
+    /// event and the capture's physical camera, slot and (for clips) duration. A protected,
+    /// synced intent precedes publication of a completely saved file. Relaunch can attach
+    /// that file even if the caller's update never runs. Unknown, mirrored, occupied or
+    /// mismatched targets fail without consuming the source. Downloads keep using the
+    /// context-free overload: their placement must be decided after awaiting the download.
+    /// Retained staging payloads plus the incoming payload must fit the media byte cap;
+    /// an overfull or unreadable staging area refuses admission before consuming the source.
+    /// Returns nil on any storage failure. This does not claim power-cut atomicity across
+    /// directory renames; recovery validates both the intent and the completed media.
+    func store(_ source: MediaSource, ext: String, attachingTo event: Event,
+               secondary: Bool = false, camera: String, duration: Double? = nil) async -> StoredMedia? {
+        guard !loadFailed, !awaitingUnlock,
+              let current = events.first(where: { $0.id == event.id }), current.startDate == event.startDate,
+              camera == "front" || camera == "rear",
+              duration.map({ $0.isFinite && $0 >= 0 }) ?? true else { return nil }
+        switch source {
+        case .still: guard ext == "jpg", duration == nil else { return nil }
+        case .clip: guard ext == "mov" else { return nil }
+        }
+        let intent = AttachmentIntent(eventID: event.id, startDate: event.startDate, secondary: secondary,
+                                      camera: camera, duration: duration, filename: UUID().uuidString + "." + ext)
+        guard Self.accepts(intent, for: current) else { return nil }
+        let stored: StoredMedia? = await withCheckedContinuation { continuation in
+            ioQueue.async {
+                continuation.resume(returning: self.storeRecoverably(source, intent: intent))
+            }
+        }
+        #if DEBUG
+        if let stored { attachmentPublishedForTesting?(event.id, stored.filename) }
+        #endif
+        return stored
+    }
+
+    nonisolated private static func accepts(_ intent: AttachmentIntent, for event: Event) -> Bool {
+        guard event.id == intent.eventID, event.startDate == intent.startDate,
+              !event.isMirrored, !event.isStateChange, event.mediaDiscarded != true else { return false }
+        let filename = intent.secondary ? event.secondaryMediaFilename : event.mediaFilename
+        let camera = intent.secondary ? event.secondaryCamera : event.primaryCamera
+        let otherFilename = intent.secondary ? event.mediaFilename : event.secondaryMediaFilename
+        let otherCamera = intent.secondary ? event.primaryCamera : event.secondaryCamera
+        return filename == nil && (camera == nil || camera == intent.camera)
+            && (otherFilename == nil || otherCamera != intent.camera)
+    }
+
+    /// Reject links (including multiply linked files), directories and unexpectedly large
+    /// manifests before reading them. Parent directories are checked separately.
+    nonisolated private static func regularSize(_ url: URL) -> Int64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              (attrs[.referenceCount] as? NSNumber)?.intValue == 1 else { return nil }
+        return (attrs[.size] as? NSNumber)?.int64Value
+    }
+
+    nonisolated private static func realDirectory(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.type]) as? FileAttributeType == .typeDirectory
+    }
+
+    /// Bounded capacity for pending slots and interrupted staging files. Enumeration and decoding are bounded;
+    /// an overfull or unreadable directory refuses new work and orphan deletion.
+    nonisolated private func attachmentFiles() -> [URL]? {
+        guard Self.realDirectory(root), Self.realDirectory(attachmentDirectory) else { return nil }
+        var failed = false
+        guard let enumerator = FileManager.default.enumerator(at: attachmentDirectory,
+            includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants],
+            errorHandler: { _, _ in failed = true; return false }) else { return nil }
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            guard files.count < Self.attachmentLimit else { return nil }
+            files.append(url)
+        }
+        return failed ? nil : files
+    }
+
+    nonisolated private func readIntent(_ url: URL) -> AttachmentIntent? {
+        guard url.pathExtension == "json", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+              let size = Self.regularSize(url), size <= Self.intentByteLimit,
+              let data = try? Data(contentsOf: url),
+              let intent = try? JSONDecoder().decode(AttachmentIntent.self, from: data), intent.version == 1,
+              intent.camera == "front" || intent.camera == "rear",
+              intent.duration.map({ $0.isFinite && $0 >= 0 }) ?? true,
+              intent.startDate.timeIntervalSinceReferenceDate.isFinite,
+              intent.byteCount > 0, intent.byteCount <= Self.maxMediaBytes,
+              intent.filename == url.deletingPathExtension().lastPathComponent + ".jpg"
+                || intent.filename == url.deletingPathExtension().lastPathComponent + ".mov",
+              intent.filename.hasSuffix(".mov") || intent.duration == nil else { return nil }
+        return intent
+    }
+
+    nonisolated private static func syncFile(_ url: URL) throws {
+        let result = fullSync(try FileHandle(forWritingTo: url))
+        guard result.synced else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    /// Serial-queue admission for staging bytes, separate from pruning committed media.
+    /// Count logical file lengths (including sparse files), never allocated blocks. Unknown
+    /// sizes, unreadable files and links fail closed; subtracting from the remaining budget
+    /// avoids overflow. Refusal neither deletes evidence nor moves the incoming source.
+    nonisolated private static func admitsStaging(incomingBytes: Int64, files: [URL]) -> Bool {
+        guard incomingBytes > 0, incomingBytes <= maxMediaBytes else { return false }
+        var remaining = maxMediaBytes
+        for url in files where url.pathExtension == "pending" {
+            guard let bytes = regularSize(url), bytes >= 0, bytes <= remaining,
+                  let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            do { try handle.close() } catch { return false }
+            remaining -= bytes
+        }
+        return incomingBytes <= remaining
+    }
+
+    /// Runs only on ioQueue. The final rename is the commit marker: a kill before it leaves
+    /// only the original temporary source or staging bytes, never attachable evidence.
+    nonisolated private func storeRecoverably(_ source: MediaSource, intent initial: AttachmentIntent) -> StoredMedia? {
+        let fm = FileManager.default
+        guard Self.realDirectory(root) else { return nil }
+        let media = Self.mediaDirectoryURL(in: root)
+        let directory = Self.ensured(attachmentDirectory)
+        guard Self.realDirectory(root), Self.realDirectory(media), Self.realDirectory(directory),
+              let files = attachmentFiles(), files.count <= Self.attachmentLimit - 2,
+              !files.contains(where: {
+                  guard let held = readIntent($0) else { return false }
+                  return held.eventID == initial.eventID
+                    && (held.secondary == initial.secondary || held.camera == initial.camera)
+                    && Self.regularSize(media.appendingPathComponent(held.filename)) == held.byteCount
+              }) else { return nil }
+        var intent = initial
+        let stem = String(intent.filename.dropLast(4))
+        let manifest = directory.appendingPathComponent(stem + ".json")
+        let staged = directory.appendingPathComponent(stem + ".pending")
+        let destination = media.appendingPathComponent(intent.filename)
+        do {
+            switch source {
+            case .still(let bytes): intent.byteCount = Int64(bytes.count)
+            case .clip(let url):
+                guard let size = Self.regularSize(url) else { return nil }
+                intent.byteCount = size
+            }
+            guard Self.admitsStaging(incomingBytes: intent.byteCount, files: files) else { return nil }
+            try JSONEncoder().encode(intent).write(to: manifest, options: writeProtection)
+            try Self.syncFile(manifest)
+            switch source {
+            case .still(let bytes):
+                try bytes.write(to: staged, options: writeProtection)
+                intent.thumbnail = CameraController.thumbnail(from: bytes)
+            case .clip(let url):
+                // AVFoundation needs the movie's recognized suffix. The staging name is
+                // intentionally .pending (not published evidence), which it cannot decode.
+                // Read the finished source before moving it; publication and protection
+                // still complete before this thumbnail or filename reaches the caller.
+                intent.thumbnail = CameraController.videoThumbnail(from: url)
+                try fm.moveItem(at: url, to: staged)
+                try Self.applyClipProtectionOrRemove(at: staged)
+            }
+            guard Self.regularSize(staged) == intent.byteCount else { throw CocoaError(.fileReadCorruptFile) }
+            try Self.syncFile(staged)
+            let data = try JSONEncoder().encode(intent)
+            guard data.count <= Self.intentByteLimit else { throw CocoaError(.fileWriteUnknown) }
+            try data.write(to: manifest, options: writeProtection)
+            try Self.syncFile(manifest)
+            try fm.moveItem(at: staged, to: destination)
+            return StoredMedia(filename: intent.filename, thumbnail: intent.thumbnail)
+        } catch {
+            // Keep the intent and any fully protected staging bytes for conservative cleanup.
+            // No final filename was published, so recovery cannot mistake a partial write for success.
+            Log.store.error("Recoverable media save failed: \(Log.ref(error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Reads only bounded local intents after log/journal recovery, also on deferred unlock.
+    /// Applies enrichment to the current event, never replaces its other metadata. Conflicts,
+    /// unknown identities, missing/partial media and corrupt intents remain unattached.
+    private func recoverMediaAttachments() {
+        guard !loadFailed, !awaitingUnlock else { return }
+        let recovered: [AttachmentIntent] = ioQueue.sync {
+            guard Self.realDirectory(root), Self.realDirectory(root.appendingPathComponent("Media")),
+                  let files = attachmentFiles() else { return [] }
+            return files.compactMap { url in
+                guard let intent = readIntent(url),
+                      Self.regularSize(root.appendingPathComponent("Media").appendingPathComponent(intent.filename))
+                        == intent.byteCount else { return nil }
+                return intent
+            }
+        }
+        // Two conflicting intents for one slot are ambiguous; directory order is never a decision.
+        let grouped = Dictionary(grouping: recovered) { "\($0.eventID)-\($0.secondary)" }
+        let cameras = Dictionary(grouping: recovered) { "\($0.eventID)-\($0.camera)" }
+        var changed = false
+        for intents in grouped.values where intents.count == 1 {
+            let intent = intents[0]
+            guard cameras["\(intent.eventID)-\(intent.camera)"]?.count == 1 else { continue }
+            guard let idx = events.firstIndex(where: { $0.id == intent.eventID }),
+                  Self.accepts(intent, for: events[idx]) else { continue }
+            if intent.secondary {
+                events[idx].secondaryMediaFilename = intent.filename
+                events[idx].secondaryCamera = intent.camera
+                events[idx].secondaryDuration = intent.duration
+            } else {
+                events[idx].mediaFilename = intent.filename
+                events[idx].primaryCamera = intent.camera
+                events[idx].primaryDuration = intent.duration
+                if let thumbnail = intent.thumbnail { events[idx].thumbnailData = thumbnail }
+            }
+            if events[idx].cloudSyncState == .synced { events[idx].cloudSyncState = .pending }
+            changed = true
+        }
+        if changed { persist() }
+    }
+
+    /// Retires only intents whose matching attachment is in a fully synced snapshot. The
+    /// caller must supply a just-written or freshly disk-decoded snapshot on ioQueue, with
+    /// no intervening metadata writes. A failed write/sync keeps the recovery record. On a clean launch, abandoned entries
+    /// age out after 30 days, with at most 1,200 directory entries examined per pass; while
+    /// any remain, the ordinary 24-hour media sweep stays suspended. Corrupt/locked logs
+    /// never authorize this cleanup. Only UUID-named regular files in our own folder go.
+    nonisolated private func checkpointAttachments(persistedSnapshot: [Event], cleanLoad: Bool, logURL: URL,
+                                                   protectedReferences: Set<String> = []) {
+        guard let files = attachmentFiles(), !files.isEmpty else { return }
+        do { try Self.syncFile(logURL) } catch { return }
+        let byID = Dictionary(persistedSnapshot.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for url in files {
+            let intent = readIntent(url)
+            let event = intent.flatMap { byID[$0.eventID] }
+            let attached = intent.map { item in
+                guard let event, event.startDate == item.startDate else { return false }
+                return (item.secondary ? event.secondaryMediaFilename : event.mediaFilename) == item.filename
+            } ?? false
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+            let expired = cleanLoad && modified.map { Date().timeIntervalSince($0) > 30 * 86_400 } == true
+            // A committed file still awaiting an eligible attachment is never aged out.
+            let recoverable = intent.flatMap { item in
+                event.map { Self.accepts(item, for: $0)
+                    && Self.regularSize(root.appendingPathComponent("Media").appendingPathComponent(item.filename))
+                        == item.byteCount }
+            } ?? false
+            // Journal-only recovery may not yet exist in the durable log. Memory can
+            // veto aging, but can never authorize successful attachment retirement.
+            let protectedInMemory = intent.map { protectedReferences.contains($0.filename) } ?? false
+            guard attached || (expired && !recoverable && !protectedInMemory),
+                  ["json", "pending"].contains(url.pathExtension),
+                  UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                  let size = Self.regularSize(url) else { continue }
+            // An I/O/Data Protection failure is not corruption. Keep unreadable intents;
+            // an oversized manifest is already known invalid without allocating its bytes.
+            if !attached, url.pathExtension == "json", size <= Self.intentByteLimit,
+               (try? Data(contentsOf: url)) == nil { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     /// Persists a captured payload and derives its thumbnail entirely OFF the main
     /// actor. Both are heavy for clips (tens of MB / a video-frame decode), and
     /// doing them on `@MainActor` hitched the UI at exactly the moment the app
@@ -1139,11 +1440,13 @@ final class EventStore: ObservableObject {
         let snapshot = events
         let url = metadataURL
         let options = writeProtection
+        let cleanLoad = loadedCleanly
         ioQueue.async { [weak self] in
             guard let self else { return }
             do {
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: url, options: options)
+                self.checkpointAttachments(persistedSnapshot: snapshot, cleanLoad: cleanLoad, logURL: url)
                 if self.persistFailedOnQueue {
                     self.persistFailedOnQueue = false
                     Task { @MainActor in self.persistDegraded = false }
@@ -1268,11 +1571,13 @@ final class EventStore: ObservableObject {
         // again.
         load()
         recoverFromJournal()   // the protected file is readable now too (ADR 0005)
+        recoverMediaAttachments()
         establishSeenMark()    // item 81: the history is known now; what was queued stays new
-        guard !queued.isEmpty else { return }
+        guard !queued.isEmpty else { enforceCountCapsAfterLoad(); return }
         events = Self.reconciledAfterUnlock(disk: events, queued: queued)
+        let beforePrune = Set(events.map(\.id))
         let removedMedia = pruneToCountCap()
-        persist()
+        persist(alsoRetiring: beforePrune.subtracting(events.map(\.id)))
         deleteMediaNames(removedMedia)   // after the checkpoint (34.H4)
         scheduleByteCapPrune()
         Log.store.info("Reconciled \(queued.count, privacy: .public) queued event(s) with the log on unlock")
@@ -1297,10 +1602,9 @@ extension EventStore {
         }
     }
 
-    /// Pure (unit-tested): how many seeded records fit. The free room first; past the cap, only as
-    /// many as there are mirrored copies to displace — the log's own first choice when full
-    /// (`countEvictionOrder`'s mirror pass), because iCloud still holds them and a pull brings them
-    /// back. An event only this device holds is never pushed out for test data.
+    /// Pure (unit-tested): how many seeded status records fit in the status pool. Free
+    /// status slots first, then mirrored status copies; neither owned status history nor
+    /// any incident is displaced for debug data.
     nonisolated static func seedRoom(requested: Int, current: Int, cap: Int, mirrored: Int) -> Int {
         max(0, min(requested, cap - current + max(0, mirrored)))
     }
@@ -1311,11 +1615,15 @@ extension EventStore {
     /// Event Log), and those are what the legs exercise.
     @discardableResult
     func seedUnsyncedBacklogForTesting(count: Int, now: Date = Date()) -> (added: Int, droppedCopies: Int) {
-        let copiesBefore = events.lazy.filter(\.isMirrored).count
-        let room = Self.seedRoom(requested: count, current: events.count, cap: Self.maxEvents,
+        let audits = events.filter { $0.isStateChange || $0.interrupted == true }
+        let copiesBefore = audits.lazy.filter(\.isMirrored).count
+        let room = Self.seedRoom(requested: count, current: audits.count, cap: Self.maxAuditEvents,
                                  mirrored: copiesBefore)
         for event in Self.seededBacklog(count: room, endingAt: now) { add(event) }
-        return (room, copiesBefore - events.lazy.filter(\.isMirrored).count)
+        let copiesAfter = events.lazy.filter {
+            ($0.isStateChange || $0.interrupted == true) && $0.isMirrored
+        }.count
+        return (room, copiesBefore - copiesAfter)
     }
 }
 #endif

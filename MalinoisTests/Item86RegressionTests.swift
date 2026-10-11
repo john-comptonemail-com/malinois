@@ -44,7 +44,7 @@ final class Item86RegressionTests: XCTestCase {
         return root
     }
 
-    private var logURL: URL? { EventStore.rootOverrideForTesting?.appendingPathComponent("events.json") }
+    nonisolated private var logURL: URL? { EventStore.rootOverrideForTesting?.appendingPathComponent("events.json") }
 
     /// A log on disk that can be read but not decoded: what a damaged file looks like.
     private func plantDamagedLog() throws {
@@ -62,7 +62,7 @@ final class Item86RegressionTests: XCTestCase {
     }
 
     /// The keys arrive: the contents can be read again.
-    private func unseal() {
+    nonisolated private func unseal() {
         guard let path = logURL?.path, FileManager.default.fileExists(atPath: path) else { return }
         try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path)
     }
@@ -130,13 +130,13 @@ final class Item86RegressionTests: XCTestCase {
         let earlier = motionEvent(secondsAgo: 60)
         try plantLog([earlier])
         try seal()
-        var unlocked = false
-        let store = EventStore(protectedDataAvailable: { unlocked })
+        let phone = LockState()
+        let store = EventStore(protectedDataAvailable: { phone.unlocked })
         XCTAssertFalse(store.logWasQuarantined, "sealed: it waits")
         let recorded = motionEvent()
         store.add(recorded)
         unseal()
-        unlocked = true
+        phone.unlocked = true
         NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
         XCTAssertTrue(pump(until: { store.events.contains { $0.id == earlier.id } }, timeout: 3), "loaded at the unlock")
         XCTAssertTrue(store.events.contains { $0.id == recorded.id }, "with what was recorded meanwhile")
@@ -150,14 +150,14 @@ final class Item86RegressionTests: XCTestCase {
         let earlier = motionEvent(secondsAgo: 60)
         try plantLog([earlier])
         try seal()
-        var unlocked = false
-        let store = EventStore(protectedDataAvailable: { unlocked })
+        let phone = LockState()
+        let store = EventStore(protectedDataAvailable: { phone.unlocked })
         NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
         settle(0.3)
         XCTAssertFalse(store.logWasQuarantined, "still sealed: the healthy log is not set aside")
         XCTAssertEqual(try backups().count, 0)
         unseal()
-        unlocked = true
+        phone.unlocked = true
         NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
         XCTAssertTrue(pump(until: { store.events.contains { $0.id == earlier.id } }, timeout: 3),
                       "the keys arrive: the log is loaded, nothing lost")
@@ -168,13 +168,43 @@ final class Item86RegressionTests: XCTestCase {
     func testAnUnreadableLogIsSetAsideOnceUIKitSaysThePhoneIsUnlocked() throws {
         try plantLog([motionEvent(secondsAgo: 60)])
         try seal()
-        var unlocked = false
-        let store = EventStore(protectedDataAvailable: { unlocked })
+        let phone = LockState()
+        let store = EventStore(protectedDataAvailable: { phone.unlocked })
         XCTAssertFalse(store.logWasQuarantined, "at launch it waits")
-        unlocked = true   // the phone is unlocked, and the file still cannot be read
+        phone.unlocked = true   // the phone is unlocked, and the file still cannot be read
         NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
         XCTAssertTrue(pump(until: { store.logWasQuarantined }, timeout: 3), "broken, not sealed: set aside, and Home says so")
         XCTAssertEqual(try backups().count, 1)
+    }
+
+    /// An upgrade may first read its old log at unlock, with a new record queued.
+    /// Status migration must preserve watch IDs and retire all obsolete journal lines.
+    func testLegacyRetentionMigrationAfterUnlockKeepsQueuedIncidentAndWatchRegistry() throws {
+        let now = Date()
+        let status = (0..<150).map { i in
+            Event(startDate: now.addingTimeInterval(-Double(i + 1)), endDate: now,
+                  triggeredSensors: [], stateChange: "armed")
+        }
+        try plantLog(status)
+        try seal()
+        let phone = LockState()
+        let store = EventStore(protectedDataAvailable: { phone.unlocked })
+        XCTAssertTrue(MonitoringEngine.beatSessions().isEmpty)
+        let recorded = motionEvent()
+        store.add(recorded)
+        // Older matching journal lines plus an in-memory queued incident exercise the
+        // unlock reconciliation path even when journal recovery has no missing IDs.
+        let journal = try root().appendingPathComponent("events.journal")
+        let lines = status.reduce(into: Data()) { $0.append(EventStore.journalLine(for: $1)!) }
+        try lines.write(to: journal)
+        unseal()
+        phone.unlocked = true
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        XCTAssertTrue(pump(until: { store.events.count == 101 }, timeout: 3))
+        XCTAssertTrue(store.events.contains { $0.id == recorded.id })
+        XCTAssertEqual(Set(MonitoringEngine.beatSessions().map(\.id)), Set(status.map(\.id)))
+        XCTAssertTrue(pump(until: { !FileManager.default.fileExists(atPath: journal.path) }, timeout: 3),
+                      "obsolete journal lines must retire in the same upgrade session")
     }
 
     // MARK: - A normal launch

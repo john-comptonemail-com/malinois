@@ -279,6 +279,13 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// rendered differently in the log (no media, no sync badge).
     var isStateChange: Bool { stateChange != nil }
 
+    /// The existing sensorless interference diagnostic, distinct from lifecycle/status
+    /// and wrong-PIN records. It reports an alarm already raised; its upload cannot itself
+    /// justify another alarm. Computed from existing fields, including older cloud copies.
+    var isSignalLoss: Bool {
+        triggeredSensors.isEmpty && !isStateChange && interrupted != true && (wrongPINCount ?? 0) == 0
+    }
+
     var sensorSummary: String {
         switch stateChange {
         case "armed":    return "Monitoring armed"
@@ -434,8 +441,10 @@ enum InterruptionCause: String, CaseIterable, Sendable {
 }
 
 enum DeviceInfo {
-    /// Read once; avoids importing UIKit into the model layer everywhere.
-    static var name: String = "Unknown Device"
+    /// Read once; avoids importing UIKit into the model layer everywhere. Written in the engine's
+    /// init and at each arm, on the main actor, where every reader is (item 97: Swift 6 asks for
+    /// the promise in words).
+    nonisolated(unsafe) static var name: String = "Unknown Device"
 
     /// The hardware model identifier ("iPhone18,4") from the kernel — or, in the Simulator,
     /// from the environment the simulator sets. Empty when unavailable.

@@ -103,12 +103,12 @@ final class Item85RegressionTests: XCTestCase {
     /// second run would find the recovery countdown's own marker and record a second interruption.
     func testARecoveryRunByTheActiveAppDoesNotRunAgainAtTheNextUnlock() {
         UserDefaults.standard.set(0.5, forKey: Self.armedMarkerKey)
-        var unlocked = false
-        let rig = makeRig(protectedDataAvailable: { unlocked }, gracePeriodSeconds: 5)   // the countdown stays open
+        let phone = LockState()
+        let rig = makeRig(protectedDataAvailable: { phone.unlocked }, gracePeriodSeconds: 5)   // the countdown stays open
         NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
         XCTAssertTrue(pump(until: { rig.engine.state == .arming }, timeout: 3),
                       "the active app ran the recovery, and its countdown is open")
-        unlocked = true
+        phone.unlocked = true
         NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
         settle(0.3)
         XCTAssertEqual(interruptionRecords(rig), 1, "one interruption, one record")
@@ -119,9 +119,9 @@ final class Item85RegressionTests: XCTestCase {
     /// becomes active.
     func testARecoveryRunAtTheUnlockDoesNotRunAgainWhenTheAppBecomesActive() {
         UserDefaults.standard.set(0.5, forKey: Self.armedMarkerKey)
-        var unlocked = false
-        let rig = makeRig(protectedDataAvailable: { unlocked }, gracePeriodSeconds: 5)
-        unlocked = true
+        let phone = LockState()
+        let rig = makeRig(protectedDataAvailable: { phone.unlocked }, gracePeriodSeconds: 5)
+        phone.unlocked = true
         NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
         XCTAssertTrue(pump(until: { rig.engine.state == .arming }, timeout: 3),
                       "the unlock ran the recovery, and its countdown is open")

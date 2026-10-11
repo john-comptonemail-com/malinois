@@ -4,6 +4,8 @@
 //
 
 import XCTest
+import UIKit
+import AVFoundation
 @testable import Malinois
 
 final class EventTests: XCTestCase {
@@ -20,10 +22,574 @@ final class EventTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - Crash-consistent media attachment recovery
+
+    /// A real movie: storage-only byte stubs cannot catch AVFoundation
+    /// refusing a temporary filename or loss of playable duration during publication.
+    nonisolated private static func playableClip(at url: URL, frames: Int) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                                          kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64])
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<frames {
+            let deadline = Date().addingTimeInterval(5)
+            while !input.isReadyForMoreMediaData, writer.status == .writing, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard input.isReadyForMoreMediaData else { throw CocoaError(.fileWriteUnknown) }
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32ARGB, nil, &buffer), kCVReturnSuccess)
+            let pixels = try XCTUnwrap(buffer)
+            CVPixelBufferLockBaseAddress(pixels, [])
+            let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixels))
+            memset(base, Int32(80 + frame), CVPixelBufferGetBytesPerRow(pixels) * 64)
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: Int64(frame), timescale: 10)))
+        }
+        writer.endSession(atSourceTime: CMTime(value: Int64(frames), timescale: 10))
+        input.markAsFinished()
+        await writer.finishWriting()
+        XCTAssertEqual(writer.status, .completed, "\(String(describing: writer.error))")
+    }
+
+    @MainActor
+    func testRecoverablePlayableClipKeepsThumbnailBytesAndDuration() async throws {
+        try await assertPlayableRecovery(frames: 30)
+    }
+
+    @MainActor
+    func testRecoverableShortClipKeepsThumbnailBytesAndDuration() async throws {
+        try await assertPlayableRecovery(frames: 4)
+    }
+
+    @MainActor
+    private func assertPlayableRecovery(frames: Int) async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let source = root.appendingPathComponent("playable.mov")
+        try await Self.playableClip(at: source, frames: frames)
+        let original = try Data(contentsOf: source)
+        let sourceThumbnail = await Task.detached { CameraController.videoThumbnail(from: source) }.value
+        XCTAssertNotNil(sourceThumbnail, "the source itself must be decodable")
+        let originalDuration = try await AVURLAsset(url: source).load(.duration).seconds
+        XCTAssertEqual(originalDuration, Double(frames) / 10, accuracy: 0.05)
+        let result = await store.store(.clip(source), ext: "mov", attachingTo: event, camera: "front", duration: originalDuration)
+        let saved = try XCTUnwrap(result)
+        XCTAssertNotNil(saved.thumbnail, "the recoverable save must preserve a playable clip's preview")
+        let destination = root.appendingPathComponent("Media").appendingPathComponent(saved.filename)
+        XCTAssertEqual(try Data(contentsOf: destination), original, "publication must not truncate or rewrite the movie")
+        let savedDuration = try await AVURLAsset(url: destination).load(.duration).seconds
+        XCTAssertEqual(savedDuration, originalDuration, accuracy: 0.001)
+        let reopened = EventStore()
+        let recovered = try XCTUnwrap(reopened.events.first { $0.id == event.id })
+        XCTAssertNotNil(recovered.thumbnailData, "recovery must retain the preview before any engine attachment")
+        XCTAssertEqual(recovered.thumbnailData, saved.thumbnail)
+        XCTAssertEqual(recovered.primaryDuration, originalDuration)
+        store.drainIOForTesting()
+        reopened.drainIOForTesting()
+    }
+
+    @MainActor
+    private func recoveryFixture(_ events: [Event]) throws -> EventStore {
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(events).write(to: root.appendingPathComponent("events.json"))
+        return EventStore()
+    }
+
+    @MainActor
+    func testRecoveryAttachesSavedPrimaryWithoutEngineUpdate() async throws {
+        var event = logEntry(10)
+        event.cloudSyncState = .localOnly
+        event.wrongPINCount = 3
+        event.captureFailure = "interrupted"
+        let unrelated = logEntry(20)
+        let store = try recoveryFixture([event, unrelated])
+        let bytes = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).jpegData(withCompressionQuality: 0.7) {
+            $0.cgContext.setFillColor(UIColor.red.cgColor)
+            $0.cgContext.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        let saved = await store.store(.still(bytes), ext: "jpg", attachingTo: event, camera: "rear")
+        let media = try XCTUnwrap(saved)
+        let reloaded = EventStore()
+        let recovered = try XCTUnwrap(reloaded.events.first { $0.id == event.id })
+        XCTAssertEqual(recovered.mediaFilename, media.filename)
+        XCTAssertEqual(recovered.primaryCamera, "rear")
+        XCTAssertEqual(recovered.thumbnailData, media.thumbnail)
+        XCTAssertNotNil(recovered.thumbnailData)
+        XCTAssertEqual(recovered.cloudSyncState, .localOnly)
+        XCTAssertEqual(recovered.wrongPINCount, 3)
+        XCTAssertEqual(recovered.captureFailure, "interrupted")
+        XCTAssertNil(reloaded.events.first { $0.id == unrelated.id }?.mediaFilename)
+    }
+
+    @MainActor
+    func testRecoveryKeepsBothCamerasAndClipDurations() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        func clip(_ name: String) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            try Data([1, 2, 3]).write(to: url)
+            return url
+        }
+        let front = await store.store(.clip(try clip("front.mov")), ext: "mov", attachingTo: event,
+                                      camera: "front", duration: 2.5)
+        let rear = await store.store(.clip(try clip("rear.mov")), ext: "mov", attachingTo: event,
+                                     secondary: true, camera: "rear", duration: 3.5)
+        let recovered = try XCTUnwrap(EventStore().events.first)
+        XCTAssertEqual(recovered.mediaFilename, try XCTUnwrap(front).filename)
+        XCTAssertEqual(recovered.secondaryMediaFilename, try XCTUnwrap(rear).filename)
+        XCTAssertEqual(recovered.primaryCamera, "front")
+        XCTAssertEqual(recovered.secondaryCamera, "rear")
+        XCTAssertEqual(recovered.primaryDuration, 2.5)
+        XCTAssertEqual(recovered.secondaryDuration, 3.5)
+    }
+
+    @MainActor
+    func testRecoveryReopensSyncedEvidenceAndDoesNotRepeatAfterCheckpoint() async throws {
+        var event = logEntry(10)
+        event.cloudSyncState = .synced
+        let store = try recoveryFixture([event])
+        let saved = await store.store(.still(Data([1])), ext: "jpg", attachingTo: event, camera: "front")
+        let recovered = EventStore()
+        XCTAssertEqual(recovered.events.first?.mediaFilename, try XCTUnwrap(saved).filename)
+        XCTAssertEqual(recovered.events.first?.cloudSyncState, .pending)
+        // A queue barrier without adding a new production test hook.
+        _ = await recovered.store(.still(Data([2])), ext: "jpg")
+        let next = EventStore()
+        XCTAssertEqual(next.events.first?.mediaFilename, saved?.filename)
+        XCTAssertEqual(next.events.count, 1)
+    }
+
+    @MainActor
+    func testRecoveryRefusesUnknownMirroredOccupiedAndWrongCameraTargets() async throws {
+        var occupied = logEntry(10)
+        occupied.mediaFilename = "existing.jpg"
+        var mirrored = logEntry(20)
+        mirrored.sourceDevice = "Other phone"
+        var labelled = logEntry(30)
+        labelled.primaryCamera = "rear"
+        let store = try recoveryFixture([occupied, mirrored, labelled])
+        for event in [logEntry(40), occupied, mirrored, labelled] {
+            let saved = await store.store(.still(Data([1])), ext: "jpg", attachingTo: event, camera: "front")
+            XCTAssertNil(saved, "no guessed, overwritten, mirrored, or wrong-camera attachment")
+        }
+    }
+
+    @MainActor
+    func testRecoveryDoesNotGuessLegacyOrUnrelatedFiles() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        _ = await store.store(.still(Data([1])), ext: "jpg")
+        XCTAssertNil(EventStore().events.first?.mediaFilename)
+    }
+
+    @MainActor
+    func testRecoveryRejectsInvalidExtensionAndDurationBeforeMovingClip() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let clip = root.appendingPathComponent("capture.mov")
+        try Data([1]).write(to: clip)
+        let saved = await store.store(.clip(clip), ext: "mov", attachingTo: event,
+                                      camera: "front", duration: -.infinity)
+        XCTAssertNil(saved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: clip.path))
+        let invalid = await store.store(.still(Data([1])), ext: "../jpg", attachingTo: event, camera: "front")
+        XCTAssertNil(invalid)
+    }
+
+    @MainActor
+    private func pendingRecovery() async throws -> (EventStore, Event, EventStore.StoredMedia, URL) {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let saved = await store.store(.still(Data([1, 2, 3])), ext: "jpg", attachingTo: event, camera: "front")
+        let media = try XCTUnwrap(saved)
+        let manifest = try XCTUnwrap(EventStore.rootOverrideForTesting)
+            .appendingPathComponent("MediaAttachments")
+            .appendingPathComponent(String(media.filename.dropLast(4)) + ".json")
+        return (store, event, media, manifest)
+    }
+
+    @MainActor
+    func testRecoveryUsesBirthJournalIdentityWhenLogWriteWasLost() async throws {
+        let (_, event, media, _) = try await pendingRecovery()
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try JSONEncoder().encode([Event]()).write(to: root.appendingPathComponent("events.json"))
+        try XCTUnwrap(EventStore.journalLine(for: event)).write(to: root.appendingPathComponent("events.journal"))
+        let recovered = EventStore()
+        XCTAssertEqual(recovered.events.first?.id, event.id)
+        XCTAssertEqual(recovered.events.first?.mediaFilename, media.filename)
+        _ = await recovered.store(.still(Data([1])), ext: "jpg")
+    }
+
+    @MainActor
+    func testRecoveryNeverAttachesUncommittedStagingFile() async throws {
+        let (store, _, media, manifest) = try await pendingRecovery()
+        let staged = manifest.deletingPathExtension().appendingPathExtension("pending")
+        try FileManager.default.moveItem(at: store.mediaDirectory.appendingPathComponent(media.filename), to: staged)
+        let reloaded = EventStore()
+        XCTAssertNil(reloaded.events.first?.mediaFilename)
+        _ = await reloaded.store(.still(Data([1])), ext: "jpg")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+    }
+
+    @MainActor
+    func testRecoveryRejectsCorruptOversizedTraversalAndWrongIdentityIntents() async throws {
+        let (_, _, _, manifest) = try await pendingRecovery()
+        let original = try Data(contentsOf: manifest)
+        var changed = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        var cases = [Data("{torn".utf8), Data(repeating: 0x20, count: 512_001)]
+        changed["filename"] = "../outside.jpg"
+        cases.append(try JSONSerialization.data(withJSONObject: changed))
+        changed = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        changed["eventID"] = UUID().uuidString
+        cases.append(try JSONSerialization.data(withJSONObject: changed))
+        changed = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        changed["version"] = 99
+        cases.append(try JSONSerialization.data(withJSONObject: changed))
+        for data in cases {
+            try data.write(to: manifest, options: .atomic)
+            XCTAssertNil(EventStore().events.first?.mediaFilename)
+        }
+    }
+
+    @MainActor
+    func testRecoveryRejectsSymlinkedMediaWithoutTouchingTarget() async throws {
+        let (store, _, media, _) = try await pendingRecovery()
+        let destination = store.mediaDirectory.appendingPathComponent(media.filename)
+        let target = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("outside.jpg")
+        try Data([1, 2, 3]).write(to: target)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        let recovered = EventStore()
+        XCTAssertNil(recovered.events.first?.mediaFilename)
+        _ = await recovered.store(.still(Data([1])), ext: "jpg")
+        XCTAssertEqual(try Data(contentsOf: target), Data([1, 2, 3]))
+    }
+
+    @MainActor
+    func testRecoveryRejectsSymlinkedManifestAndTruncatedMedia() async throws {
+        let (store, _, media, manifest) = try await pendingRecovery()
+        let target = manifest.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("outside.json")
+        let original = try Data(contentsOf: manifest)
+        try original.write(to: target)
+        try FileManager.default.removeItem(at: manifest)
+        try FileManager.default.createSymbolicLink(at: manifest, withDestinationURL: target)
+        XCTAssertNil(EventStore().events.first?.mediaFilename)
+        try FileManager.default.removeItem(at: manifest)
+        try original.write(to: manifest)
+        try Data([1]).write(to: store.mediaDirectory.appendingPathComponent(media.filename))
+        XCTAssertNil(EventStore().events.first?.mediaFilename)
+        XCTAssertEqual(try Data(contentsOf: target), original)
+    }
+
+    @MainActor
+    func testRecoveryKeepsIntentAcrossMetadataWriteFailure() async throws {
+        let (store, event, media, manifest) = try await pendingRecovery()
+        let log = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("events.json")
+        try FileManager.default.removeItem(at: log)
+        try FileManager.default.createDirectory(at: log, withIntermediateDirectories: false)
+        var attached = event
+        attached.mediaFilename = media.filename
+        attached.primaryCamera = "front"
+        store.update(attached)
+        _ = await store.store(.still(Data([1])), ext: "jpg")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path), "a failed checkpoint cannot retire the intent")
+        try FileManager.default.removeItem(at: log)
+        try JSONEncoder().encode([event]).write(to: log)
+        let recovered = EventStore()
+        XCTAssertEqual(recovered.events.first?.mediaFilename, media.filename)
+        _ = await recovered.store(.still(Data([1])), ext: "jpg")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path), "retire only after a synced attachment checkpoint")
+    }
+
+    @MainActor
+    func testRecoveryRefusesManifestWriteFailureBeforeConsumingSource() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try Data([1]).write(to: root.appendingPathComponent("MediaAttachments"))
+        let clip = root.appendingPathComponent("source.mov")
+        try Data([1, 2, 3]).write(to: clip)
+        let saved = await store.store(.clip(clip), ext: "mov", attachingTo: event, camera: "front", duration: 1)
+        XCTAssertNil(saved)
+        XCTAssertEqual(try Data(contentsOf: clip), Data([1, 2, 3]))
+    }
+
+    @MainActor
+    func testRecoveryRejectsConflictingSlotAndPreservesExistingMetadata() async throws {
+        let (_, event, _, _) = try await pendingRecovery()
+        var current = event
+        current.mediaFilename = "already-attached.jpg"
+        current.primaryCamera = "rear"
+        current.primaryDuration = 7
+        current.thumbnailData = Data([9])
+        current.wrongPINCount = 5
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try JSONEncoder().encode([current]).write(to: root.appendingPathComponent("events.json"))
+        let recovered = try XCTUnwrap(EventStore().events.first)
+        XCTAssertEqual(recovered, current)
+    }
+
+    @MainActor
+    func testRecoveryDoesNotDeleteOldSavedEvidenceBeforeAttachmentCheckpoint() async throws {
+        let (store, _, media, _) = try await pendingRecovery()
+        let destination = store.mediaDirectory.appendingPathComponent(media.filename)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3 * 86_400)],
+                                              ofItemAtPath: destination.path)
+        let recovered = EventStore()
+        _ = await recovered.store(.still(Data([1])), ext: "jpg")
+        XCTAssertEqual(recovered.events.first?.mediaFilename, media.filename)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor
+    func testRecoveryAgesOutAbandonedIntentAndStagingWithBoundedCleanup() async throws {
+        let (store, _, media, manifest) = try await pendingRecovery()
+        let destination = store.mediaDirectory.appendingPathComponent(media.filename)
+        let staged = manifest.deletingPathExtension().appendingPathExtension("pending")
+        try FileManager.default.moveItem(at: destination, to: staged)
+        let old = Date(timeIntervalSinceNow: -31 * 86_400)
+        for url in [manifest, staged] {
+            try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+        }
+        let reloaded = EventStore()
+        _ = await reloaded.store(.still(Data([1])), ext: "jpg")
+        XCTAssertNil(reloaded.events.first?.mediaFilename)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+    }
+
+    @MainActor
+    func testRecoveryAllowsRetryAfterUncommittedSave() async throws {
+        let (store, event, media, manifest) = try await pendingRecovery()
+        try FileManager.default.moveItem(at: store.mediaDirectory.appendingPathComponent(media.filename),
+                                        to: manifest.deletingPathExtension().appendingPathExtension("pending"))
+        let retry = await store.store(.still(Data([9])), ext: "jpg", attachingTo: event, camera: "front")
+        let recovered = EventStore()
+        XCTAssertEqual(recovered.events.first?.mediaFilename, try XCTUnwrap(retry).filename)
+        _ = await recovered.store(.still(Data([1])), ext: "jpg")
+    }
+
+    @MainActor
+    func testRecoveryWaitsForProtectedLogThenRecoversAfterUnlock() async throws {
+        let (_, event, media, manifest) = try await pendingRecovery()
+        let log = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("events.json")
+        try FileManager.default.removeItem(at: log)
+        try FileManager.default.createDirectory(at: log, withIntermediateDirectories: false)
+        let locked = EventStore(protectedDataAvailable: { false })
+        XCTAssertTrue(locked.events.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
+        try FileManager.default.removeItem(at: log)
+        try JSONEncoder().encode([event]).write(to: log)
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        for _ in 0..<100 where locked.events.first?.mediaFilename == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(locked.events.first?.mediaFilename, media.filename)
+        _ = await locked.store(.still(Data([1])), ext: "jpg")
+    }
+
+    @MainActor
+    func testRecoveryRefusesSymlinkedStorageDirectory() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("MediaAttachments"),
+                                                  withDestinationURL: outside)
+        let saved = await store.store(.still(Data([1])), ext: "jpg", attachingTo: event, camera: "front")
+        XCTAssertNil(saved)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+    }
+
+    @MainActor
+    func testRecoveryRejectsAmbiguousCommittedIntentsForOneSlot() async throws {
+        let (store, _, media, manifest) = try await pendingRecovery()
+        var second = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+        let next = UUID().uuidString
+        second["filename"] = next + ".jpg"
+        try JSONSerialization.data(withJSONObject: second)
+            .write(to: manifest.deletingLastPathComponent().appendingPathComponent(next + ".json"))
+        try FileManager.default.copyItem(at: store.mediaDirectory.appendingPathComponent(media.filename),
+                                        to: store.mediaDirectory.appendingPathComponent(next + ".jpg"))
+        XCTAssertNil(EventStore().events.first?.mediaFilename, "directory order cannot choose a capture")
+    }
+
+    /// Denying replacement of events.json must not prevent opening/syncing the old file.
+    /// That is the crash window the former directory-at-events.json test did not exercise.
+    @MainActor
+    func testRecoveryCheckpointKeepsIntentWhenAtomicReplacementFailsButOldLogSyncs() async throws {
+        let (original, event, media, manifest) = try await pendingRecovery()
+        original.drainIOForTesting()
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let log = root.appendingPathComponent("events.json")
+        let oldData = try Data(contentsOf: log)
+        let permissions = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions])
+        defer { try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+        XCTAssertThrowsError(try oldData.write(to: log, options: .atomic), "replacement must actually fail")
+        let oldHandle = try FileHandle(forWritingTo: log)
+        XCTAssertNotEqual(fcntl(oldHandle.fileDescriptor, F_FULLFSYNC), -1, "the old file must remain syncable")
+        try oldHandle.close()
+
+        let interrupted = EventStore()
+        interrupted.drainIOForTesting()
+        XCTAssertEqual(interrupted.events.first?.mediaFilename, media.filename, "recovery occurred only in memory")
+        XCTAssertEqual(try Data(contentsOf: log), oldData, "the failed replacement left the prior log intact")
+        XCTAssertNil(try JSONDecoder().decode([Event].self, from: Data(contentsOf: log)).first?.mediaFilename)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path), "syncing an old log cannot retire a new attachment")
+
+        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path)
+        let retry = EventStore()
+        retry.drainIOForTesting()
+        XCTAssertEqual(retry.events.first?.id, event.id)
+        XCTAssertEqual(retry.events.first?.mediaFilename, media.filename, "another launch must still recover the saved capture")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path), "successful durable attachment can retire it")
+    }
+
+    @MainActor
+    func testAgedJournalOnlyAttachmentSurvivesFailedRecoveryCheckpoint() async throws {
+        let (original, event, media, manifest) = try await pendingRecovery()
+        original.drainIOForTesting()
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let log = root.appendingPathComponent("events.json")
+        let oldData = Data("[]".utf8)
+        try oldData.write(to: log, options: .atomic)
+        try XCTUnwrap(EventStore.journalLine(for: event)).write(to: root.appendingPathComponent("events.journal"))
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -31 * 86_400)],
+                                              ofItemAtPath: manifest.path)
+        let permissions = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions])
+        defer { try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+        XCTAssertThrowsError(try oldData.write(to: log, options: .atomic))
+        let oldHandle = try FileHandle(forWritingTo: log)
+        XCTAssertNotEqual(fcntl(oldHandle.fileDescriptor, F_FULLFSYNC), -1)
+        try oldHandle.close()
+        let interrupted = EventStore()
+        interrupted.drainIOForTesting()
+        XCTAssertEqual(interrupted.events.first?.mediaFilename, media.filename)
+        XCTAssertEqual(try Data(contentsOf: log), oldData)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path),
+                      "memory may veto aging even when only the birth journal knows the event")
+        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path)
+        let relaunched = EventStore()
+        relaunched.drainIOForTesting()
+        XCTAssertEqual(relaunched.events.first?.id, event.id)
+        XCTAssertEqual(relaunched.events.first?.mediaFilename, media.filename)
+    }
+
+    private func sparseRecoveryFile(at url: URL, bytes: UInt64) throws {
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: bytes)
+    }
+
+    @MainActor
+    private func assertStagingBudgetRefuses(pendingSizes: [UInt64], incomingBytes: UInt64) async throws {
+        let (store, event, media, manifest) = try await pendingRecovery()
+        let directory = manifest.deletingLastPathComponent()
+        for size in pendingSizes {
+            try sparseRecoveryFile(at: directory.appendingPathComponent(UUID().uuidString + ".pending"), bytes: size)
+        }
+        let source = directory.deletingLastPathComponent().appendingPathComponent("next-capture.mov")
+        try sparseRecoveryFile(at: source, bytes: incomingBytes)
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        let stored = await store.store(.clip(source), ext: "mov", attachingTo: event,
+                                       secondary: true, camera: "rear", duration: 3)
+        store.drainIOForTesting()
+        XCTAssertNil(stored, "pending bytes plus incoming bytes must fit the aggregate cap")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path), "admission failure must not consume the next source")
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path), "keep the already committed recovery intent")
+        XCTAssertEqual(try Data(contentsOf: store.mediaDirectory.appendingPathComponent(media.filename)), Data([1, 2, 3]))
+    }
+
+    @MainActor
+    func testRecoveryStagingBudgetIncludesIncomingSparseClip() async throws {
+        try await assertStagingBudgetRefuses(pendingSizes: [750_000_000, 750_000_000], incomingBytes: 600_000_000)
+    }
+
+    @MainActor
+    func testRecoveryStagingBudgetRefusesAlreadyOverfullSparseFiles() async throws {
+        try await assertStagingBudgetRefuses(pendingSizes: [1_100_000_000, 1_100_000_000], incomingBytes: 3)
+    }
+
+    @MainActor
+    func testRecoveryStagingBudgetRefusesUnreadablePendingFile() async throws {
+        let (store, event, _, manifest) = try await pendingRecovery()
+        let pending = manifest.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
+        try Data([1]).write(to: pending)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pending.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: pending.path)
+        let source = manifest.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("next.mov")
+        try Data([1, 2, 3]).write(to: source)
+        let stored = await store.store(.clip(source), ext: "mov", attachingTo: event, secondary: true, camera: "rear")
+        XCTAssertNil(stored)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
+    func testRecoveryStagingBudgetRefusesSymlinkedPendingFile() async throws {
+        let (store, event, _, manifest) = try await pendingRecovery()
+        let directory = manifest.deletingLastPathComponent()
+        let source = directory.deletingLastPathComponent().appendingPathComponent("next.mov")
+        try Data([1, 2, 3]).write(to: source)
+        try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent(UUID().uuidString + ".pending"),
+                                                  withDestinationURL: source)
+        let stored = await store.store(.clip(source), ext: "mov", attachingTo: event, secondary: true, camera: "rear")
+        XCTAssertNil(stored)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
+    func testRecoveryStagingBudgetAdmitsExactlyRemainingBytes() async throws {
+        let (store, event, _, manifest) = try await pendingRecovery()
+        let pending = manifest.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
+        try sparseRecoveryFile(at: pending, bytes: UInt64(EventStore.maxMediaBytes - 3))
+        let source = manifest.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("next.mov")
+        try Data([1, 2, 3]).write(to: source)
+        let stored = await store.store(.clip(source), ext: "mov", attachingTo: event, secondary: true, camera: "rear")
+        XCTAssertNotNil(stored)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: pending.path)[.size] as? NSNumber)?.int64Value,
+                       EventStore.maxMediaBytes - 3, "admission must not delete existing staged evidence")
+    }
+
     func testDuration() {
         let start = Date()
         let e = Event(startDate: start, endDate: start.addingTimeInterval(5), triggeredSensors: [.motion])
         XCTAssertEqual(e.duration, 5, accuracy: 0.001)
+    }
+
+    func testSignalLossIdentityExcludesOtherSensorlessRecords() throws {
+        let signal = Event(startDate: Date(), endDate: Date(), triggeredSensors: [])
+        XCTAssertTrue(signal.isSignalLoss)
+        let restored = try JSONDecoder().decode(Event.self, from: JSONEncoder().encode(signal))
+        XCTAssertTrue(restored.isSignalLoss, "legacy-shaped records retain their diagnostic identity")
+        var incident = signal
+        incident.triggeredSensors = [.touch]
+        XCTAssertFalse(incident.isSignalLoss)
+        var status = signal
+        status.stateChange = "armed"
+        XCTAssertFalse(status.isSignalLoss)
+        var interruption = signal
+        interruption.interrupted = true
+        XCTAssertFalse(interruption.isSignalLoss)
+        var wrongPIN = signal
+        wrongPIN.wrongPINCount = 1
+        XCTAssertFalse(wrongPIN.isSignalLoss)
     }
 
     func testSensorSummary() {
@@ -163,7 +729,7 @@ final class EventTests: XCTestCase {
     func testEventStorePrunesToCapKeepingNewest() {
         let store = EventStore()
         let base = Date()
-        let overflow = EventStore.maxEvents + 25
+        let overflow = EventStore.maxIncidentEvents + 25
         var firstID: UUID?
         var lastID: UUID?
         for i in 0..<overflow {
@@ -174,7 +740,7 @@ final class EventTests: XCTestCase {
             if i == overflow - 1 { lastID = e.id }
             store.add(e)
         }
-        XCTAssertEqual(store.events.count, EventStore.maxEvents, "capped at the retention limit")
+        XCTAssertEqual(store.events.count, EventStore.maxIncidentEvents, "capped at the retention limit")
         XCTAssertEqual(store.events.first?.id, lastID, "newest event stays at the top")
         XCTAssertFalse(store.events.contains { $0.id == firstID }, "oldest overflow event is pruned")
     }
@@ -190,14 +756,14 @@ final class EventTests: XCTestCase {
         let base = Date()
         let genuine = Event(startDate: base, endDate: base, triggeredSensors: [.motion])
         store.add(genuine)   // oldest of this batch
-        for i in 1...EventStore.maxEvents {
+        for i in 1...EventStore.maxIncidentEvents {
             let flood = Event(startDate: base.addingTimeInterval(Double(i)),
                               endDate: base.addingTimeInterval(Double(i)),
                               triggeredSensors: [.audio],
                               sustainedCount: 7)   // coalesced-flood marker
             store.add(flood)   // all newer than `genuine`
         }
-        XCTAssertEqual(store.events.count, EventStore.maxEvents, "capped at the retention limit")
+        XCTAssertEqual(store.events.count, EventStore.maxIncidentEvents, "capped at the retention limit")
         XCTAssertTrue(store.events.contains { $0.id == genuine.id },
                       "the genuine event survives — flood events are pruned first")
     }
@@ -218,7 +784,7 @@ final class EventTests: XCTestCase {
         let base = Date()
         let genuine = Event(startDate: base, endDate: base, triggeredSensors: [.motion])
         store.add(genuine)   // oldest of the batch — naive oldest-first pruning would drop it
-        for i in 1...EventStore.maxEvents {
+        for i in 1...EventStore.maxIncidentEvents {
             let floodStill = Event(startDate: base.addingTimeInterval(Double(i)),
                                    endDate: base.addingTimeInterval(Double(i)),
                                    triggeredSensors: [.motion],
@@ -226,7 +792,7 @@ final class EventTests: XCTestCase {
                                    sustainedCount: 1)                 // exactly what the engine sets
             store.add(floodStill)
         }
-        XCTAssertEqual(store.events.count, EventStore.maxEvents, "capped at the retention limit")
+        XCTAssertEqual(store.events.count, EventStore.maxIncidentEvents, "capped at the retention limit")
         XCTAssertTrue(store.events.contains { $0.id == genuine.id },
                       "a flood still marked sustainedCount: 1 must not evict genuine evidence")
     }
@@ -351,10 +917,9 @@ final class EventTests: XCTestCase {
                        "only the pending genuine capture is an evidentiary loss")
     }
 
-    /// The count cap's eviction classes: flood first, then synced, then pending — and the
-    /// arm/disarm/interruption audit rows last of all, because they are exactly what a
-    /// paced attacker generating ordinary-looking events wants pushed over the boundary.
-    func testCountEvictionDropsFloodThenSyncedThenPendingAndAuditLast() {
+    /// Within the incident pool: flood first, then synced, then pending. The separate
+    /// status pool cannot take incident capacity, and incidents cannot take status capacity.
+    func testCountEvictionKeepsStatusSeparateFromIncidentPriority() {
         let a = UUID(), b = UUID(), c = UUID(), d = UUID(), e = UUID(), f = UUID()
         // Newest-first: A pending, B audit, C synced, D flood, E pending, F synced.
         let events: [EventStore.EvictionRow] = [
@@ -365,11 +930,34 @@ final class EventTests: XCTestCase {
             .init(id: e),
             .init(id: f, isSynced: true),
         ]
-        XCTAssertEqual(EventStore.countEvictionOrder(events: events, cap: 2), [d, f, c, e],
+        XCTAssertEqual(EventStore.countEvictionOrder(events: events, incidentCap: 2, auditCap: 100), [d, f, c],
                        "flood, then synced oldest-first, then pending oldest-first; audit survives")
-        XCTAssertEqual(EventStore.countEvictionOrder(events: events, cap: 1), [d, f, c, e, b],
-                       "with the newest event exempt (39.R1.6), the audit row is the last DROPPABLE thing — the record of the incident in progress survives everything")
-        XCTAssertTrue(EventStore.countEvictionOrder(events: events, cap: 6).isEmpty)
+        XCTAssertEqual(EventStore.countEvictionOrder(events: events, incidentCap: 1, auditCap: 100), [d, f, c, e],
+                       "the newest incident and the status row survive in their independent pools")
+        XCTAssertTrue(EventStore.countEvictionOrder(events: events, incidentCap: 6, auditCap: 100).isEmpty)
+    }
+
+    /// B21 device regression: routine arm/disarm history must not consume the whole log
+    /// and make each newly recorded incident evict the previous incident within one watch.
+    @MainActor
+    func testAnAuditHeavyLogRetainsFiveRecentIncidents() {
+        var rows: [EventStore.EvictionRow] = (0..<EventStore.maxIncidentEvents).map { _ in
+            .init(id: UUID(), isSynced: true, isAudit: true)
+        }
+        let incidents = (0..<5).map { _ in UUID() }
+        for id in incidents {
+            rows.insert(.init(id: id, isSynced: true), at: 0)
+            let evicted = Set(EventStore.countEvictionOrder(events: rows, incidentCap: EventStore.maxIncidentEvents, auditCap: 100))
+            rows.removeAll { evicted.contains($0.id) }
+        }
+        let retainedIncidents = Set(rows.filter { !$0.isAudit }.map(\.id))
+        XCTAssertEqual(retainedIncidents, Set(incidents),
+                       "older routine audit entries must not crowd out four of five new incidents")
+        rows.insert(.init(id: UUID(), isSynced: true, isAudit: true), at: 0)
+        let afterDisarm = Set(EventStore.countEvictionOrder(events: rows, incidentCap: EventStore.maxIncidentEvents, auditCap: 100))
+        rows.removeAll { afterDisarm.contains($0.id) }
+        XCTAssertEqual(Set(rows.filter { !$0.isAudit }.map(\.id)), Set(incidents),
+                       "the disarm audit must not erase this watch's incident history")
     }
 
     /// 39.R1.6: the count cap must never evict the event being added. At cap with no older
@@ -383,7 +971,7 @@ final class EventTests: XCTestCase {
         let newFlood = UUID()
         var rows: [EventStore.EvictionRow] = [.init(id: newFlood, isFlood: true)]
         rows += (0..<3).map { _ in .init(id: UUID(), isSynced: true) }   // older synced genuine
-        let evicted = EventStore.countEvictionOrder(events: rows, cap: 3)
+        let evicted = EventStore.countEvictionOrder(events: rows, incidentCap: 3, auditCap: 100)
         XCTAssertFalse(evicted.contains(newFlood),
                        "the just-added flood record must not self-evict at cap (39.R1.6)")
         XCTAssertEqual(evicted, [rows.last!.id],
@@ -400,7 +988,7 @@ final class EventTests: XCTestCase {
         let mirror = UUID()
         var rows: [EventStore.EvictionRow] = [.init(id: mirror, isSynced: true, isMirrored: true)]
         rows += (0..<3).map { _ in .init(id: UUID(), isSynced: true) }   // first-hand, cloud-backed
-        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, cap: 3), [mirror],
+        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, incidentCap: 3, auditCap: 100), [mirror],
                        "the mirror itself goes — a copy the cloud still holds — never first-hand evidence")
     }
 
@@ -420,17 +1008,122 @@ final class EventTests: XCTestCase {
             .init(id: synced, isSynced: true),
             .init(id: mirror2, isSynced: true, isMirrored: true),
         ]
-        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, cap: 3), [mirror2, mirror1],
+        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, incidentCap: 3, auditCap: 100), [mirror2, mirror1],
                        "both mirrors go — oldest first — before flood or synced first-hand rows")
-        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, cap: 2), [mirror2, mirror1, flood],
+        XCTAssertEqual(EventStore.countEvictionOrder(events: rows, incidentCap: 2, auditCap: 100), [mirror2, mirror1, flood],
                        "only once the mirrors are exhausted does the first-hand order resume")
         // A wall of future-dated mirrors above genuine evidence: the genuine rows survive.
         let genuine = UUID()
         var wall: [EventStore.EvictionRow] =
             (0..<4).map { _ in .init(id: UUID(), isSynced: true, isMirrored: true) }   // "newest" fabricated mirrors
         wall.append(.init(id: genuine, isSynced: true))               // the oldest row: real evidence
-        XCTAssertFalse(EventStore.countEvictionOrder(events: wall, cap: 2).contains(genuine),
+        XCTAssertFalse(EventStore.countEvictionOrder(events: wall, incidentCap: 2, auditCap: 100).contains(genuine),
                        "fabricated mirrors sorted above real evidence must evict themselves, not it")
+    }
+
+    /// An existing audit-heavy installation is trimmed without resetting its log or
+    /// removing the retained incident's media. Further trips and disarm survive a reload.
+    @MainActor
+    func testLegacyStatusHeavyLogMigratesAndKeepsClipsAcrossDisarmAndReload() async throws {
+        try await checkLegacyMigration(journalOnlyIncident: false)
+    }
+
+    @MainActor
+    func testLegacyMigrationDuringJournalRecoveryRetiresEveryPrunedRow() async throws {
+        try await checkLegacyMigration(journalOnlyIncident: true)
+    }
+
+    @MainActor
+    private func checkLegacyMigration(journalOnlyIncident: Bool) async throws {
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let media = root.appendingPathComponent("Media", isDirectory: true)
+        try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+        let clip = media.appendingPathComponent("retained.mov")
+        let bytes = Data([1, 2, 3, 4])
+        try bytes.write(to: clip)
+        let now = Date()
+        let status = (0..<499).map { i in
+            Event(startDate: now.addingTimeInterval(-Double(i + 1)), endDate: now,
+                  triggeredSensors: [], cloudSyncState: .synced, stateChange: "armed")
+        }
+        let incident = Event(startDate: now, endDate: now, triggeredSensors: [.motion],
+                             mediaFilename: clip.lastPathComponent, cloudSyncState: .pending)
+        let log = root.appendingPathComponent("events.json")
+        try JSONEncoder().encode([incident] + status).write(to: log)
+        let journal = root.appendingPathComponent("events.journal")
+        let recovered = journalOnlyIncident
+            ? [Event(startDate: now, endDate: now, triggeredSensors: [.audio])] : []
+        let lines = ([incident] + status + recovered).reduce(into: Data()) { data, event in
+            data.append(EventStore.journalLine(for: event)!)
+        }
+        try lines.write(to: journal)
+        let store = EventStore()
+        XCTAssertEqual(store.events.count, 101 + recovered.count)
+        XCTAssertEqual(Set(MonitoringEngine.beatSessions().map(\.id)), Set(status.map(\.id)),
+                       "all legacy watch IDs must be registered before the status cap removes their arm rows")
+        XCTAssertEqual(Set(store.events.filter(\.isStateChange).map(\.id)), Set(status.prefix(100).map(\.id)))
+        XCTAssertEqual(try Data(contentsOf: clip), bytes)
+        var incidents = Set([incident.id] + recovered.map(\.id))
+        for _ in 0..<4 {
+            let event = Event(startDate: now, endDate: now, triggeredSensors: [.touch])
+            incidents.insert(event.id)
+            store.add(event)
+        }
+        store.add(Event(startDate: now, endDate: now, triggeredSensors: [], stateChange: "disarmed"))
+        let expected = Set(store.events.map(\.id))
+        for _ in 0..<100 {
+            if let data = try? Data(contentsOf: log),
+               let disk = try? JSONDecoder().decode([Event].self, from: data),
+               Set(disk.map(\.id)) == expected { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let disk = try JSONDecoder().decode([Event].self, from: Data(contentsOf: log))
+        XCTAssertEqual(Set(disk.map(\.id)), expected, "the new limits must be durably saved")
+        for _ in 0..<100 where FileManager.default.fileExists(atPath: journal.path) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path),
+                       "status rows retired by migration must not replay from the journal next launch")
+        let reopened = EventStore()
+        XCTAssertEqual(reopened.events.count, 105 + recovered.count)
+        XCTAssertEqual(Set(reopened.events.filter { !$0.isStateChange }.map(\.id)), incidents)
+        XCTAssertEqual(try Data(contentsOf: clip), bytes, "status trimming cannot delete an incident's clip")
+    }
+
+    /// Both budgets stay independent at capacity, including interrupted status rows;
+    /// cloud copies in either pool cannot evict owned history or pending captures.
+    @MainActor
+    func testFullPoolsRejectMirrorPressureAndKeepPendingIncidentOnNextCapture() throws {
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let now = Date()
+        let incidents = (0..<500).map { i in
+            Event(startDate: now.addingTimeInterval(-Double(i)), endDate: now,
+                  triggeredSensors: [.motion], cloudSyncState: i == 499 ? .pending : .synced)
+        }
+        let status = (0..<100).map { i in
+            Event(startDate: now.addingTimeInterval(-Double(i)), endDate: now,
+                  triggeredSensors: [], interrupted: true)
+        }
+        try JSONEncoder().encode(incidents + status).write(to: root.appendingPathComponent("events.json"))
+        let store = EventStore()
+        let future = now.addingTimeInterval(86_400)
+        let mirrors = (0..<20).map { i in
+            Event(startDate: future, endDate: future, triggeredSensors: i < 10 ? [.motion] : [],
+                  cloudSyncState: .synced, stateChange: i < 10 ? nil : "armed", sourceDevice: "Other phone")
+        }
+        _ = store.merge(mirrors)
+        XCTAssertEqual(Set(store.events.map(\.id)), Set((incidents + status).map(\.id)))
+        let capture = Event(startDate: future, endDate: future, triggeredSensors: [.touch])
+        store.add(capture)
+        let disarm = Event(startDate: future, endDate: future, triggeredSensors: [], stateChange: "disarmed")
+        store.add(disarm)
+        XCTAssertEqual(store.events.count, 600)
+        XCTAssertTrue(store.events.contains { $0.id == incidents.last?.id }, "pending evidence outlives synced evidence")
+        XCTAssertFalse(store.events.contains { $0.id == incidents[498].id }, "oldest synced incident makes room")
+        XCTAssertFalse(store.events.contains { $0.id == status.last?.id }, "only the oldest status makes room for disarm")
+        XCTAssertTrue(store.events.contains { $0.id == capture.id })
+        XCTAssertTrue(store.events.contains { $0.id == disarm.id })
     }
 
     /// 39.R1.6 + 31.F14: the launch sweep reclaims Media files nothing references — but
@@ -526,7 +1219,7 @@ final class EventTests: XCTestCase {
         // Fill the log to cap with fresh events so anything older is evicted on sight.
         let filler = EventStore()
         let base = Date()
-        for i in 0..<(EventStore.maxEvents + 1) {
+        for i in 0..<(EventStore.maxIncidentEvents + 1) {
             filler.add(Event(startDate: base.addingTimeInterval(Double(i)),
                              endDate: base.addingTimeInterval(Double(i)),
                              triggeredSensors: [.motion]))

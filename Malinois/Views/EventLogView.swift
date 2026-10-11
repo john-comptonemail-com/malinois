@@ -64,10 +64,9 @@ struct EventLogView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Opportunistically re-sync anything stuck when the log opens.
         .task { await retry() }
-        // The owner is looking (the log is PIN-gated): what is here is seen, and so is what
-        // arrived while it was open. Home's count starts again from here (item 81).
-        .onAppear { eventStore.markAllSeen() }
-        .onDisappear { eventStore.markAllSeen() }
+        // Home's authenticated navigation binding marks records seen before each
+        // open/close transition. Appearance callbacks can run later than the return
+        // to Home; a late callback must not clear records received after the visit.
     }
 
     /// A banner explaining iCloud status and offering a manual re-sync.

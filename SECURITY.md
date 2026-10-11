@@ -302,6 +302,10 @@ Two consequences matter for the threat model:
   version byte and, for the PBKDF2 format, its salt — a lost or malformed salt classifies
   as the recoverable lost-hash state instead of an unwinnable pad, and verification never
   mints a salt over the gap.
+  Debug builds expose a recovery preview inside authenticated Settings for cancellation
+  checks. It uses the same device-authentication view, but success only updates the preview's
+  message: it cannot reset the PIN, repair the setup flag, or unlock another screen. The
+  preview and its entry point are compiled out of Release builds.
 - **Design note — why a reboot is not a rate-limit bypass.** Two reviewers have now
   read the reboot note above and concluded that force-restarting clears an in-progress
   lockout and lets guessing resume, then proposed adding a *wall-clock* deadline alongside
@@ -338,7 +342,9 @@ Two consequences matter for the threat model:
   trade: it is the local count, which an iCloud-only attacker
   cannot change, and it reveals volume, never content. Since 1.4 it counts only the records
   that are new since the Event Log was last opened or closed, so only someone who can open the
-  log can clear it: the PIN, or Face ID or Touch ID where the owner turned that on for the log.)
+  log can clear it: the PIN, or Face ID or Touch ID where the owner turned that on for the log.
+  The acknowledgment happens before the authenticated navigation transition; cancelling a PIN
+  prompt or receiving a late cloud result after closure does not clear unread records.)
 - **Every screen that reveals configuration is PIN-gated too.** The Event Log, Settings, and
   *Test sensors* all sit behind the same gate. The owner may opt the two READ surfaces —
   the Event Log and Test sensors — into Face ID, or Touch ID on an iPhone SE (off by default);
@@ -370,7 +376,8 @@ Two consequences matter for the threat model:
   removed: within this threat model there is no path for an attacker to delete an
   *individual* record. The app exposes no delete affordance, `CloudExfiltrator` never
   deletes a *fact* (its only record deletions are push subscriptions and the owner's
-  full-media retention policy, which cannot touch anything newer than 30 days), the
+  retention policy over full-resolution media and old heartbeat trails, which cannot touch
+  anything newer than 30 days), the
   CloudKit console cannot see private databases,
   and editing `events.json` needs a jailbreak or the device passcode — both out of scope.
   What an iCloud-credential holder — or a Guided Access passcode holder with the unlocked
@@ -447,16 +454,18 @@ Two consequences matter for the threat model:
   transaction — a clip whose protection cannot be applied is removed, never left on
   disk under-protected** — so a large clip never lands in memory or blocks the UI at
   the moment of capture.
-- **Retention is capped, and evicts in order of what the log can least afford to
-  lose** — 500 events / ~2 GB of media: mirrored copies from other devices first of all
-  (copies, not custody — the capturing device and the cloud still hold them, and a
-  re-fetch brings them back; fourth pass, R3-4), then coalesced flood records, then
-  events and media already synced (locally a cache — the cloud holds them and they
-  re-download), then pending, with the arm/disarm/interruption audit rows last of all,
-  so a paced attacker generating ordinary-looking events can't push the audit trail over
-  the boundary. The **newest event is never evicted**, whatever its class — retention sheds
-  the oldest, and the record of the incident in progress outranks everything (before this
-  rule, a coalesced flood record arriving at a full log evicted *itself* at birth). A
+- **Retention has separate budgets: 500 incidents and 100 recent status entries**,
+  with the existing shared ~2 GB media cap. Arm/disarm, settings and interruption
+  history cannot displace incidents, and incident flooding cannot consume status
+  slots. Mirrored copies go first within either budget, so cloud input cannot evict
+  first-hand evidence. Incidents then discard coalesced flood records, synced
+  evidence and finally pending evidence, oldest first within each class. Status
+  entries discard the oldest first-hand entries after copies. The **newest first-hand
+  row in each budget stays**, including an in-flight flood anchor. On upgrade a
+  readable legacy log adopts these limits; old status history beyond 100 is removed
+  locally even if unsynced. Count trimming does not delete records from iCloud.
+  A copy previously marked synced may no longer exist remotely; re-download is
+  possible only while that cloud copy remains. A
   pending capture the byte cap must discard in a storage emergency is
   **marked on its event** — it can never silently read as synced later. A launch-time
   sweep also reclaims media files no event references (true leaks); it deletes nothing
@@ -472,15 +481,17 @@ Two consequences matter for the threat model:
   than dropped: a grab-then-unplug lists both sensors even when the second step falls
   inside the 1–5 s capture window (34-review M1 — previously the one hole in
   "any enabled tripwire fires on its own").
-- Clip capture is **time-bounded** end-to-end: if the camera's recording delegate
-  never returns (an interrupted session, a hardware stall), the wait is cut and the
-  event is still logged, rather than wedging the trigger pipeline so no further
-  tamper is ever caught. And the pipeline has one owner (ADR 0003): the trigger
+- **Camera deadlines do not bound the entire capture.** Warm-up has an independent
+  deadline. Photo and movie-finalization timeouts depend on the camera's serial queue;
+  a blocked queue can prevent them from running. Light and interruption queries can
+  also wait without an outer deadline, including inside an until-clear recording's
+  duration loop. The initial event is logged before capture, but capture completion
+  and the subsequent response can stall. Disarm remains independent; actual camera
+  shutdown may be unconfirmed. The pipeline's priority rule (ADR 0003) is that the trigger
   response outranks everything; the blackout and flood-cadence grabs yield to it and
   to each other, are stills by construction (a frame answers their purpose, and a
-  still cannot contend for the movie output), and a recording accepts exactly one
-  stop — so one event's footage can never be consumed, or the pipeline hung, by
-  another's.
+  still cannot contend for the movie output), and repeated stop requests are guarded.
+  These overlap controls do not guarantee completion when the camera framework stalls.
 - **No arming gap after go-live.** The sensors start watching the moment calibration
   finishes — the brief "calibration complete" review the owner sees is not an unprotected
   window. A tamper during it fires normally (and drops the review straight to
@@ -557,7 +568,7 @@ A stationary armed device pushes the viable attacks into the non-contact categor
 where the tell is the *pattern* of triggers, not any single one:
 
 - **Sensor flooding** (a vibration motor on the table leg, a loop of noise to
-  overflow the 500-event log): a sustained high trip rate — set well above a plausible
+  overflow the 500-incident budget): a sustained high trip rate — set well above a plausible
   *human* tamper rate (~6/min) so an ordinary burglary isn't misread — is treated as an
   attack. This is checked **both per-sensor and in aggregate**: an attacker could
   otherwise stay under the per-sensor bar by alternating two sources (say a motor and a
@@ -620,8 +631,14 @@ rather than jumpy:
   capture is not missed (1.3.2).
 - **Go loud.** On the gold trigger — or when a real tamper fires and can't be
   exfiltrated — Malinois **abandons covertness**: it sounds the siren (which no
-  jammer can block) and shows an on-screen interference warning, and grabs a frame
-  (a jammer setting up is likely nearby). The alarm is silenced only by the PIN, or
+  jammer can block) and shows an on-screen interference warning. Every new escalation
+  first writes a separate **Signal loss** entry, including when an offline capture or a
+  terminal network-class upload failure starts the alarm. Repeated triggers during the
+  same escalation do not duplicate it. The timed canary also attempts a frame; paths
+  attached to an existing capture keep that capture and add only the signal-loss record.
+  The diagnostic's own upload failure cannot start another alarm, even if it completes
+  after reconnect or in a later watch; its record remains available for upload retries.
+  The alarm is silenced only by the PIN, or
   stands down if connectivity returns. This inverts the attack: the jammer meant to
   suppress your upload and instead triggered the loudest possible alarm. The
   escalation **re-arms after each stand-down**, so an attacker can't burn it with a
@@ -639,8 +656,10 @@ rather than jumpy:
   block on this network round-trip; the ~15–20 s of grace + calibration before the watch
   goes live covers it in practice.
 
-Honesty: this infers jamming, it doesn't prove it. The *logged* claim stays modest
-("captured offline"); only the on-screen deterrent is punchy. A simultaneous carrier
+Honesty: this infers interference, it does not prove deliberate jamming. The logged
+entry says **Signal loss**. Its **captured offline** flag reflects the observed network
+path; a failed request can cause escalation while the path still looks online, in which
+case that flag stays false. The on-screen deterrent uses stronger wording. A simultaneous carrier
 + Wi-Fi outage is a rare false positive whose cost is a recoverable "disarm to
 silence." Off-device escape remains the only real durability — local copies do not
 survive a device wipe.
@@ -671,14 +690,25 @@ survive a device wipe.
   device's records are.
 - **Full-media retention is the owner's policy, floored for safety (1.2).** A Settings
   picker keeps full-resolution cloud media forever, prunes it manually, or auto-deletes
-  it past 1–12 months (default 12). Only photo records are ever deleted — facts,
-  thumbnails and audit records are permanent — and no EVENT newer than **30 days** can
-  have media deleted in any mode, by anyone: the floor lives inside the purge entry point
-  itself, so no caller can violate it. (Precisely: eligibility keys on the event's age —
+  it past 1–12 months (default 12). Only photo records (and old heartbeat trails, below) are
+  ever deleted — facts, thumbnails and audit records are permanent — and no EVENT newer than **30 days** can
+  have media deleted by Malinois cleanup: the floor lives inside the purge entry point.
+  Both the selected month policy and the floor use a lower bound from CloudKit system
+  creation dates on existing audit/fact records. Device clock changes cannot advance
+  that cutoff. An old observation delays cleanup; no usable observation means no deletion.
+  This is not a fresh-server-time claim and does not constrain external iCloud deletion. (Precisely: eligibility keys on the event's age —
   a photo record that finished uploading late for an old event follows its event's age,
   which is the anti-tamper direction; eighth review, L2.) A purge whose walk couldn't
   read every candidate record reports failure rather than "Deleted" — under-deletion
-  stays the safe direction, but observably so (ninth review, R3-3).
+  stays the safe direction, but observably so (ninth review, R3-3). The auto modes also
+  delete the per-beat heartbeat records of this phone's past watches, keeping each watch's
+  latest beat (ADR 0022). A trail goes only when its watch's last beat, by the server's
+  clock, is older than the setting. The trim independently obtains the same conservative
+  server-time lower bound, and the same floor lives inside its own decisions, so no beat newer than 30 days is deleted in any mode; a watch that beat inside
+  the window keeps its whole trail. Only this phone's own watches are trimmed, from a list it
+  keeps as each goes live: another device's keep their trails, and so do this phone's own
+  from before a reinstall, which come back as copies (the safe direction again; a restore
+  from a device backup brings the list back, and those are trimmed as before).
 - **Notification health is surfaced, not assumed (34.H7).** The cross-device alert fires
   server-side, so the *sending* device needs no notification permission — but a device
   with Notifications denied for Malinois, or a failed push registration, cannot **show**
@@ -709,7 +739,9 @@ survive a device wipe.
   dropped, never sent late: a gap is a gap, not a backlog. A gap is a fact with a time, not a
   verdict (a lost connection makes one too), and it never sounds anything on the phone. Apple
   can see that these records exist and when they arrive, as with the disarm signal, never what
-  they say. The free tier has no heartbeat, as it has no iCloud copy.
+  they say. The free tier has no heartbeat, as it has no iCloud copy. In the retention setting's
+  auto modes, once a watch's last beat is older than the setting, the watch keeps only its latest
+  beat (ADR 0022): the time it was last heard from stays, the gaps in its old trail do not.
 - **An encrypted-data reset is recovered, not looped on (34.H13).** If the owner resets
   their iCloud encrypted data, Apple purges the app's records and saves start answering
   `zoneNotFound`. That is classified as a refusal (never a siren — ADR 0001), and the
@@ -876,9 +908,10 @@ These are out of scope by design — Malinois does not claim to defend against t
   untouched by it, and so are the copies other devices had already mirrored. The
   **Malinois PIN** on its own does **not**: the app exposes no way to delete an event, and
   its own cloud deletion is limited to the owner's retention policy over **old
-  full-resolution media only** — facts, thumbnails and audit records have no deletion
-  path inside the app, and nothing newer than **30 days** can be deleted in any mode (the
-  floor is enforced inside the purge itself, not the UI). So a PIN-holder cannot use "free
+  full-resolution media and old heartbeat trails only** — facts, thumbnails, audit records
+  and each watch's latest beat have no deletion path inside the app, and nothing newer than
+  **30 days** can be deleted by these cleanup paths (server-date-anchored policy and floor
+  are enforced inside each deleting call, not the UI; unavailable time defers deletion). So a PIN-holder cannot use "free
   up iCloud space" to destroy the evidence of what they just did. What the PIN defeats is
   narrower — it stops *future* monitoring and silences the response; the GA passcode
   unlocks the single-app lock (and exiting it is itself captured, with the alert to the
@@ -1003,6 +1036,19 @@ These are out of scope by design — Malinois does not claim to defend against t
   recorded line at all — and a line is retired only after the full log that supersedes it
   has itself been synced, so the guarantee does not leak through the retirement. The sync
   costs are logged so they can be re-read on a device (ADR 0005, as amended).
+- **Completed first-hand media has an attachment recovery record (ADR 0037).** The
+  event must already exist. A protected, synced intent identifies its event, start time,
+  physical camera, primary/secondary slot and media filename before publication. A
+  staging file becomes attachable only after complete bytes, protection and file sync.
+  Relaunch (including deferred unlock) validates the intent and file, enriches only the
+  matching first-hand event, and reopens cloud sync. It never creates an event from a
+  manifest or guesses between conflicting slots. The intent retires only after a synced
+  event snapshot contains the attachment. Recovered in-memory references can prevent
+  aging but cannot authorize retirement. Unresolved intents suspend orphan sweeping;
+  bounded cleanup cannot age out a complete file still eligible for attachment. This
+  does not authenticate local files against an attacker who can rewrite the app's data,
+  guarantee directory-rename durability under abrupt power loss, or identify legacy
+  orphan media. Downloads retain their separate current-record merge behavior.
 - **A capture that produced nothing says why** (ADR 0008). The record carries the
   reason — permission denied, the camera would not start or did not start in time, the shot
   or clip failed, the session was interrupted (with the system's reason: the app left the
@@ -1013,7 +1059,11 @@ These are out of scope by design — Malinois does not claim to defend against t
   at once, if it ended while the shot was still failing — if the session is still armed, the
   event is recent and still without media, and no other capture owns the camera, a single
   still is taken and attached, labelled as the second attempt; the slot is cleared before
-  the attempt, so it is one try, never a loop. A camera
+  the eligible attempt, so it is one try, never a loop. A busy camera preserves the
+  opportunity until release, within the same watch and retry window; expiry, camera
+  disablement, existing media or disarm ends it. Queued work is bound to its original
+  incident/watch, and an old attempt cannot stand down a replacement watch's camera.
+  A camera
   session killed by a runtime error — previously down and unlogged until the next trigger
   (32.R9) — leaves a "camera session failed" audit record, is surfaced on Home, and is
   re-warmed per the readiness policy, at most once per minute so a storm of errors cannot

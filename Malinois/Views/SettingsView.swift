@@ -41,7 +41,7 @@ struct SettingsView: View {
                 consideringSection
                 helpSection
                 #if DEBUG
-                spikeSection   // BACKLOG 14 probes — debug builds only, removed post-spike
+                spikeSection   // development previews/seeders, and item 14's probes with SPIKE14
                 #endif
             }
             .onReceive(NotificationCenter.default.publisher(
@@ -506,7 +506,7 @@ struct SettingsView: View {
             } label: {
                 HStack { Text("iCloud Photo & Video Storage"); proMark }
             }
-            Text("Applies to full-resolution photos and clips in iCloud. Event facts, thumbnails, and arm/disarm records are always kept, and nothing newer than 30 days is ever deleted.")
+            Text("Applies to full-resolution photos and clips in iCloud. Event facts, thumbnails, and arm/disarm records are always kept. Events newer than 30 days are protected. Cleanup may wait until iCloud provides a sufficiently recent timestamp.")
                 .font(.caption).foregroundStyle(.secondary)
             if settings.cloudRetention == .manual {
                 Button("Free up iCloud space…") { showPurgeDialog = true }
@@ -598,12 +598,11 @@ struct SettingsView: View {
     }
 
     /// The Manual retention mode's explicit purge (32.R2). The 30-day protection floor is
-    /// enforced inside `purgeCutoff`, so no month choice here can violate it.
+    /// enforced by the cloud entry point using server dates, independent of the phone clock.
     private func runPurge(monthsOld months: Int) async {
         guard entitlements.proActive else { return }
         purgeNote = "Deleting…"
-        let result = await cloud.purgeFullMedia(
-            olderThan: CloudExfiltrator.purgeCutoff(monthsOld: months, now: Date()))
+        let result = await cloud.purgeFullMedia(monthsOld: months)
         purgeNote = result.failed
             ? "Some records couldn't be deleted - check iCloud and try again."
             : "Deleted full media from \(result.eventsExamined) event(s)."
@@ -660,7 +659,80 @@ struct ChangePINView: View {
 
 #if DEBUG
 
+extension SettingsView {
+    /// Debug-only device-check helpers, including a PIN-recovery preview whose authentication
+    /// completion never repairs setup or changes the PIN. SPIKE14 adds item 14's probes.
+    var spikeSection: some View {
+        Section("Development (debug builds only)") {
+            #if SPIKE14
+            NavigationLink("Item 14 spike — NFC / smart-card probes") { Spike14View() }
+            #endif
+            Item79SeedRow()
+            Item76AlertPreviewRow()
+            PINRecoveryPreviewRow()
+        }
+    }
+}
+
+/// Presents the real recovery authentication UI without changing Keychain or setup state.
+/// This entry is reachable only inside authenticated Settings in a Debug build.
+private struct PINRecoveryPreviewRow: View {
+    @State private var isPresented = false
+
+    var body: some View {
+        Button("Preview PIN recovery (no changes)") { isPresented = true }
+            .sheet(isPresented: $isPresented) { PINRecoveryPreviewView() }
+    }
+}
+
+/// Exercises PINRecoveryView's real LocalAuthentication callback. Success only changes this
+/// preview's local message; it never calls RootView.resolveRecovery or presents PIN setup.
+private struct PINRecoveryPreviewView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var authenticated = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Text("Preview only. Your PIN and saved data stay unchanged. Cancel the system authentication prompt to test recovery cancellation.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                if authenticated {
+                    Spacer()
+                    Text("Authentication completed. No changes made.")
+                        .multilineTextAlignment(.center)
+                    Text("To test cancellation, close this preview and open it again.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Spacer()
+                } else {
+                    PINRecoveryView(kind: .lostHash) { authenticated = true }
+                }
+            }
+            .padding(.top)
+            .navigationTitle("PIN recovery preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+#if SPIKE14
+
 // MARK: - BACKLOG 14 spike harness (0a + 0c's API half) — throwaway, removed post-spike
+//
+// Compiled only with the `SPIKE14` compilation condition (add it to the Debug configuration's
+// Active Compilation Conditions), since item 97 (ADR 0023): item 14 is demand-gated, and this
+// harness was not brought to Swift 6's concurrency checking, which it fails. Bring it there when
+// item 14 resumes.
 
 import CryptoTokenKit
 import CryptoKit
@@ -668,17 +740,6 @@ import CommonCrypto
 #if canImport(CoreNFC)
 import CoreNFC
 #endif
-
-extension SettingsView {
-    /// Debug builds only: the item-14 probes (key-gated disarm, route A).
-    var spikeSection: some View {
-        Section("Development (debug builds only)") {
-            NavigationLink("Item 14 spike — NFC / smart-card probes") { Spike14View() }
-            Item79SeedRow()
-            Item76AlertPreviewRow()
-        }
-    }
-}
 
 /// On-screen, timestamped log so results are readable on device mid-Guided-Access —
 /// the deferral question (does the system NFC sheet queue under GA the way the Face ID
@@ -1375,6 +1436,8 @@ struct Spike14View: View {
     }
 }
 
+#endif   // SPIKE14
+
 /// Debug builds only (item 79's device legs): seeds the Event Log with arm/disarm records that
 /// never reached iCloud — the state a long stretch in Airplane Mode leaves — so the sync legs
 /// need no hours offline. When the log is full it makes room only by dropping the oldest
@@ -1392,7 +1455,7 @@ struct Item79SeedRow: View {
             Button("Item 79: seed 100 unsynced arm/disarm records") {
                 let result = eventStore.seedUnsyncedBacklogForTesting(count: 100)
                 if result.added == 0 {
-                    note = "Nothing was added: the log is full and holds no copies from iCloud, "
+                    note = "Nothing was added: the status history is full and holds no status copies from iCloud, "
                         + "and this device's own events are never pushed out for test data."
                 } else {
                     let dropped = result.droppedCopies > 0
@@ -1402,7 +1465,7 @@ struct Item79SeedRow: View {
                 }
             }
             Text("Log: \(eventStore.events.count) of \(EventStore.maxEvents), \(copies) of them copies from "
-                 + "iCloud. When full, the seed makes room only by dropping the oldest copies.")
+                 + "iCloud. The seed uses the 100 status slots and can replace only status copies.")
                 .font(.caption).foregroundStyle(.secondary)
             if let note {
                 Text(note).font(.caption).foregroundStyle(.secondary)

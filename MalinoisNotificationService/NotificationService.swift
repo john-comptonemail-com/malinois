@@ -17,7 +17,10 @@
 import UserNotifications
 import CloudKit
 
-final class NotificationService: UNNotificationServiceExtension {
+/// Shared with the fetch's task and with iOS's expiry call, which can come from another thread; its
+/// mutable state (the content handler, the alert as sent) sits behind `lock`, which is what makes that
+/// sharing safe (item 97).
+final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
 
     /// How long the fetch may take. iOS gives the extension about 30 seconds; the rest is margin
     /// for handing over the alert as sent.
@@ -33,7 +36,8 @@ final class NotificationService: UNNotificationServiceExtension {
         self.contentHandler = contentHandler
         asSent = request.content
         lock.unlock()
-        let content = request.content
+        // Immutable (only its mutable subclass changes), and the fetch's task only reads it (item 97).
+        nonisolated(unsafe) let content = request.content
         guard let notification = CKNotification(fromRemoteNotificationDictionary: content.userInfo) as? CKQueryNotification,
               let recordID = notification.recordID,
               let containerID = AlertRewrite.appContainerIdentifier(extensionBundleID: Bundle.main.bundleIdentifier)

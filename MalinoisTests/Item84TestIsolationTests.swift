@@ -17,8 +17,10 @@ import XCTest
 @MainActor
 final class Item84TestIsolationTests: XCTestCase {
 
-    private var folders: [URL] = []
-    private var engines: [MonitoringEngine] = []
+    // Used by setUp, the test and tearDown, which XCTest runs one after another on the main thread;
+    // setUp and tearDown are not main-actor isolated, so these are not either (item 97).
+    nonisolated(unsafe) private var folders: [URL] = []
+    nonisolated(unsafe) private var engines: [MonitoringEngine] = []
 
     override func setUp() {
         super.setUp()
@@ -26,8 +28,9 @@ final class Item84TestIsolationTests: XCTestCase {
     }
 
     override func tearDown() {
-        for engine in engines { engine.disarm() }
-        engines.removeAll()
+        let engines = self.engines
+        MainActor.assumeIsolated { for engine in engines { engine.disarm() } }   // on the main thread (item 97)
+        self.engines.removeAll()
         clearOwnFlags()
         EventStore.rootOverrideForTesting = nil
         for dir in folders { try? FileManager.default.removeItem(at: dir) }
@@ -35,7 +38,7 @@ final class Item84TestIsolationTests: XCTestCase {
         super.tearDown()
     }
 
-    private func newFolder() -> URL {
+    nonisolated private func newFolder() -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("MalinoisItem84-" + UUID().uuidString, isDirectory: true)
         folders.append(dir)
@@ -44,14 +47,14 @@ final class Item84TestIsolationTests: XCTestCase {
 
     /// The flags present that the shared list names (`TestIsolation.recoveryFlagPrefixes`). The class
     /// reads that list rather than keeping a copy, which missed item 91's recorded settings (item 93).
-    private func recoveryFlagsPresent() -> [String] {
+    nonisolated private func recoveryFlagsPresent() -> [String] {
         UserDefaults.standard.dictionaryRepresentation().keys
             .filter { key in TestIsolation.recoveryFlagPrefixes.contains { key.hasPrefix($0) } }
             .sorted()
     }
 
     /// What this class's tearDown clears.
-    private func clearOwnFlags() {
+    nonisolated private func clearOwnFlags() {
         for key in recoveryFlagsPresent() { UserDefaults.standard.removeObject(forKey: key) }
     }
 
