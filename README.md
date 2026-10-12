@@ -75,6 +75,19 @@ More reliable event history and iCloud syncing.
 - Heartbeat records now include the phone’s temperature status. (Pro)
 - Automatic iCloud storage cleanup can trim eligible old heartbeat history while keeping the latest heartbeat from each watch. Manual and Keep forever settings are respected. (Pro)
 
+**Shipped in 1.5.1**
+
+Stronger protection for your PIN and iCloud evidence, and more accurate camera captures.
+
+- After updating, verify iCloud access once in Settings → iCloud with Face ID, Touch ID or your passcode. Until then, monitoring and on-device evidence keep working, but iCloud sync is paused.
+- Your Malinois PIN is kept if you delete and reinstall the app. Replacing a forgotten PIN requires Face ID, Touch ID or your device passcode.
+- The Event Log separates events held on this device from uploads that can be retried, explains why an event is held, and lets you hide the held-events banner until something changes.
+- Camera captures have their own time limit, clips show their real length, and partial recordings say so.
+- Alerts on your other devices are now generic: they no longer read event details from iCloud, so they don't name the device or sensor, and Vision-only alerts use the normal alert sound. (Pro)
+- Turning off cross-device alerts requires Face ID, Touch ID or your passcode. (Pro)
+- Home shows the Pro badge for both purchased and Early Access Pro.
+- During routine iCloud checks, Home now says “Checking iCloud for new events” instead of “Restoring your event log”.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.

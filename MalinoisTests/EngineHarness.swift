@@ -43,6 +43,19 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     /// for the store, which writes it as-is and tolerates a thumbnail it cannot decode.
     var stillData = Data([0xFF, 0xD8, 0xFF, 0xD9])
     var clipInterrupted = false
+    /// Investigation-only gates, configured before capture; absent in all ordinary tests.
+    var lowLightProbeForTesting: (@Sendable () async -> Bool)?
+    var interruptionProbeForTesting: (@Sendable () async -> Bool)?
+    var finalizedClipForTesting: URL?
+    var finalizedBothForTesting: (front: URL?, rear: URL?)?
+    var quarantineFinishProbeForTesting: (@Sendable () async -> Void)?
+    private var finalizedHandler: (@Sendable (URL, CameraChoice) -> Void)?
+    var heldBothPhotoLensForTesting: CameraChoice = .rear
+    var bothPhotoProbeForTesting: (@Sendable () async -> Void)?
+    var onStillCapturedForTesting: (@MainActor () -> Void)?
+    var rearFinalizeProbeForTesting: (@Sendable () async -> Void)?
+    var endClipProbeForTesting: (@Sendable () async -> Void)?
+    var recordingSuccessForTesting: Bool? = true
     /// Item 54 knobs: the session's interruption reason, and errors for the shot or clip.
     var interruptionReasonValue: CaptureInterruptionReason?
     var clipEndError: Error?
@@ -139,7 +152,10 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         return try await warmUp(forClips: true, camera: camera)
     }
     func dropMicAndWait() async { lock.withLock { _micDrops += 1 } }
-    func isLowLight() async -> Bool { lowLight }
+    func isLowLight() async -> Bool {
+        if let probe = lowLightProbeForTesting { return await probe() }
+        return lowLight
+    }
     func isLowLightFront() async -> Bool { lowLight }
     func isLowLightRear() async -> Bool { lowLight }
 
@@ -159,18 +175,35 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
             if !held { cont.resume() }
         }
         if let stillError { throw stillError }   // a failure injected while the still was held (a disarm stopping the camera)
+        await onStillCapturedForTesting?()
         return stillData
     }
 
     func beginClip(torch: Bool) { lock.withLock { _clips.append(torch) } }
     func endClip() async throws -> URL {
         lock.withLock { _clipEnds += 1 }
+        if let endClipProbeForTesting { await endClipProbeForTesting() }
         if let clipEndError { throw clipEndError }
+        if let finalizedClipForTesting { return finalizedClipForTesting }
         return try Self.placeholderClipFile()
     }
 
     func captureBothStills(rearHardwareFlash: Bool) async throws -> (front: Data?, rear: Data?) {
         lock.withLock { _bothStills += 1 }
+        if let bothPhotoProbeForTesting { await bothPhotoProbeForTesting() }
+        return (omittedBothCameras.contains("front") ? nil : stillData,
+                omittedBothCameras.contains("rear") ? nil : stillData)
+    }
+
+    func captureBothStills(rearHardwareFlash: Bool,
+                           onFinalized: @escaping @Sendable (Data, CameraChoice) async -> Void) async -> (front: Data?, rear: Data?) {
+        lock.withLock { _bothStills += 1 }
+        let first: CameraChoice = heldBothPhotoLensForTesting == .rear ? .front : .rear
+        if !omittedBothCameras.contains(first.rawValue) { await onFinalized(stillData, first) }
+        if let bothPhotoProbeForTesting { await bothPhotoProbeForTesting() }
+        if !omittedBothCameras.contains(heldBothPhotoLensForTesting.rawValue) {
+            await onFinalized(stillData, heldBothPhotoLensForTesting)
+        }
         return (omittedBothCameras.contains("front") ? nil : stillData,
                 omittedBothCameras.contains("rear") ? nil : stillData)
     }
@@ -178,6 +211,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     func beginBothClips(rearTorch: Bool) { lock.withLock { _bothClips += 1 } }
     func endBothClips() async throws -> (front: URL?, rear: URL?) {
         await onBothCaptureEnd?()
+        if let finalizedBothForTesting { return finalizedBothForTesting }
         func file(_ lens: String) throws -> URL? {
             guard !omittedBothCameras.contains(lens) else { return nil }
             if invalidBothClipFiles.contains(lens) {
@@ -188,9 +222,33 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         return (try file("front"), try file("rear"))
     }
 
-    func clipWasInterrupted() async -> Bool { clipInterrupted }
+    func endBothClips(onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> (front: URL?, rear: URL?) {
+        guard let result = try? await endBothClips() else { return (nil, nil) }
+        if let front = result.front { await onFinalized(front, .front) }
+        if let rearFinalizeProbeForTesting { await rearFinalizeProbeForTesting() }
+        if let rear = result.rear { await onFinalized(rear, .rear) }
+        return result
+    }
+
+    func clipWasInterrupted() async -> Bool {
+        if let probe = interruptionProbeForTesting { return await probe() }
+        return clipInterrupted
+    }
     func interruptionReason() async -> CaptureInterruptionReason? { interruptionReasonValue }
     func beginCaptureAttempt() { lock.withLock { _attemptBegins += 1 } }
+    func quarantineCapture() { shutDown() }
+    func finishCaptureQuarantine() async {
+        if let quarantineFinishProbeForTesting { await quarantineFinishProbeForTesting() }
+        shutDown()
+    }
+    func setFinalizedClipHandler(_ handler: (@Sendable (URL, CameraChoice) -> Void)?) {
+        lock.withLock { finalizedHandler = handler }
+    }
+    func emitFinalizedClipForTesting(_ url: URL, camera: CameraChoice) {
+        let callback = lock.withLock { finalizedHandler }
+        callback?(url, camera)
+    }
+    func recordingFinishedSuccessfully(at url: URL) -> Bool? { recordingSuccessForTesting }
 
     /// A nonempty opaque placeholder for storage/control-flow tests, not playable footage.
     /// Zero bytes represent an incomplete save and are deliberately rejected by recovery.
@@ -225,6 +283,12 @@ enum TestIsolation {
     nonisolated static func setUp(folderPrefix: String) {
         EventStore.rootOverrideForTesting = FileManager.default.temporaryDirectory
             .appendingPathComponent(folderPrefix + "-" + UUID().uuidString, isDirectory: true)
+        MainActor.assumeIsolated {
+            if let root = EventStore.rootOverrideForTesting {
+                CloudEnrollment.sharedForTesting = CloudEnrollment(file: root.appendingPathComponent("enrollment/state.json"),
+                                                                   authenticate: { _ in false })
+            }
+        }
         clearRecoveryFlags()
     }
 
@@ -242,6 +306,7 @@ enum TestIsolation {
         clearRecoveryFlags()
         if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
         EventStore.rootOverrideForTesting = nil
+        MainActor.assumeIsolated { CloudEnrollment.sharedForTesting = nil }
     }
 
     /// Keeps `engine` for the tearDown's disarm, and returns it, so a rig can wrap its constructor.

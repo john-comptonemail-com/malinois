@@ -13,6 +13,8 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var cloud: CloudExfiltrator
     @EnvironmentObject private var entitlements: ProEntitlements
+    @ObservedObject private var enrollment = CloudEnrollment.shared
+    @EnvironmentObject private var engine: MonitoringEngine
     @Environment(\.dismiss) private var dismiss
 
     @State private var showChangePIN = false
@@ -440,6 +442,28 @@ struct SettingsView: View {
 
     private var iCloudSection: some View {
         Section {
+            if entitlements.proActive {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(enrollment.verified ? "Cloud access verified" : "Cloud access paused")
+                        .font(.headline)
+                    Text(enrollment.notice).font(.caption).foregroundStyle(.secondary)
+                    if !enrollment.verified {
+                        Button(enrollmentBusy ? "Verifying…" : "Verify iCloud access") {
+                            enrollmentBusy = true
+                            Task {
+                                if await cloud.enrollCloudAccess() {
+                                    await engine.retryPendingSync()
+                                    _ = await engine.syncFromCloud(limit: EventStore.maxEvents)
+                                }
+                                enrollmentBusy = false
+                            }
+                        }
+                        .disabled(enrollmentBusy || engine.state != .disarmed)
+                        Text("Uses Face ID, Touch ID, or your device passcode. End Guided Access before verifying. Evidence already tied to another or unknown account stays local.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
             HStack {
                 Text("Account")
                 Spacer()
@@ -456,7 +480,7 @@ struct SettingsView: View {
                           text: Binding(
                     get: { settings.deviceLabel },
                     set: { settings.deviceLabel = $0 }))
-                Text("Names this device in evidence and cross-device alerts. Leave blank to use the model name shown.")
+                Text("Names this device in evidence. Leave blank to use the model name shown.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Toggle(isOn: Binding(
@@ -464,10 +488,11 @@ struct SettingsView: View {
                 set: { applyCrossDeviceAlerts($0) })) {
                 VStack(alignment: .leading) {
                     HStack { Text("Cross-device alerts"); proMark }
-                    Text("Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. One switch for the whole account, applied immediately from any device: off removes the alerts for all devices, on restores them - no re-arm needed.")
+                    Text("Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. One switch for the whole account: off requires fresh device authentication and removes alerts for all devices. On restores them. Another device with alerts enabled may restore the subscriptions.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .disabled(cloudControlBusy)
             if let subscriptionNote {
                 Text(subscriptionNote).font(.caption).foregroundStyle(.orange)
             }
@@ -536,21 +561,30 @@ struct SettingsView: View {
     }
 
     @State private var subscriptionNote: String?
+    @State private var cloudControlBusy = false
+    @State private var enrollmentBusy = false
 
-    /// H6, option A: the toggle IS the account switch, applied now — not a preference the
-    /// next arm interprets. The local value still saves (arm and reconnect use it as
-    /// create-only backstops), and a failed OFF is surfaced hard: with arm no longer
-    /// deleting, nothing else will retry the removal.
+    /// The switch controls account subscriptions. OFF requires fresh device authentication;
+    /// save the local preference only after the server confirms, so cancellation changes nothing.
     private func applyCrossDeviceAlerts(_ enabled: Bool) {
-        settings.notifyOtherDevices = enabled
-        settings.save()   // now, not after the 400 ms debounce: the account switch below applies at once (item 73, review 1 F4)
-        guard entitlements.proActive else { return }   // free tier has no subscription to manage
+        guard !cloudControlBusy else { return }
+        guard entitlements.proActive else {
+            settings.notifyOtherDevices = enabled
+            settings.save()
+            return
+        }
+        cloudControlBusy = true
         subscriptionNote = nil
         Task {
-            if enabled { await NotificationPermission.requestIfUndetermined() }   // this device may receive alerts too (item 69)
+            defer { cloudControlBusy = false }
+            if enabled { await NotificationPermission.requestIfUndetermined() }
             let landed = await cloud.setCrossDeviceAlerts(enabled)
-            subscriptionNote = landed ? nil
-                : "iCloud couldn't be updated - flip the switch again to retry."
+            if landed {
+                settings.notifyOtherDevices = enabled
+                settings.save()
+            } else {
+                subscriptionNote = "iCloud could not confirm the change. Your local preference is unchanged; retry after verifying iCloud access and ending Guided Access. Turning alerts off requires device authentication. A failed cloud request may have changed some subscriptions."
+            }
         }
     }
 
@@ -637,6 +671,8 @@ struct SettingsView: View {
 // MARK: - Change PIN
 
 struct ChangePINView: View {
+    @ObservedObject private var enrollment = CloudEnrollment.shared
+    @EnvironmentObject private var engine: MonitoringEngine
     @Environment(\.dismiss) private var dismiss
     @State private var stage: Stage = .verify
     @State private var error: String?
@@ -688,6 +724,8 @@ private struct PINRecoveryPreviewRow: View {
 /// Exercises PINRecoveryView's real LocalAuthentication callback. Success only changes this
 /// preview's local message; it never calls RootView.resolveRecovery or presents PIN setup.
 private struct PINRecoveryPreviewView: View {
+    @ObservedObject private var enrollment = CloudEnrollment.shared
+    @EnvironmentObject private var engine: MonitoringEngine
     @Environment(\.dismiss) private var dismiss
     @State private var authenticated = false
 
@@ -1474,23 +1512,19 @@ struct Item79SeedRow: View {
     }
 }
 
-/// Debug builds only (item 76, the owner's choice 5a). There is no second iPhone on the owner's
-/// account, so the alerts the notification service extension words on another iPhone cannot be
-/// seen end to end. This shows them here instead, as local notifications built by the same
-/// `AlertRewrite`: the newest tamper record in the log, a Vision-only trip and a disarm, as
-/// another iPhone would show them for this one, five seconds apart so the screen can be locked
-/// first. The words, the sound and the Time Sensitive level are the extension's; the fetch is not
-/// exercised.
+/// Historical detailed-alert preview for development comparison. Current maintenance
+/// notifications stay generic and do not use AlertRewrite (ADR 0039). This helper never
+/// exercises the extension's delivery or cloud-fetch path.
 struct Item76AlertPreviewRow: View {
     @EnvironmentObject private var eventStore: EventStore
     @State private var note: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button("Item 76: preview the cross-device alerts") {
+            Button("Preview legacy detailed alerts") {
                 Task { note = await schedule() }
             }
-            Text("Three alerts as another iPhone would show them for this one, 5, 10 and 15 seconds "
+            Text("Historical wording, not current generic delivery. Alerts arrive in 5, 10 and 15 seconds "
                  + "from now: lock the screen to see them arrive.")
                 .font(.caption).foregroundStyle(.secondary)
             if let note {

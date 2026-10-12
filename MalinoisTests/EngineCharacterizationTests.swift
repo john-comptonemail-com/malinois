@@ -563,7 +563,7 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertNotNil(event.mediaFilename)
         XCTAssertNil(event.secondaryMediaFilename)
         XCTAssertNil(event.captureFailure)
-        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed"])
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed", "front": "clipUnverified"])
         XCTAssertNotNil(rig.engine.cameraNotice)
     }
 
@@ -574,7 +574,7 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertNil(event.mediaFilename)
         XCTAssertNotNil(event.secondaryMediaFilename)
         XCTAssertNil(event.captureFailure, "the rear succeeded on the original attempt")
-        XCTAssertEqual(event.captureFailuresByCamera, ["front": "storageFailed"])
+        XCTAssertEqual(event.captureFailuresByCamera, ["front": "storageFailed", "rear": "clipUnverified"])
         XCTAssertFalse(event.captureFailureMessages.contains { $0.contains("came back") })
     }
 
@@ -627,7 +627,7 @@ final class EngineCharacterizationTests: XCTestCase {
             rig.engine.state == .disarmed && rig.store.events.contains { !$0.isStateChange && $0.mediaFilename != nil }
         }, timeout: 8))
         let event = try XCTUnwrap(rig.store.events.first { !$0.isStateChange })
-        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed"])
+        XCTAssertEqual(event.captureFailuresByCamera, ["rear": "storageFailed", "front": "clipUnverified"])
         XCTAssertNil(rig.engine.cameraNotice, "the durable event records it; disarmed Home stays clear")
     }
 

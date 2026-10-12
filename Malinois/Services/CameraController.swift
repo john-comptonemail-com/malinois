@@ -67,8 +67,13 @@ protocol EvidenceCamera: AnyObject, Sendable {
     func beginClip(torch: Bool)
     func endClip() async throws -> URL
     func captureBothStills(rearHardwareFlash: Bool) async throws -> (front: Data?, rear: Data?)
+    /// Deliver each photo independently while the other camera may still be waiting.
+    func captureBothStills(rearHardwareFlash: Bool,
+                           onFinalized: @escaping @Sendable (Data, CameraChoice) async -> Void) async -> (front: Data?, rear: Data?)
     func beginBothClips(rearTorch: Bool)
     func endBothClips() async throws -> (front: URL?, rear: URL?)
+    /// Deliver each lens independently so one stalled delegate cannot hide the other movie.
+    func endBothClips(onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> (front: URL?, rear: URL?)
     func clipWasInterrupted() async -> Bool
     /// The session's life as the engine sees it — interruptions with the system's reason,
     /// their end, and runtime errors (item 54). Delivered on the main actor.
@@ -80,6 +85,25 @@ protocol EvidenceCamera: AnyObject, Sendable {
     /// previous clip left behind, so this attempt's failure is classified by what happens to
     /// IT — never by an interruption from an earlier capture.
     func beginCaptureAttempt()
+    /// Immediately prevents queued/new starts after expiry; does not claim hardware stopped.
+    func quarantineCapture()
+    /// Clears quarantine only after the worker drained and a queued shutdown actually ran.
+    func finishCaptureQuarantine() async
+    /// Delegate completion evidence for one exact file; nil means not established.
+    func recordingFinishedSuccessfully(at url: URL) -> Bool?
+    /// Receives completed bytes independently of the session queue, bound to the handler
+    /// captured when that exact movie began. Clearing does not change an existing file owner.
+    func setFinalizedClipHandler(_ handler: (@Sendable (URL, CameraChoice) -> Void)?)
+}
+
+extension EvidenceCamera {
+    func setFinalizedClipHandler(_ handler: (@Sendable (URL, CameraChoice) -> Void)?) {}
+    func endBothClips(onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> (front: URL?, rear: URL?) {
+        guard let urls = try? await endBothClips() else { return (nil, nil) }
+        if let front = urls.front { await onFinalized(front, .front) }
+        if let rear = urls.rear { await onFinalized(rear, .rear) }
+        return urls
+    }
 }
 
 extension CameraController: EvidenceCamera {
@@ -100,6 +124,56 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     static var supportsMultiCam: Bool { AVCaptureMultiCamSession.isMultiCamSupported }
 
     private let sessionQueue = DispatchQueue(label: "com.malinois.camera.session")
+    private let ownershipLock = NSLock()
+    // These fields are protected by ownershipLock, not the potentially blocked session queue.
+    nonisolated(unsafe) private var quarantined = false
+    nonisolated(unsafe) private var ownershipEpoch = 0
+    nonisolated(unsafe) private var recordingCompletions: [URL: Bool] = [:]
+    nonisolated(unsafe) private var finalizedClipHandler: (@Sendable (URL, CameraChoice) -> Void)?
+    nonisolated(unsafe) private var fileHandlers: [URL: (@Sendable (URL, CameraChoice) -> Void)] = [:]
+    nonisolated(unsafe) private var fileCameras: [URL: CameraChoice] = [:]
+
+    nonisolated func setFinalizedClipHandler(_ handler: (@Sendable (URL, CameraChoice) -> Void)?) {
+        ownershipLock.withLock {
+            finalizedClipHandler = handler
+            if handler != nil { recordingCompletions.removeAll() }
+        }
+    }
+
+    private func registerFile(_ url: URL, camera: CameraChoice) {
+        ownershipLock.withLock {
+            fileHandlers[url] = finalizedClipHandler
+            fileCameras[url] = camera
+        }
+    }
+
+    nonisolated func recordingFinishedSuccessfully(at url: URL) -> Bool? {
+        ownershipLock.withLock { recordingCompletions[url] }
+    }
+
+    /// Apple's delegate can report an error for a recording which nevertheless finished.
+    nonisolated static func recordingSucceeded(error: Error?) -> Bool {
+        guard let error else { return true }
+        return (error as NSError).userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
+    }
+
+    nonisolated func quarantineCapture() {
+        ownershipLock.withLock { quarantined = true; ownershipEpoch &+= 1 }
+        shutDown()
+    }
+
+    nonisolated func finishCaptureQuarantine() async {
+        await shutDownAndWait()
+        ownershipLock.withLock { quarantined = false }
+    }
+
+    nonisolated private func admittedEpoch() -> Int? {
+        ownershipLock.withLock { quarantined ? nil : ownershipEpoch }
+    }
+
+    nonisolated private func owns(_ epoch: Int) -> Bool {
+        ownershipLock.withLock { !quarantined && ownershipEpoch == epoch }
+    }
 
     // MARK: Single-camera session
     nonisolated(unsafe) private let session = AVCaptureSession()
@@ -182,11 +256,9 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// callback always resumes exactly its own capture — even if an earlier still
     /// timed out and a new one started (no cross-wiring, no leaked continuation).
     nonisolated(unsafe) private var photoConts: [Int64: CheckedContinuation<Data, Error>] = [:]
-    /// Movie-recording continuations keyed by slot. A monotonic token per start
-    /// lets a timeout cancel only the recording it was scheduled for (never a
-    /// newer one that happened to reuse the slot).
+    /// Movie waiters keep their exact file association through deadline expiry.
+    /// Quarantine prevents slot reuse until the prior waiter and shutdown drain.
     nonisolated(unsafe) private var movieConts: [Slot: CheckedContinuation<URL, Error>] = [:]
-    nonisolated(unsafe) private var movieTokens: [Slot: Int] = [:]
     /// The file each slot is currently recording to.
     ///
     /// The delegate callback is keyed only by slot, and a slot is reused by the next recording.
@@ -195,7 +267,6 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// one event's footage to a different event. In an evidence app that is worse than losing
     /// the clip. Matching on the URL is what makes a callback provably its own.
     nonisolated(unsafe) private var movieExpectedURLs: [Slot: URL] = [:]
-    nonisolated(unsafe) private var movieTokenCounter = 0
     /// Partial clips finalized by an interruption (e.g. the app was backgrounded)
     /// before `endRecording` was called — stashed so the pending stop can still
     /// return the salvaged file instead of failing.
@@ -423,6 +494,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
     nonisolated private func warmUp(forClips: Bool, camera: CameraChoice,
                                     audioHandoffDeadline: Date?) async throws -> Bool {
+        guard let epoch = admittedEpoch() else { throw CameraError.timedOut }
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             throw CameraError.unauthorized
         }
@@ -430,9 +502,11 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
             sessionQueue.async {
                 do {
+                    guard self.owns(epoch) else { throw CameraError.timedOut }
                     if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     if self.mcSession.isRunning { self.mcSession.stopRunning() }
                     if audioHandoffDeadline != nil, self.session.isRunning { self.session.stopRunning() }
+                    guard self.owns(epoch) else { throw CameraError.timedOut }
                     if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     let wasRunning = self.session.isRunning
                     // The SAME rule `configure` applies — deliberately not a second copy of
@@ -448,6 +522,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                         configuredWithMic: self.configuredWithMic, wantMic: forClips && self.wantsMic)
                     if needsReconfig && wasRunning { self.session.stopRunning() }
                     let didReconfigure = try self.configure(forClips: forClips, position: position)
+                    guard self.owns(epoch) else { throw CameraError.timedOut }
                     if let deadline = audioHandoffDeadline, Date() >= deadline { throw CameraError.timedOut }
                     if !self.session.isRunning { self.session.startRunning() }
                     // Settle on a reconfigure OR a cold start — a session that wasn't
@@ -467,6 +542,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// device can't support the requested multi-cam configuration.
     @discardableResult
     nonisolated func warmUpMultiCam(forClips: Bool) async throws -> Bool {
+        guard let epoch = admittedEpoch() else { throw CameraError.timedOut }
         guard Self.supportsMultiCam else { throw CameraError.unavailable }
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             throw CameraError.unauthorized
@@ -474,9 +550,11 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
             sessionQueue.async {
                 do {
+                    guard self.owns(epoch) else { throw CameraError.timedOut }
                     if self.session.isRunning { self.session.stopRunning() }
                     let wasRunning = self.mcSession.isRunning
                     try self.configureMultiCam(forClips: forClips)
+                    guard self.owns(epoch) else { throw CameraError.timedOut }
                     if !self.mcSession.isRunning { self.mcSession.startRunning() }
                     cont.resume(returning: !wasRunning)
                 } catch {
@@ -966,14 +1044,19 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
     /// Begins a clip on the single-camera movie output.
     nonisolated func beginClip(torch: Bool) {
+        guard let epoch = admittedEpoch() else { return }
         sessionQueue.async {
+            guard self.owns(epoch) else { return }
             guard !self.movieOutput.isRecording else { return }
             guard self.session.isRunning else { return }   // nothing starts on a stopped session; endClip then fails fast (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.single)
             if torch { self.setTorch(true, device: self.videoDevice) }
-            let url = Self.tempMovieURL()
+            guard let destination = Self.pendingMovieDestinations(outputs: 1)?.first else { return }
+            let url = destination.url
+            self.movieOutput.maxRecordedFileSize = destination.limit
+            self.registerFile(url, camera: self.configuredPosition == .back ? .rear : .front)
             self.movieExpectedURLs[.single] = url
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
         }
@@ -996,22 +1079,45 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return (f, r)
     }
 
+    /// Each completed photo leaves its sibling's wait immediately, with its physical lens.
+    nonisolated func captureBothStills(rearHardwareFlash: Bool,
+                                       onFinalized: @escaping @Sendable (Data, CameraChoice) async -> Void) async -> (front: Data?, rear: Data?) {
+        async let front = finalizePhoto(slot: .front, flash: false, lens: .front, onFinalized: onFinalized)
+        async let rear = finalizePhoto(slot: .rear, flash: rearHardwareFlash, lens: .rear, onFinalized: onFinalized)
+        return await (front, rear)
+    }
+
+    nonisolated private func finalizePhoto(slot: Slot, flash: Bool, lens: CameraChoice,
+                                           onFinalized: @escaping @Sendable (Data, CameraChoice) async -> Void) async -> Data? {
+        guard let data = try? await capturePhoto(slot: slot, flash: flash) else { return nil }
+        await onFinalized(data, lens)
+        return data
+    }
+
     /// Begins a clip on BOTH cameras at once.
     nonisolated func beginBothClips(rearTorch: Bool) {
+        guard let epoch = admittedEpoch() else { return }
         sessionQueue.async {
+            guard self.owns(epoch) else { return }
             guard self.mcSession.isRunning else { return }   // as beginClip (R3.1)
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.front)
             self.discardParkedClip(.rear)
             if rearTorch { self.setTorch(true, device: self.rearDevice) }
+            guard !self.frontMovieOutput.isRecording, !self.rearMovieOutput.isRecording,
+                  let destinations = Self.pendingMovieDestinations(outputs: 2) else { return }
             if !self.frontMovieOutput.isRecording {
-                let url = Self.tempMovieURL()
+                let url = destinations[0].url
+                self.frontMovieOutput.maxRecordedFileSize = destinations[0].limit
+                self.registerFile(url, camera: .front)
                 self.movieExpectedURLs[.front] = url
                 self.frontMovieOutput.startRecording(to: url, recordingDelegate: self)
             }
             if !self.rearMovieOutput.isRecording {
-                let url = Self.tempMovieURL()
+                let url = destinations[1].url
+                self.rearMovieOutput.maxRecordedFileSize = destinations[1].limit
+                self.registerFile(url, camera: .rear)
                 self.movieExpectedURLs[.rear] = url
                 self.rearMovieOutput.startRecording(to: url, recordingDelegate: self)
             }
@@ -1026,6 +1132,23 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         let r = try? await rear
         sessionQueue.async { self.setTorch(false, device: self.rearDevice) }
         return (f, r)
+    }
+
+    /// Stop both outputs concurrently, publishing each exact file as soon as its delegate
+    /// answers. The other lens may still be stalled; the pipeline can already preserve this one.
+    nonisolated func endBothClips(onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> (front: URL?, rear: URL?) {
+        async let front = finalize(slot: .front, camera: .front, onFinalized: onFinalized)
+        async let rear = finalize(slot: .rear, camera: .rear, onFinalized: onFinalized)
+        let result = await (front, rear)
+        sessionQueue.async { self.setTorch(false, device: self.rearDevice) }
+        return result
+    }
+
+    nonisolated private func finalize(slot: Slot, camera: CameraChoice,
+                                      onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> URL? {
+        guard let url = try? await endRecording(slot: slot) else { return nil }
+        await onFinalized(url, camera)
+        return url
     }
 
     // MARK: - Capture primitives
@@ -1048,9 +1171,11 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func capturePhoto(slot: Slot, flash: Bool, timeout: Double = 6) async throws -> Data {
-        try await withCheckedThrowingContinuation { cont in
+    private func capturePhoto(slot: Slot, flash: Bool) async throws -> Data {
+        guard let epoch = admittedEpoch() else { throw CameraError.timedOut }
+        return try await withCheckedThrowingContinuation { cont in
             sessionQueue.async {
+                guard self.owns(epoch) else { cont.resume(throwing: CameraError.timedOut); return }
                 // A stopped session never answers (review 3, R3.1): the disarm's shutdown can land
                 // between the pipeline's last check and this hop, and AVFoundation's reaction to a
                 // capture on a stopped session is not something to rely on. Refuse here, on the
@@ -1066,25 +1191,17 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                 let id = settings.uniqueID
                 self.photoConts[id] = cont
                 output.capturePhoto(with: settings, delegate: self)
-                // Bound the wait: if the delegate never fires, resume with an
-                // error and remove the entry so it can't leak or cross-wire.
-                self.sessionQueue.asyncAfter(deadline: .now() + timeout) {
-                    if let stale = self.photoConts.removeValue(forKey: id) {
-                        stale.resume(throwing: CameraError.captureFailed)
-                    }
-                }
+                // The pipeline's independent clock bounds its caller. Retain this unique-ID
+                // waiter for late evidence; quarantine prevents new work until it drains.
+
             }
         }
     }
 
-    /// Stops a recording and waits for the delegate to deliver the file. Bounded:
-    /// `stopRecording()` normally finalizes in well under a second, so if the
-    /// delegate never fires (interrupted session, hardware stall) the wait is cut
-    /// after `timeout` and the caller gets an error instead of hanging forever —
-    /// which would otherwise wedge the whole trigger pipeline (`isHandlingTrigger`
-    /// would stay set and no further tampering would ever be caught). The per-start
-    /// token ensures a late timeout can't cancel a newer recording on the same slot.
-    private func endRecording(slot: Slot, timeout: Double = 8) async throws -> URL {
+    /// Stops this exact recording and preserves its callback/file ownership. The pipeline
+    /// independently bounds the waiting response. A stalled delegate quarantines the camera;
+    /// retaining at most the active slots prevents late footage being handed to another event.
+    private func endRecording(slot: Slot) async throws -> URL {
         try await withCheckedThrowingContinuation { cont in
             sessionQueue.async {
                 // An interruption may have already finalized this clip before we
@@ -1098,16 +1215,14 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                 // the pipeline's stop — reads `isRecording == false` with its delegate callback
                 // still on the way. Failing it here lost the usable partial clip: the callback
                 // then parked the file for the next clip to discard, and the record said the
-                // camera failed (item 65, finding 12). Wait for the callback instead, bounded.
-                guard let wait = Self.recordingStopWait(isRecording: output.isRecording,
-                                                        callbackPending: self.movieExpectedURLs[slot] != nil,
-                                                        stopTimeout: timeout,
-                                                        pendingFinalizeWait: Self.pendingFinalizeWait) else {
+                // camera failed (item 65, finding 12). Keep its callback; the pipeline bounds the caller.
+                guard Self.shouldAwaitRecording(isRecording: output.isRecording,
+                                                callbackPending: self.movieExpectedURLs[slot] != nil) else {
                     cont.resume(throwing: CameraError.captureFailed)
                     return
                 }
                 // One stop per recording (34.H10): a second concurrent wait on this slot
-                // would OVERWRITE the first continuation and its timeout token — the first
+                // would OVERWRITE the first continuation — the first
                 // caller then never resumes, and the trigger pipeline that awaits it wedges
                 // with `isHandlingTrigger` stuck, detection dead until disarm. Refuse the
                 // newcomer instead; the recording still belongs to whoever is stopping it.
@@ -1115,52 +1230,28 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
                     cont.resume(throwing: CameraError.captureFailed)
                     return
                 }
-                self.movieTokenCounter += 1
-                let token = self.movieTokenCounter
                 self.movieConts[slot] = cont
-                self.movieTokens[slot] = token
                 if output.isRecording { output.stopRecording() }   // else the session stop did; the delegate is on its way
-                self.sessionQueue.asyncAfter(deadline: .now() + wait) {
-                    guard self.movieTokens[slot] == token,
-                          let stale = self.movieConts.removeValue(forKey: slot) else { return }
-                    self.movieTokens[slot] = nil
-                    stale.resume(throwing: CameraError.captureFailed)
-                    // The capture is failed — now make the RECORDING provably over too
-                    // (39.R1.3). Left alone, the expected-URL entry still matched a late
-                    // callback, which PARKED the stale file for the next stop on this slot
-                    // to consume — one event's footage attached to another event's record,
-                    // the exact cross-wiring the URL matching exists to prevent — and a
-                    // stalled output still "recording" blocked the next beginClip outright.
-                    // Forgetting the URL routes any late callback into the delegate's
-                    // discard-and-delete branch; the stop unwedges the output.
-                    self.movieExpectedURLs[slot] = nil
-                    let output = self.movieOutput(for: slot)
-                    if output.isRecording { output.stopRecording() }
-                }
+                // The pipeline owns the independent deadline. Keep this file's waiter after
+                // expiry: quarantine refuses another recording until the delegate drains.
+                // A callback that never arrives leaves one bounded waiter, not a live trigger.
+
             }
         }
     }
 
-    /// How long a stop waits for a recording whose session was already stopped out from
-    /// under it: the delegate's finalize is on its way, seconds at most, never the full stop
-    /// timeout (item 65, finding 12).
-    nonisolated static let pendingFinalizeWait: Double = 2
-
-    /// Pure (unit-tested): how long `endRecording` waits for this slot's clip — the stop
-    /// timeout while the output is still recording; the short finalize wait when it is not but
-    /// a callback is still expected for the file; nothing (fail now) when neither holds.
-    nonisolated static func recordingStopWait(isRecording: Bool, callbackPending: Bool,
-                                              stopTimeout: Double, pendingFinalizeWait: Double) -> Double? {
-        if isRecording { return stopTimeout }
-        return callbackPending ? pendingFinalizeWait : nil
+    /// A stopped recording may still owe its final delegate callback. Wait for that exact
+    /// file; only fail immediately when nothing was started. The pipeline bounds the caller.
+    nonisolated static func shouldAwaitRecording(isRecording: Bool, callbackPending: Bool) -> Bool {
+        isRecording || callbackPending
     }
 
-    /// A clip the delegate parked for a stop that never claimed it — the previous recording's
-    /// failed stop — is discarded, file included, before the slot records again. It used to be
-    /// dropped from the table and left on disk (item 65, finding 12).
+    /// Retire an unclaimed slot association without destroying the bytes. New recordings
+    /// have unique URLs; an unclaimed file can never be mistaken for their output.
     private func discardParkedClip(_ slot: Slot) {
         if let parked = movieFinalizedURLs.removeValue(forKey: slot) {
-            try? FileManager.default.removeItem(at: parked)
+            // Preserve unclaimed bytes; never delete footage merely to reuse a capture slot.
+            Log.camera.error("Retained unclaimed clip: \(parked.lastPathComponent, privacy: .private)")
         }
     }
 
@@ -1173,14 +1264,50 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         device.unlockForConfiguration()
     }
 
-    private static func tempMovieURL() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+    /// Admission budget for retained, not-yet-attached movies. Refuse unreadable or linked
+    /// entries instead of deleting evidence to make room. Separate from the event-log budget.
+    nonisolated static func pendingMovieAllowance(in root: URL, outputs: Int = 1) -> Int64? {
+        let fm = FileManager.default
+        guard outputs > 0, outputs <= 2,
+              let rootAttributes = try? fm.attributesOfItem(atPath: root.path),
+              rootAttributes[.type] as? FileAttributeType == .typeDirectory,
+              let files = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil),
+              files.count + outputs <= 1_200 else { return nil }
+        var remaining = EventStore.maxMediaBytes
+        for file in files {
+            guard let attrs = try? fm.attributesOfItem(atPath: file.path),
+                  attrs[.type] as? FileAttributeType == .typeRegular,
+                  (attrs[.referenceCount] as? NSNumber)?.intValue == 1,
+                  let size = (attrs[.size] as? NSNumber)?.int64Value,
+                  size >= 0, size < remaining else { return nil }
+            remaining -= size
+        }
+        let limit = remaining / Int64(outputs)
+        return limit > 0 ? limit : nil
     }
 
-    /// Deletes clip temp files the event store never took ownership of. `EventStore.store`
-    /// *moves* a recorded clip out of `tmp/`, so anything left behind is a move that failed —
-    /// realistically a full disk during a long "until clear" recording. The event correctly
-    /// records no filename in that case, so the file is unreferenced and pure leak.
+    /// Reserve all requested output slots from one snapshot before either recording starts.
+    nonisolated static func pendingMovieDestinations(in root: URL, outputs: Int) -> [(url: URL, limit: Int64)]? {
+        guard let limit = pendingMovieAllowance(in: root, outputs: outputs) else { return nil }
+        return (0..<outputs).map { _ in (root.appendingPathComponent(UUID().uuidString + ".mov"), limit) }
+    }
+
+    private static func pendingMovieDestinations(outputs: Int) -> [(url: URL, limit: Int64)]? {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PendingCameraEvidence", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                    attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        } catch { return nil }
+        guard let destinations = pendingMovieDestinations(in: root, outputs: outputs) else {
+            Log.camera.error("Pending camera evidence storage is full or unreadable; retaining existing files")
+            return nil
+        }
+        return destinations
+    }
+
+    /// Sweeps legacy temporary movies created before protected pending evidence storage.
+    /// Current recordings live in PendingCameraEvidence and are never swept by age here.
     ///
     /// iOS does purge `tmp/` under storage pressure, but that is exactly the moment it is least
     /// able to help, so sweep at launch too. Only our own `<UUID>.mov` files are touched, and
@@ -1261,20 +1388,27 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
         let slot: Slot = output === frontMovieOutput ? .front
                        : output === rearMovieOutput  ? .rear : .single
         let failure = error
+        let delivery = ownershipLock.withLock { () -> ((@Sendable (URL, CameraChoice) -> Void)?, CameraChoice?) in
+            recordingCompletions[outputFileURL] = Self.recordingSucceeded(error: error)
+            return (fileHandlers.removeValue(forKey: outputFileURL), fileCameras.removeValue(forKey: outputFileURL))
+        }
+        // Publish only to the owner captured before startRecording, even if stopRunning or
+        // another camera call has wedged the session queue. The finished file is immutable.
+        if let handler = delivery.0, let lens = delivery.1, FileManager.default.fileExists(atPath: outputFileURL.path) {
+            handler(outputFileURL, lens)
+        }
         sessionQueue.async {
             // Only this slot's CURRENT recording may resume anything. A callback for a file the
             // slot is no longer recording to is a straggler from a recording that already timed
             // out; its own capture has been failed already, and letting it through would hand
             // its footage to whatever event is waiting now.
             guard self.movieExpectedURLs[slot] == outputFileURL else {
-                Log.camera.error("Discarded a late clip callback for a previous recording")
-                try? FileManager.default.removeItem(at: outputFileURL)
+                Log.camera.error("Retained an unmatched clip callback; it cannot join another event")
                 return
             }
             self.movieExpectedURLs[slot] = nil
-            self.movieTokens[slot] = nil
-            // A very short or interrupted recording can "fail" but still produce a
-            // usable file — treat a file that exists as success.
+            // Return existing bytes for inspection, not as a claim that recording succeeded.
+            // The pipeline measures playability/duration and consults this URL's delegate outcome.
             let usableURL = FileManager.default.fileExists(atPath: outputFileURL.path) ? outputFileURL : nil
             if let cont = self.movieConts.removeValue(forKey: slot) {
                 if let usableURL { cont.resume(returning: usableURL) }

@@ -389,6 +389,8 @@ final class Item49WrongPINTests: XCTestCase {
         rig.engine.noteWrongDisarmPIN()          // typed during session 2's capture
         rig.camera.releaseStills()
         XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 5), "session 2's response re-arms")
+        XCTAssertTrue(pump(until: { self.attemptRecords(rig).allSatisfy { $0.wrongPINCount == 2 } }, timeout: 5),
+                      "the old response may finish after the replacement watch has re-armed")
         let records = attemptRecords(rig).sorted { $0.startDate < $1.startDate }
         XCTAssertEqual(records.count, 2, "one record per session")
         XCTAssertEqual(records.first?.wrongPINCount, 2, "session 1: its own attempt and the one typed during its capture")

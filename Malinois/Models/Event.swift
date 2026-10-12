@@ -115,10 +115,18 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// allow-listed on the way in from the cloud. `nil` when the capture worked, or the
     /// camera tripwire was off.
     var captureFailure: String?
-    /// What the original Both-camera capture could not obtain or save, keyed by front/rear.
+    /// Original camera coverage failures or saved-clip issues, keyed by front/rear.
     /// Historical: a later retry or download never clears these reasons. Optional for old events;
     /// cloud input permits only the two camera names and known CaptureFailureReason values.
     var captureFailuresByCamera: [String: String]?
+
+    /// Records a saved clip's partial/unverified outcome without hiding surviving evidence.
+    mutating func recordCaptureIssue(_ issue: CaptureFailureReason?, camera: String) {
+        guard let issue else { return }
+        var issues = captureFailuresByCamera ?? [:]
+        issues[camera] = issue.rawValue
+        captureFailuresByCamera = issues
+    }
 
     /// Fixed-order coverage notices, plus the existing whole-capture failure/retry explanation.
     /// A surviving camera is original evidence; only interruption recovery can label a retry.

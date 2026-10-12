@@ -13,9 +13,63 @@ struct EventLogView: View {
     @EnvironmentObject private var cloud: CloudExfiltrator
     @EnvironmentObject private var entitlements: ProEntitlements
 
+    @ObservedObject private var enrollment = CloudEnrollment.shared
     @State private var isRetrying = false
+    /// The held-event keys the last Hide covered (owner, 2026-10-11), read once per visit.
+    @State private var hiddenHeldKeys = EventLogView.dismissedHeldKeys()
 
     private var unsyncedCount: Int { EventStore.unsyncedCount(in: eventStore.events) }
+
+    struct SyncSummary {
+        var retryableCount = 0
+        var heldCount = 0
+        var reasons: [CloudEnrollment.UploadHoldReason] = []
+        /// One `heldBannerKey` per held event: what the held banner's Hide covers.
+        var heldKeys: Set<String> = []
+    }
+
+    /// Shares the banner's eligibility/counting rules with regression tests.
+    static func syncSummary(events: [Event], enrollment: CloudEnrollment) -> SyncSummary {
+        var summary = SyncSummary()
+        for event in events where !event.isMirrored && event.cloudSyncState != .synced {
+            if let reason = enrollment.uploadHoldReason(for: event) {
+                summary.heldCount += 1
+                summary.heldKeys.insert(heldBannerKey(eventID: event.id, reason: reason))
+                if !summary.reasons.contains(reason) { summary.reasons.append(reason) }
+            } else {
+                summary.retryableCount += 1
+            }
+        }
+        return summary
+    }
+
+    /// What the held banner's Hide remembers for one held event: its ID and why it is held, so
+    /// the same event held for a different reason counts as new.
+    static func heldBannerKey(eventID: UUID, reason: CloudEnrollment.UploadHoldReason) -> String {
+        "\(eventID.uuidString)|\(reason.rawValue)"
+    }
+
+    /// Pure (unit-tested; owner, 2026-10-11): whether the held-events banner shows. Hidden only
+    /// while every event held now, with its current reason, was covered by the last Hide: a newly
+    /// held event or a changed reason brings it back, and events leaving the held set do not.
+    /// Hide changes only the banner; each event's badge and explanation stay.
+    nonisolated static func heldBannerVisible(heldKeys: Set<String>, dismissedKeys: Set<String>) -> Bool {
+        !heldKeys.isEmpty && !heldKeys.isSubset(of: dismissedKeys)
+    }
+
+    /// Where the held banner's Hide is remembered: this device's defaults, never iCloud.
+    nonisolated static let heldBannerDismissedKey = "com.malinois.eventLog.heldBannerDismissed"
+
+    /// The held-event keys covered by the last Hide; empty if Hide was never tapped.
+    nonisolated static func dismissedHeldKeys(in defaults: UserDefaults = .standard) -> Set<String> {
+        Set(defaults.stringArray(forKey: heldBannerDismissedKey) ?? [])
+    }
+
+    /// Records a Hide for exactly these held-event keys, replacing the previous one, so what is
+    /// stored never outgrows the held set it covers.
+    nonisolated static func rememberHeldBannerDismissal(_ keys: Set<String>, in defaults: UserDefaults = .standard) {
+        defaults.set(keys.sorted(), forKey: heldBannerDismissedKey)
+    }
 
     /// Pure (unit-tested; item 79): the banner's spinner shows for this screen's own request OR
     /// for a sweep anyone else started. The engine turns a second caller away at once while a
@@ -35,7 +89,8 @@ struct EventLogView: View {
     }
 
     var body: some View {
-        Group {
+        let summary = Self.syncSummary(events: eventStore.events, enrollment: enrollment)
+        return Group {
             if eventStore.events.isEmpty {
                 ContentUnavailableView("No events",
                                        systemImage: "checkmark.shield",
@@ -46,7 +101,14 @@ struct EventLogView: View {
                         // On the free tier these events never sync (cloud backup is Pro), so
                         // don't promise a sync or offer a no-op Retry — say plainly they're
                         // kept on-device (P-05).
-                        if entitlements.proActive { syncBanner } else { freeTierBanner }
+                        if entitlements.proActive {
+                            if summary.retryableCount > 0 { syncBanner(count: summary.retryableCount) }
+                            if Self.heldBannerVisible(heldKeys: summary.heldKeys, dismissedKeys: hiddenHeldKeys) {
+                                heldBanner(summary)
+                            }
+                        } else {
+                            freeTierBanner
+                        }
                     }
                     ForEach(eventStore.events) { event in
                         NavigationLink {
@@ -69,13 +131,13 @@ struct EventLogView: View {
         // to Home; a late callback must not clear records received after the visit.
     }
 
-    /// A banner explaining iCloud status and offering a manual re-sync.
-    private var syncBanner: some View {
+    /// Offers Retry only for eligible local uploads; held evidence has a separate explanation.
+    private func syncBanner(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle().fill(cloud.accountState.isReady ? .orange : .red).frame(width: 8, height: 8)
                 Text(cloud.accountState.isReady
-                     ? "\(unsyncedCount) event(s) not yet synced to iCloud"
+                     ? "\(count) event(s) not yet synced to iCloud"
                      : "iCloud unavailable - \(cloud.accountState.displayName)")
                     .font(.caption)
                 Spacer()
@@ -90,6 +152,30 @@ struct EventLogView: View {
                                                 sweepWaiting: engine.pendingSweepWaiting) {
                 Text(caption)
                     .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .listRowSeparator(.hidden)
+    }
+
+    /// Held evidence is retained, not queued for Retry. Details distinguish account holds
+    /// from enrollment/storage problems without exposing account identifiers. Hide covers the
+    /// events held now (`heldBannerVisible`); each event keeps its own badge and explanation.
+    private func heldBanner(_ summary: SyncSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Label("\(summary.heldCount) event(s) kept on this device", systemImage: "internaldrive")
+                    .font(.caption)
+                Spacer()
+                Button("Hide") {
+                    Self.rememberHeldBannerDismissal(summary.heldKeys)
+                    hiddenHeldKeys = summary.heldKeys
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            ForEach(summary.reasons, id: \.self) { reason in
+                Text(reason.explanation).font(.caption2).foregroundStyle(.secondary)
             }
         }
         .listRowSeparator(.hidden)
@@ -122,6 +208,12 @@ struct EventLogView: View {
 
 struct EventRow: View {
     let event: Event
+    @ObservedObject private var enrollment = CloudEnrollment.shared
+    @EnvironmentObject private var entitlements: ProEntitlements
+
+    private var holdReason: CloudEnrollment.UploadHoldReason? {
+        entitlements.proActive ? enrollment.uploadHoldReason(for: event) : nil
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -152,6 +244,10 @@ struct EventRow: View {
                     syncBadge
                 }
                 .font(.caption2)
+                if holdReason != nil {
+                    Text("Kept on this device · Open for details")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Spacer()
         }
@@ -217,7 +313,7 @@ struct EventRow: View {
             case .localOnly: return .red
             }
         }()
-        Label(event.cloudSyncState.displayName, systemImage: "icloud")
-            .foregroundStyle(color)
+        Label(holdReason == nil ? event.cloudSyncState.displayName : "Local only", systemImage: "icloud")
+            .foregroundStyle(holdReason == nil ? color : .secondary)
     }
 }

@@ -55,6 +55,197 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertFalse(controller.clipAudio)
     }
 
+    func testStaleTriggerResponseDoesNotShutDownReplacementCapture() async {
+        await assertStaleCapturePreservesReplacement(path: "trigger")
+    }
+
+    func testStaleBlackoutResponseDoesNotStandDownReplacementCapture() async {
+        await assertStaleCapturePreservesReplacement(path: "blackout")
+    }
+
+    func testStaleFloodResponseDoesNotStandDownReplacementCapture() async {
+        await assertStaleCapturePreservesReplacement(path: "flood")
+    }
+
+    func testSameWatchBlackoutCleanupDoesNotStopNewTriggerCapture() async {
+        await assertStaleCapturePreservesReplacement(path: "blackout", replaceWatch: false)
+    }
+
+    func testSameWatchFloodCleanupDoesNotStopNewTriggerCapture() async {
+        await assertStaleCapturePreservesReplacement(path: "flood", replaceWatch: false)
+    }
+
+    private func assertStaleCapturePreservesReplacement(path: String, replaceWatch: Bool = true,
+                                                        file: StaticString = #filePath, line: UInt = #line) async {
+        let settings = AppSettings()
+        settings.enabledSensors = [.touch, .camera]
+        settings.captureMode = .photo
+        settings.cameraPosition = .front
+        settings.cameraReadiness = .batterySaver
+        settings.responseMode = .stealth
+        settings.illumination = .off
+        settings.jammingResponse = false
+        settings.gracePeriodSeconds = 0
+        settings.requireGuidedAccess = false
+        let camera = FakeCamera()
+        let store = EventStore()
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store,
+            cloud: CloudExfiltrator(), camera: camera, entitlements: ProEntitlements(resolvedAs: .trial),
+            timing: EngineCharacterizationTests.fastTiming))
+        let stored = expectation(description: "old capture saved before camera cleanup")
+        let uploaded = expectation(description: "old response completed and handed off its evidence")
+        var release: CheckedContinuation<Void, Never>?
+        var oldID: UUID?
+        engine.captureStoredForTesting = { id in
+            oldID = id
+            await withCheckedContinuation { release = $0; stored.fulfill() }
+        }
+        engine.evidencePushForTesting = { event in
+            if event.id == oldID { uploaded.fulfill() }
+            return .init(syncState: .synced, metaFailureWasInterference: nil)
+        }
+        defer {
+            release?.resume()
+            camera.releaseStills()
+            engine.captureStoredForTesting = nil
+            engine.evidencePushForTesting = nil
+            engine.disarm()
+        }
+        engine.beginArming()
+        engine.confirmGuidedAccessAndStartGrace()
+        let armed = await waitForCameraOwnershipCondition { engine.state == .armed }
+        guard armed else { return XCTFail("initial watch did not arm", file: file, line: line) }
+        if path == "trigger" {
+            engine.handleTrip(.touch)
+        } else {
+            Task { await engine.captureCadenceForTesting(blackout: path == "blackout") }
+        }
+        await fulfillment(of: [stored], timeout: 5)
+        guard release != nil else { return }
+        engine.captureStoredForTesting = nil
+        if replaceWatch {
+            engine.disarm()
+            engine.beginArming()
+            engine.confirmGuidedAccessAndStartGrace()
+            let replacementArmed = await waitForCameraOwnershipCondition { engine.state == .armed }
+            guard replacementArmed else { return XCTFail("replacement watch did not arm", file: file, line: line) }
+        } else {
+            XCTAssertEqual(engine.state, .armed, "The new trigger must belong to the same watch.", file: file, line: line)
+            XCTAssertEqual(store.events.filter { $0.stateChange == "armed" }.count, 1, file: file, line: line)
+        }
+        camera.holdStills = true
+        let stillsBefore = camera.stills.count
+        engine.handleTrip(.touch)
+        let capturing = await waitForCameraOwnershipCondition { camera.stills.count > stillsBefore }
+        guard capturing else { return XCTFail("replacement capture did not start", file: file, line: line) }
+        let shutdownsBefore = camera.shutDowns
+        release?.resume()
+        release = nil
+        await fulfillment(of: [uploaded], timeout: 3)
+        XCTAssertEqual(camera.shutDowns, shutdownsBefore,
+                       "An earlier response must not shut down the newer active capture.", file: file, line: line)
+        XCTAssertEqual(engine.state, .triggered, file: file, line: line)
+        XCTAssertNotNil(store.events.first { $0.id == oldID }?.mediaFilename,
+                        "The old watch's evidence must still be preserved.", file: file, line: line)
+        camera.releaseStills()
+        let replacementCompleted = await waitForCameraOwnershipCondition { engine.state == .armed }
+        XCTAssertTrue(replacementCompleted, "Drain the replacement response before teardown.", file: file, line: line)
+    }
+
+    private func waitForCameraOwnershipCondition(_ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(4)
+        while !condition(), Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        return condition()
+    }
+
+    func testOldDirectUploadSuccessDoesNotHideLateClipFromNextUpload() async throws {
+        try await assertOldUploadDoesNotHideLateClip(throughSweep: false)
+    }
+
+    func testOldSweepUploadSuccessDoesNotHideLateClipFromNextUpload() async throws {
+        try await assertOldUploadDoesNotHideLateClip(throughSweep: true)
+    }
+
+    func testOlderUploadFailureLeavesNewerSyncedClipAndFailureUIUnchanged() async throws {
+        try await assertOldUploadDoesNotHideLateClip(throughSweep: false, completeNewerFirst: true)
+    }
+
+    private func assertOldUploadDoesNotHideLateClip(throughSweep: Bool, completeNewerFirst: Bool = false) async throws {
+        let store = EventStore()
+        let settings = AppSettings()
+        settings.jammingResponse = false
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store,
+            cloud: CloudExfiltrator(), camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+            timing: EngineCharacterizationTests.fastTiming))
+        // Let the entitlement callback's empty launch sync finish before installing the upload seam.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch], cloudSyncState: .pending)
+        store.add(event)
+        let started = expectation(description: "media-free upload suspended")
+        var release: CheckedContinuation<Void, Never>?
+        var uploads: [Event] = []
+        func upload(_ snapshot: Event) async -> CloudSyncState {
+            uploads.append(snapshot)
+            if uploads.count == 1 {
+                await withCheckedContinuation { release = $0; started.fulfill() }
+            }
+            return completeNewerFirst && snapshot.mediaFilename == nil ? .localOnly : .synced
+        }
+        engine.evidencePushForTesting = { snapshot in
+            let state = await upload(snapshot)
+            return .init(syncState: state, metaFailureWasInterference: state == .localOnly ? false : nil)
+        }
+        engine.sweepUploadForTesting = { snapshot in (await upload(snapshot), nil) }
+        defer {
+            release?.resume()
+            engine.evidencePushForTesting = nil
+            engine.sweepUploadForTesting = nil
+        }
+        let oldUpload = Task { await engine.uploadSnapshotForTesting(event, throughSweep: throughSweep) }
+        await fulfillment(of: [started], timeout: 3)
+        guard release != nil else { return }
+        XCTAssertNil(uploads.first?.mediaFilename)
+        // Another metadata-only completion may already have synced the bare fact.
+        store.setSyncState(.synced, for: event.id)
+        let movie = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        defer { try? FileManager.default.removeItem(at: movie) }
+        try await EventTests.playableClip(at: movie, frames: 12)
+        let bytes = try Data(contentsOf: movie)
+        let result = await store.store(.clip(movie), ext: "mov", attachingTo: event,
+                                       camera: "front", duration: 0.4, captureIssue: "captureTimedOut")
+        let saved = try XCTUnwrap(result)
+        var attached = try XCTUnwrap(store.events.first { $0.id == event.id })
+        attached.mediaFilename = saved.filename
+        attached.primaryCamera = "front"
+        attached.primaryDuration = 0.4
+        attached.thumbnailData = saved.thumbnail
+        attached.captureFailuresByCamera = ["front": "captureTimedOut"]
+        store.update(attached)
+        store.reopenForReupload(event.id)
+        XCTAssertEqual(store.events.first { $0.id == event.id }?.cloudSyncState, .pending)
+        if completeNewerFirst {
+            let newer = try XCTUnwrap(store.events.first { $0.id == event.id })
+            await engine.uploadSnapshotForTesting(newer, throughSweep: throughSweep)
+            XCTAssertEqual(store.events.first { $0.id == event.id }?.cloudSyncState, .synced)
+        }
+        release?.resume()
+        release = nil
+        await oldUpload.value
+        let latest = try XCTUnwrap(store.events.first { $0.id == event.id })
+        if completeNewerFirst {
+            XCTAssertEqual(latest.cloudSyncState, .synced, "An old completion must leave the newer successful upload intact.")
+            XCTAssertFalse(engine.cloudPushRefused, "An old refusal must not replace the newer upload's successful verdict.")
+        } else {
+            XCTAssertEqual(latest.cloudSyncState, .pending, "Old success must not hide the late clip from the pending sweep.")
+            guard latest.cloudSyncState == .pending else { return }
+            await engine.uploadSnapshotForTesting(latest, throughSweep: throughSweep)
+        }
+        XCTAssertEqual(uploads.count, 2)
+        XCTAssertEqual(uploads.last?.mediaFilename, saved.filename, "The next upload must include the actual late clip.")
+        XCTAssertEqual(try Data(contentsOf: store.mediaDirectory.appendingPathComponent(saved.filename)), bytes)
+        XCTAssertEqual(store.events.first { $0.id == event.id }?.cloudSyncState, .synced)
+    }
+
     func testStartsDisarmed() {
         XCTAssertEqual(makeEngine().state, .disarmed)
     }
@@ -682,30 +873,20 @@ final class MonitoringEngineTests: XCTestCase {
         }
     }
 
-    // MARK: - Late clip callbacks are discarded, never re-homed (39.R1.3)
-
-    /// The net the recording-timeout cleanup routes into: a delegate callback for a file the
-    /// slot is not currently recording to is a straggler from a recording that already timed
-    /// out — its capture was failed long ago, and letting it through would hand its footage
-    /// to whatever event is stopping the slot NOW. The timeout path itself (a hardware stall
-    /// whose callback never comes, then comes late) is not locally constructible — no
-    /// simulator recording exists to stall — recorded per the testing rule; this pins the
-    /// discard branch the fix forgets the URL into: the stale file is deleted, never parked.
-    func testALateClipCallbackForAnUnexpectedFileIsDiscardedAndDeleted() throws {
+    /// An unmatched late callback retains the original bytes without assigning them to
+    /// a replacement recording. Confirm the controller queue drained before inspecting it.
+    func testALateClipCallbackRetainsUnclaimedEvidence() async throws {
         let controller = CameraController()
         let stray = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".mov")
-        try Data("stale clip".utf8).write(to: stray)
-
+        defer { try? FileManager.default.removeItem(at: stray) }
+        let original = Data("stale clip".utf8)
+        try original.write(to: stray)
         controller.fileOutput(AVCaptureMovieFileOutput(), didFinishRecordingTo: stray,
                               from: [], error: nil)
-
-        let deadline = Date().addingTimeInterval(2)
-        while FileManager.default.fileExists(atPath: stray.path) && Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path),
-                       "a callback nothing expects must be discarded and its file deleted")
+        await controller.shutDownAndWait()
+        XCTAssertEqual(try Data(contentsOf: stray), original,
+                       "an unknown destination is not permission to destroy evidence")
     }
 
     /// The reason the mic can go without losing evidence: an alarm that is sounding — or that
@@ -1310,5 +1491,17 @@ final class MonitoringEngineTests: XCTestCase {
                        "empty: the records are in iCloud, not missing — fetch them all")
         XCTAssertEqual(MonitoringEngine.launchSyncLimit(localEventCount: 1, cap: 500, page: 100), 100)
         XCTAssertEqual(MonitoringEngine.launchSyncLimit(localEventCount: 499, cap: 500, page: 100), 100)
+    }
+
+    /// Owner follow-up (2026-10-11): Home said "Restoring your event log from iCloud…" during every
+    /// launch pull. Only an empty log or an owed restore is a restore; any other launch pull is a
+    /// routine check, and Home says so.
+    func testLaunchPullIsARestoreOnlyForAnEmptyLogOrAnOwedRestore() {
+        XCTAssertEqual(MonitoringEngine.launchPullKind(localEventCount: 0, restoreOwed: false), .restoring)
+        XCTAssertEqual(MonitoringEngine.launchPullKind(localEventCount: 12, restoreOwed: true), .restoring)
+        XCTAssertEqual(MonitoringEngine.launchPullKind(localEventCount: 12, restoreOwed: false), .checking,
+                       "a routine launch pull is not a restore")
+        XCTAssertEqual(MonitoringEngine.LaunchPullKind.restoring.homeLabel, "Restoring your event log from iCloud…")
+        XCTAssertEqual(MonitoringEngine.LaunchPullKind.checking.homeLabel, "Checking iCloud for new events…")
     }
 }

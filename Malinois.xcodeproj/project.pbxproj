@@ -19,7 +19,9 @@
 		B1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift */; };
 		B1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift */; };
 		B1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */; };
+		C10D00000000000000000011 /* CloudEnrollment.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000001 /* CloudEnrollment.swift */; };
 		B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */; };
+		C15100000000000000000011 /* MonitoringEngine+LaunchPull.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */; };
 		B1B2C3D4E5F600000000000A /* SensorMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000A /* SensorMonitor.swift */; };
 		B1B2C3D4E5F600000000000B /* MotionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000B /* MotionMonitor.swift */; };
 		B1B2C3D4E5F600000000000C /* PowerMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600000000000C /* PowerMonitor.swift */; };
@@ -50,7 +52,10 @@
 		B1B2C3D4E5F6000000000401 /* VisionDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000401 /* VisionDetector.swift */; };
 		B1B2C3D4E5F6000000000402 /* VisionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000402 /* VisionMonitor.swift */; };
 		E1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */; };
+		C10D00000000000000000013 /* NotificationEnrollmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000003 /* NotificationEnrollmentTests.swift */; };
+		C10D00000000000000000012 /* CloudEnrollmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000002 /* CloudEnrollmentTests.swift */; };
 		E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000002 /* EventTests.swift */; };
+		E1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */; };
 		E1D2C3D4E5F6000000000003 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */; };
 		E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */; };
 		E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */; };
@@ -88,6 +93,7 @@
 		71B2C3D4E5F6000000000028 /* AlertRewrite.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000312 /* AlertRewrite.swift */; };
 		E1D2C3D4E5F600000000001B /* Item91SettingsRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001B /* Item91SettingsRecordTests.swift */; };
 		E1D2C3D4E5F600000000001C /* Item52HeartbeatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000001C /* Item52HeartbeatTests.swift */; };
+		C10D00000000000000000014 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71B2C3D4E5F6000000000001 /* NotificationService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -134,7 +140,9 @@
 		A1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceCapturePipeline.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisarmEntryCoordinator.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudExfiltrator.swift; sourceTree = "<group>"; };
+		C10D00000000000000000001 /* CloudEnrollment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudEnrollment.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngine.swift; sourceTree = "<group>"; };
+		C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+LaunchPull.swift"; sourceTree = "<group>"; };
 		A1B2C3D4E5F600000000000A /* SensorMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorMonitor.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F600000000000B /* MotionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionMonitor.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F600000000000C /* PowerMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerMonitor.swift; sourceTree = "<group>"; };
@@ -170,7 +178,10 @@
 		A1B2C3D4E5F6000000000401 /* VisionDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionDetector.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000402 /* VisionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionMonitor.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainServiceTests.swift; sourceTree = "<group>"; };
+		C10D00000000000000000003 /* NotificationEnrollmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationEnrollmentTests.swift; sourceTree = "<group>"; };
+		C10D00000000000000000002 /* CloudEnrollmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudEnrollmentTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000002 /* EventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingCameraEvidenceTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreTypesTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngineTests.swift; sourceTree = "<group>"; };
@@ -281,7 +292,9 @@
 				A1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift */,
 				A1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift */,
 				A1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift */,
+				C10D00000000000000000001 /* CloudEnrollment.swift */,
 				A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */,
+				C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */,
 				A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */,
 				A1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift */,
 				A1B2C3D4E5F6000000000023 /* ProEntitlements.swift */,
@@ -351,7 +364,10 @@
 			isa = PBXGroup;
 			children = (
 				D1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift */,
+				C10D00000000000000000003 /* NotificationEnrollmentTests.swift */,
+				C10D00000000000000000002 /* CloudEnrollmentTests.swift */,
 				D1D2C3D4E5F6000000000002 /* EventTests.swift */,
+				D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */,
 				D1D2C3D4E5F6000000000003 /* AppSettingsTests.swift */,
 				D1D2C3D4E5F6000000000004 /* CoreTypesTests.swift */,
 				D1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift */,
@@ -539,7 +555,9 @@
 				B1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift in Sources */,
 				B1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift in Sources */,
 				B1B2C3D4E5F6000000000008 /* CloudExfiltrator.swift in Sources */,
+				C10D00000000000000000011 /* CloudEnrollment.swift in Sources */,
 				B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */,
+				C15100000000000000000011 /* MonitoringEngine+LaunchPull.swift in Sources */,
 				B1B2C3D4E5F6000000000018 /* SirenPlayer.swift in Sources */,
 				B1B2C3D4E5F6000000000022 /* ConnectivityMonitor.swift in Sources */,
 				B1B2C3D4E5F6000000000023 /* ProEntitlements.swift in Sources */,
@@ -575,7 +593,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift in Sources */,
+				C10D00000000000000000014 /* NotificationService.swift in Sources */,
+				C10D00000000000000000013 /* NotificationEnrollmentTests.swift in Sources */,
+				C10D00000000000000000012 /* CloudEnrollmentTests.swift in Sources */,
 				E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */,
+				E1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift in Sources */,
 				E1D2C3D4E5F6000000000003 /* AppSettingsTests.swift in Sources */,
 				E1D2C3D4E5F6000000000004 /* CoreTypesTests.swift in Sources */,
 				E1D2C3D4E5F6000000000005 /* MonitoringEngineTests.swift in Sources */,
@@ -753,7 +775,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -763,7 +785,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -781,7 +803,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -791,7 +813,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -810,7 +832,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -827,7 +849,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -842,7 +864,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -851,7 +873,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -867,7 +889,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 55;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -876,7 +898,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 1.5.1;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";

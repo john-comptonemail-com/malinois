@@ -1384,6 +1384,272 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNil(CloudExfiltrator.event(from: metaRecord())?.captureFailuresByCamera)
     }
 
+    @MainActor
+    private func enrollmentRig(authenticate: @escaping @MainActor (String) async -> Bool = { _ in true })
+        -> (CloudEnrollment, CloudExfiltrator, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let policy = CloudEnrollment(file: directory.appendingPathComponent("enrollment.json"), authenticate: authenticate)
+        let cloud = CloudExfiltrator(enrollment: policy)
+        cloud.accountIdentityForTesting = { "account-A" }
+        return (policy, cloud, directory)
+    }
+
+    @MainActor
+    func testCloudBoundaryDeniesAllEntryPointsWithoutEnrollmentOrPrompt() async {
+        var prompts = 0
+        let (_, cloud, directory) = enrollmentRig { _ in prompts += 1; return true }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch])
+        var state = event
+        state.stateChange = "armed"
+        await cloud.warmUp(notifyOtherDevices: true)
+        await cloud.refreshSubscription(notifyOtherDevices: true)
+        let fact = await cloud.pushFact(event)
+        let upload = await cloud.exfiltrate(event, fullMediaURL: nil)
+        let audit = await cloud.pushStateChange(state)
+        let present = await cloud.presentRecordNames(["meta-v2-" + event.id.uuidString])
+        let recent = await cloud.fetchRecentEvents()
+        let media = await cloud.fetchFullMedia(for: event.id)
+        let beat = await cloud.pushBeat(HeartbeatBeat(session: event.id, sequence: 1,
+            deviceName: "Test", batteryLevel: 1, charging: false))
+        let latest = await cloud.latestBeat(session: event.id)
+        let purge = await cloud.purgeFullMedia(monthsOld: 1)
+        let trim = await cloud.trimBeatTrails([BeatSession(id: event.id, start: .distantPast)], monthsOld: 1)
+        let alertsOn = await cloud.setCrossDeviceAlerts(true)
+        let alertsOff = await cloud.setCrossDeviceAlerts(false)
+        XCTAssertFalse(fact)
+        XCTAssertEqual(upload.syncState, .localOnly)
+        XCTAssertNil(upload.metaFailureWasInterference, "Held evidence is not a server refusal or interference.")
+        XCTAssertFalse(audit)
+        XCTAssertNil(present)
+        XCTAssertTrue(recent.isEmpty)
+        XCTAssertTrue(cloud.lastFetchFailed)
+        XCTAssertFalse(cloud.lastFetchComplete)
+        XCTAssertNil(media)
+        XCTAssertFalse(beat)
+        XCTAssertEqual(latest, .unknown)
+        XCTAssertTrue(purge.failed)
+        XCTAssertEqual(trim[event.id], .failed)
+        XCTAssertFalse(alertsOn)
+        XCTAssertFalse(alertsOff)
+        XCTAssertEqual(prompts, 0, "Ordinary operations must never initiate device authentication.")
+        XCTAssertFalse(cloud.cloudUnavailable, "Rejected requests must not even create the simulator's database container.")
+    }
+
+    @MainActor
+    func testCloudBoundaryResolvesEveryLeaseAndKeepsDurableGrantAfterIdentityFailure() async throws {
+        let (policy, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let firstResult = await cloud.acquireCloudLease()
+        let first = try XCTUnwrap(firstResult)
+        var lookups = 0
+        cloud.accountIdentityForTesting = { lookups += 1; return "account-A" }
+        _ = await cloud.acquireCloudLease()
+        _ = await cloud.acquireCloudLease()
+        XCTAssertEqual(lookups, 2)
+        cloud.accountIdentityForTesting = { nil }
+        let failed = await cloud.acquireCloudLease()
+        XCTAssertNil(failed)
+        XCTAssertFalse(policy.isCurrent(first))
+        cloud.accountIdentityForTesting = { "account-A" }
+        let recovered = await cloud.acquireCloudLease()
+        XCTAssertNotNil(recovered, "Identity failure must not erase durable verification.")
+        XCTAssertNotEqual(recovered, first, "An old suspended operation cannot reuse a new resolution.")
+    }
+
+    @MainActor
+    func testCloudBoundaryAccountChangeRejectsOldAndUnenrolledAccount() async throws {
+        let (policy, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let initial = await cloud.acquireCloudLease()
+        let lease = try XCTUnwrap(initial)
+        cloud.accountIdentityForTesting = { "account-B" }
+        let changed = await cloud.acquireCloudLease()
+        XCTAssertNil(changed)
+        XCTAssertFalse(policy.isCurrent(lease))
+        XCTAssertTrue(cloud.enrollmentRequired)
+    }
+
+    @MainActor
+    func testCloudBoundaryDropsIdentityAnswerThatArrivesAfterAccountNotification() async {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        cloud.accountIdentityForTesting = {
+            NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+            return "old-account"
+        }
+        let identity = await cloud.userRecordName()
+        XCTAssertNil(identity, "The account-change generation fences a stale identity callback.")
+    }
+
+    @MainActor
+    func testCloudBoundaryRejectsQueuedWorkAfterAccountSwitch() async throws {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let initial = await cloud.acquireCloudLease()
+        let lease = try XCTUnwrap(initial)
+        let id = UUID()
+        let started = expectation(description: "first queue operation entered")
+        var release: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            await cloud.enqueue(id) {
+                await withCheckedContinuation { continuation in release = continuation; started.fulfill() }
+            }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        var ran = false
+        let queued = Task { @MainActor in
+            await cloud.enqueueAuthorized(id, lease: lease, declined: false) { ran = true; return true }
+        }
+        // Let the second task enter the event queue while the first remains suspended.
+        await Task.yield()
+        NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+        release?.resume()
+        await first.value
+        let result = await queued.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(ran)
+    }
+
+    /// Canceling a waiting request must not cancel its predecessor or allow its upload to run.
+    @MainActor
+    func testCloudBoundaryCancellationBeforeQueueEntrySkipsWorkAndPreservesPredecessor() async throws {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let initial = await cloud.acquireCloudLease()
+        let lease = try XCTUnwrap(initial)
+        let id = UUID()
+        let firstStarted = expectation(description: "predecessor holds the event queue")
+        let queuedStarted = expectation(description: "cancellable request submitted")
+        var release: CheckedContinuation<Void, Never>?
+        var predecessorCancelled = false
+        var ran = false
+        var order: [String] = []
+        let first = Task { @MainActor in
+            await cloud.enqueue(id) {
+                order.append("first-start")
+                await withCheckedContinuation { release = $0; firstStarted.fulfill() }
+                predecessorCancelled = Task.isCancelled
+                order.append("first-end")
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 2)
+        let queued = Task { @MainActor in
+            queuedStarted.fulfill()
+            return await cloud.enqueueAuthorized(id, lease: lease, declined: false) { ran = true; return true }
+        }
+        await fulfillment(of: [queuedStarted], timeout: 2)
+        await Task.yield()
+        queued.cancel()
+        let following = Task { @MainActor in
+            await cloud.enqueue(id) { order.append("following") }
+        }
+        await Task.yield()
+        XCTAssertEqual(order, ["first-start"], "Cancellation must not let later work overtake the predecessor.")
+        release?.resume()
+        await first.value
+        let result = await queued.value
+        await following.value
+        XCTAssertFalse(ran, "A canceled queued upload must never start.")
+        XCTAssertFalse(result)
+        XCTAssertFalse(predecessorCancelled, "Cancel only this request, never the previous operation.")
+        XCTAssertEqual(order, ["first-start", "first-end", "following"])
+    }
+
+    /// A canceled in-flight request must drain before the next writer and discard a late success.
+    @MainActor
+    func testCloudBoundaryCancellationDuringSuspendedOperationDiscardsResultAndDrains() async throws {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let initial = await cloud.acquireCloudLease()
+        let lease = try XCTUnwrap(initial)
+        let id = UUID()
+        let started = expectation(description: "authorized operation suspended")
+        var release: CheckedContinuation<Void, Never>?
+        var observedCancellation = false
+        var order: [String] = []
+        let request = Task { @MainActor in
+            await cloud.enqueueAuthorized(id, lease: lease, declined: false) {
+                order.append("start")
+                // Deliberately non-cooperative: a CloudKit completion may arrive after cancellation.
+                await withCheckedContinuation { release = $0; started.fulfill() }
+                observedCancellation = Task.isCancelled
+                order.append("drained")
+                return true
+            }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        request.cancel()
+        let following = Task { @MainActor in
+            await cloud.enqueue(id) { order.append("following") }
+        }
+        await Task.yield()
+        XCTAssertEqual(order, ["start"], "The queue must wait for the canceled operation to finish.")
+        release?.resume()
+        let result = await request.value
+        await following.value
+        XCTAssertTrue(observedCancellation, "Caller cancellation must reach the operation's task.")
+        XCTAssertFalse(result, "A late success from a canceled operation must be discarded.")
+        XCTAssertEqual(order, ["start", "drained", "following"])
+    }
+
+    @MainActor
+    func testCloudBoundaryDiscardsInFlightResultAfterAccountSwitch() async throws {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let initial = await cloud.acquireCloudLease()
+        let lease = try XCTUnwrap(initial)
+        let result = await cloud.enqueueAuthorized(UUID(), lease: lease, declined: false) {
+            NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+            return true
+        }
+        XCTAssertFalse(result, "A stale completion must never mark evidence synced.")
+    }
+
+    @MainActor
+    func testCloudBoundaryOffRequiresFreshAuthenticationAndFailsClosedOnCancellation() async {
+        var prompts = 0
+        let (_, cloud, directory) = enrollmentRig { _ in prompts += 1; return prompts == 1 }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let removed = await cloud.setCrossDeviceAlerts(false)
+        XCTAssertFalse(removed)
+        XCTAssertEqual(prompts, 2)
+        XCTAssertFalse(cloud.cloudUnavailable, "Authentication cancellation must precede every database access.")
+    }
+
+    @MainActor
+    func testCloudBoundaryHoldsUnboundEvidenceEvenAfterEnrollment() async {
+        let (_, cloud, directory) = enrollmentRig()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let enrolled = await cloud.enrollCloudAccess()
+        XCTAssertTrue(enrolled)
+        let old = Event(startDate: .distantPast, endDate: .distantPast, triggeredSensors: [.touch])
+        let fact = await cloud.pushFact(old)
+        let media = await cloud.fetchFullMedia(for: old.id)
+        let beat = await cloud.pushBeat(HeartbeatBeat(session: old.id, sequence: 1,
+            deviceName: "Test", batteryLevel: nil, charging: false))
+        let latest = await cloud.latestBeat(session: old.id)
+        XCTAssertFalse(fact)
+        XCTAssertNil(media)
+        XCTAssertFalse(beat)
+        XCTAssertEqual(latest, .unknown)
+        XCTAssertFalse(cloud.cloudUnavailable, "An enrolled account must not adopt old unbound evidence.")
+    }
+
 }
 
 /// The order the chained writes ran in, kept on the main actor where they run: a plain array
@@ -1392,4 +1658,5 @@ final class CloudExfiltratorTests: XCTestCase {
 private final class RunOrder<Entry> {
     private(set) var entries: [Entry] = []
     func append(_ entry: Entry) { entries.append(entry) }
+
 }

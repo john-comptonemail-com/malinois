@@ -20,6 +20,14 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
     case warmUpTimedOut
     /// The shot or clip itself failed, with no interruption seen.
     case captureFailed
+    /// Whole-attempt clock expired; shutdown may still be queued.
+    case captureTimedOut
+    /// A previous camera worker still owns the device after a deadline.
+    case cameraBusy
+    /// Saved footage ended early or the recording delegate reported incomplete output.
+    case clipPartial
+    /// Bytes are preserved but playable/completed footage could not be established.
+    case clipUnverified
     case interruptedInBackground
     case interruptedByAnotherApp
     case interruptedByAudioClient
@@ -40,6 +48,7 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
              .interruptedBySystemPressure, .interrupted:
             return true
         case .unauthorized, .cameraUnavailable, .warmUpTimedOut, .captureFailed, .storageFailed,
+             .captureTimedOut, .cameraBusy, .clipPartial, .clipUnverified,
              .disarmed:
             return false
         }
@@ -51,6 +60,10 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
         case .unauthorized:                return "camera access is denied in iOS Settings"
         case .cameraUnavailable:           return "the camera could not be started"
         case .warmUpTimedOut:              return "the camera did not start in time"
+        case .captureTimedOut:             return "the camera response timed out; recovery may still be pending"
+        case .cameraBusy:                  return "the camera is still recovering from an earlier capture"
+        case .clipPartial:                 return "partial footage was saved; recording ended early or incompletely"
+        case .clipUnverified:              return "the original file was saved, but its recording could not be fully verified"
         case .captureFailed:               return "the camera failed while capturing"
         case .interruptedInBackground:     return "iOS took the camera away because the app was no longer in the foreground"
         case .interruptedByAnotherApp:     return "another app was using the camera"

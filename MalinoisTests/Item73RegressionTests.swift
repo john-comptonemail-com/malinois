@@ -168,8 +168,11 @@ final class Item73RegressionTests: XCTestCase {
         let rig = makeRig { $0.captureMode = .photo; $0.cameraPosition = .front; $0.cameraReadiness = .batterySaver }
         arm(rig)
         rig.camera.warmUpDelay = 0.3            // the trigger's warm-up, not the arm's (cold policy: none)
+        var warmUpEntered = false
+        rig.camera.onWarmUpForTesting = { warmUpEntered = true }
         rig.engine.handleTrip(.motion)
-        XCTAssertTrue(pump(until: { rig.engine.state == .triggered }, timeout: 2), "the response owns the pipeline")
+        XCTAssertTrue(pump(until: { warmUpEntered }, timeout: 2), "the actual warm-up must start before this test disarms")
+        XCTAssertEqual(rig.engine.state, .triggered)
         rig.engine.disarm()                      // before the warm-up answers
         let atDisarm = rig.camera.shutDowns
         XCTAssertTrue(pump(until: { rig.camera.shutDowns > atDisarm }, timeout: 3),

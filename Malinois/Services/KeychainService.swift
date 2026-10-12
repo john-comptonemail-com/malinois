@@ -27,18 +27,15 @@ enum KeychainService {
 
     // MARK: - Public API
 
-    /// How the PIN hash reads RIGHT NOW — the distinction the lost-hash classification hangs
-    /// on (found live 2026-08-30, the first day a CloudKit push could background-launch the
-    /// app): the hash is stored `WhenUnlockedThisDeviceOnly`, so on a locked device — or in
-    /// the unlock-transition instant of a lock-screen notification tap — the read fails with
-    /// `errSecInteractionNotAllowed`. The item is SEALED, not absent. The old `hasPIN`
-    /// collapsed every failure to "no PIN", and with `hasCompletedSetup` living in
-    /// UserDefaults (readable while locked), a locked launch produced the exact lost-hash
-    /// signature: a false "PIN unavailable" recovery screen over an intact PIN. Same class
-    /// as V-01's locked event log — sealed defers; only a readable absence may classify.
+    /// Whether the credential can be judged right now. `sealedByLock` is the historical
+    /// name for an unresolved read: locked storage, unexpected errors, and missing payloads
+    /// all defer setup/recovery. None is evidence that the owner has no PIN.
     enum PINPresence { case present, absent, sealedByLock }
 
     static var pinPresence: PINPresence {
+        guard rateLimitReadable else { return .sealedByLock }
+        let length = readWithStatus(account: lengthAccount)
+        guard itemRead(status: length.status, data: length.data) != .sealed else { return .sealedByLock }
         let hash = readWithStatus(account: account)
         let salt = readWithStatus(account: account + ".salt")
         return Self.presence(hash: itemRead(status: hash.status, data: hash.data),
@@ -53,12 +50,11 @@ enum KeychainService {
         case missing
     }
 
-    /// Pure (unit-tested): maps a Keychain read to `ItemRead`. `errSecInteractionNotAllowed`
-    /// is the locked-device seal — the item exists but cannot be judged; anything else
-    /// unreadable is missing.
+    /// Maps only an explicit item-not-found result to absence. Other unreadable results
+    /// defer judgment; callers of the shared ItemRead type must never mint over a seal.
     nonisolated static func itemRead(status: OSStatus, data: Data?) -> ItemRead {
-        if status == errSecInteractionNotAllowed { return .sealed }
-        guard status == errSecSuccess, let data else { return .missing }
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess, let data else { return .sealed }
         return .found(data)
     }
 
@@ -77,6 +73,8 @@ enum KeychainService {
     /// - a SEALED salt defers judgment entirely, exactly like a sealed hash — a locked
     ///   device must never classify (the 8372066 lesson, extended to the salt item).
     nonisolated static func presence(hash: ItemRead, salt: ItemRead) -> PINPresence {
+        // Either sealed component vetoes classification, even if the other is absent.
+        if hash == .sealed || salt == .sealed { return .sealedByLock }
         switch hash {
         case .sealed: return .sealedByLock
         case .missing: return .absent
@@ -156,66 +154,73 @@ enum KeychainService {
     enum RecoveryKind: Equatable {
         /// Setup completed before, but the hash can't be read. Re-setup, behind device auth.
         case lostHash
-        /// A PIN hash exists and the event log is still on disk, but the setup flag is gone.
+        /// A valid PIN survives but the setup flag is gone, including after reinstall.
         /// The PIN is legitimate — repair the flag rather than destroying it.
         case lostSetupFlag
     }
 
-    /// Pure (unit-tested). Classifies the launch state from the three observable facts.
-    ///
-    /// The subtle case is `hasPIN && !hasCompletedSetup`, which two very different situations
-    /// produce and which must NOT be treated the same:
-    ///
-    /// - **Genuine fresh install.** iOS keeps Keychain items across app deletion, so a reinstall
-    ///   inherits the old PIN while its container — and the setup flag — is gone. Wiping and
-    ///   starting clean is correct: the evidence went with the container, so nothing is lost.
-    /// - **Lost flag, surviving container.** `setPIN` writes the Keychain hash first and the
-    ///   `UserDefaults` flag second, and `UserDefaults` persists asynchronously — so a crash or
-    ///   OOM kill in between leaves a *legitimately set* PIN with no flag. Wiping there destroys
-    ///   the owner's PIN and hands whoever holds the device an open setup screen, which then
-    ///   gates the still-present event log behind a PIN of the stranger's choosing.
-    ///
-    /// The event log on disk is what separates them: only the second still has one.
+    /// Classifies local access without guessing whether missing files mean reinstall.
+    /// Any surviving valid PIN must be verified and kept; known prior evidence without a
+    /// usable PIN requires device-owner recovery. Unresolved storage never means fresh setup.
     nonisolated static func recoveryKind(pinPresence: PINPresence, hasCompletedSetup: Bool,
                                          containerHasPriorEvents: Bool) -> RecoveryKind? {
-        // A sealed hash (locked device) is unreadable, not gone — classifying blind produced
-        // a false "PIN unavailable" over an intact PIN the first day a CloudKit push could
-        // background-launch the app (2026-08-30). Defer; RootView re-judges after unlock.
         guard pinPresence != .sealedByLock else { return nil }
-        let hasPIN = pinPresence == .present
-        if !hasPIN && hasCompletedSetup { return .lostHash }
-        if hasPIN && !hasCompletedSetup && containerHasPriorEvents { return .lostSetupFlag }
+        if pinPresence == .absent && (hasCompletedSetup || containerHasPriorEvents) { return .lostHash }
+        if pinPresence == .present && !hasCompletedSetup { return .lostSetupFlag }
         return nil
     }
 
-    /// The current launch's recovery state, if any. Nil means "proceed normally".
+    /// Observes all local evidence, including journals, quarantined logs and media attachment
+    /// intents, without creating files. Empty folders do not count. Inspection errors or
+    /// symbolic links conservatively require recovery, rather than authorize fresh setup.
+    static func hasPriorLocalEvidence(in root: URL) -> Bool {
+        do {
+            let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { return true }
+            for child in try FileManager.default.contentsOfDirectory(at: root,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+                // EventStore creates these bookkeeping markers even on a genuinely new
+                // install, before RootView appears. They are not recorded evidence.
+                if ["seen.json", "restore-owed.json"].contains(child.lastPathComponent) { continue }
+                let kind = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if kind.isSymbolicLink == true || kind.isDirectory != true { return true }
+                if hasPriorLocalEvidence(in: child) { return true }
+            }
+            return false
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return false
+        } catch {
+            return true
+        }
+    }
+
+    /// Current local recovery state. Nil with an unresolved PIN still requires deferral.
     static var pendingRecovery: RecoveryKind? {
         recoveryKind(pinPresence: pinPresence, hasCompletedSetup: hasCompletedSetup,
-                     containerHasPriorEvents: EventStore.containerHasPriorEvents)
+                     containerHasPriorEvents: EventStore.containerHasPriorEvents || priorPINArtifacts)
     }
 
-    /// Repairs a lost setup flag once the owner has authenticated with the device passcode.
-    /// The PIN hash is intact, so nothing is destroyed — the owner keeps both their PIN and
-    /// their evidence.
-    static func markSetupCompleted() {
+    /// Even damaged credential fragments demonstrate a previous PIN, despite lost markers.
+    private static var priorPINArtifacts: Bool {
+        [account, account + ".salt", lengthAccount, attemptsAccount, lockoutAccount].contains { name in
+            let result = readWithStatus(account: name)
+            if case .found = itemRead(status: result.status, data: result.data) { return true }
+            return false
+        }
+    }
+
+    /// Repairs setup after successful existing-PIN verification. Refuses unresolved or
+    /// absent credentials; it never replaces the PIN or clears its lockout on its own.
+    @discardableResult
+    static func markSetupCompleted() -> Bool {
+        guard pinPresence == .present else { return false }
         UserDefaults.standard.set(true, forKey: setupCompletedKey)
+        return hasCompletedSetup
     }
 
-    /// Clears a PIN inherited from a previous install. Only fires on a *genuine* fresh install —
-    /// a PIN in the Keychain, no setup flag, and no event log on disk — so a reinstall starts
-    /// clean. An app *update* keeps its container (the flag stays true), and a lost flag with a
-    /// surviving log is routed to `RecoveryKind.lostSetupFlag` instead of being wiped here.
-    /// Call once at launch, before `hasPIN` is read.
-    static func wipeStalePINDataOnFreshInstall() {
-        // Never judge a sealed Keychain (locked launch): the guards below already fail safe
-        // in that state, but destruction deserves an explicit refusal, not an accidental one.
-        guard pinPresence != .sealedByLock else { return }
-        guard pendingRecovery == nil, !hasCompletedSetup, hasPIN else { return }
-        wipeStalePINData()
-    }
-
-    /// Removes all PIN-related Keychain items (hash, salt, length, brute-force counters). Does
-    /// NOT touch the trial start or the Early-Access marker — both must persist across a reinstall.
+    #if DEBUG
+    /// Test-fixture cleanup only. Production has no automatic credential-wipe path.
+    /// Does not remove trial or Early-Access membership.
     static func wipeStalePINData() {
         mirroredFailures = 0
         mirroredLockout = nil
@@ -226,6 +231,7 @@ enum KeychainService {
         delete(account: lockoutAccount)
         UserDefaults.standard.removeObject(forKey: setupCompletedKey)
     }
+    #endif
 
     /// The digit-length of the stored PIN (4–6). Defaults to 4 if unset.
     static var pinLength: Int {
@@ -238,7 +244,7 @@ enum KeychainService {
     /// Sets (or replaces) the PIN. Accepts 4–6 digits.
     @discardableResult
     static func setPIN(_ pin: String) -> Bool {
-        guard isValidPIN(pin) else { return false }
+        guard isValidPIN(pin), pinPresence != .sealedByLock else { return false }
         let hash = versionedHash(pin)
         // Refuse to store a broken hash: a PBKDF2 failure yields an empty derive, and a
         // 1-byte "[version]" hash would be unverifiable — locking the owner out forever
@@ -260,8 +266,9 @@ enum KeychainService {
     /// Callers must NOT also call `recordFailure()` — that would double-count and escalate
     /// the lockout at twice the intended rate.
     static func verify(_ pin: String) -> Bool {
-        guard lockoutRemaining() == 0 else { return false }
-        guard verifyWithoutRateLimit(pin) else {
+        guard pinPresence == .present, rateLimitReadable, lockoutRemaining() == 0 else { return false }
+        guard let verified = verifyWithoutRateLimit(pin) else { return false }
+        guard verified else {
             recordFailure()          // wrong guess → cost it, whoever asked
             return false
         }
@@ -276,8 +283,13 @@ enum KeychainService {
 
     /// The cryptographic check alone, with no rate-limit read or failure accounting.
     /// Split out so `verify` can own the policy and stay readable.
-    private static func verifyWithoutRateLimit(_ pin: String) -> Bool {
-        guard let stored = readHash() else { return false }
+    private static func verifyWithoutRateLimit(_ pin: String) -> Bool? {
+        let hash = readWithStatus(account: account)
+        let salt = readWithStatus(account: account + ".salt")
+        let hashRead = itemRead(status: hash.status, data: hash.data)
+        let saltRead = itemRead(status: salt.status, data: salt.data)
+        guard hashRead != .sealed, saltRead != .sealed else { return nil }
+        guard case .found(let stored) = hashRead, case .found(let s) = saltRead else { return false }
         if stored.count == 33, stored.first == hashVersion {
             // READ-ONLY: verification must never mint a salt (seventh review, #2). The
             // get-or-create `salt()` belongs to SETTING a PIN; here, a missing salt means
@@ -285,14 +297,16 @@ enum KeychainService {
             // `pinPresence` classifies it and routes to `.lostHash` recovery. The old path
             // minted a fresh salt over the gap, silently bricking the PIN with the
             // presence check still saying "present": no recovery route at all.
-            guard let s = readSalt() else { return false }
             return constantTimeEqual(Data(stored.dropFirst()), pbkdf2(pin, salt: s))
         }
         // Legacy single-SHA hash → verify, then upgrade in place to PBKDF2. Only store
         // the upgrade if it's well-formed: a nil salt would make versionedHash empty, and
         // overwriting a valid legacy hash with that would brick the PIN (N-02). The legacy
         // hash still verifies regardless, so a failed upgrade just retries next time.
-        if constantTimeEqual(stored, legacySHA(pin)) {
+        var legacy = SHA256()
+        legacy.update(data: s)
+        legacy.update(data: Data(pin.utf8))
+        if constantTimeEqual(stored, Data(legacy.finalize())) {
             let upgraded = versionedHash(pin)
             if upgraded.count == 33 { _ = store(upgraded) }
             return true
@@ -385,6 +399,13 @@ enum KeychainService {
         return max(0, (parts.first ?? 0) - wallNow)   // legacy wall-clock format
     }
 
+    private static var rateLimitReadable: Bool {
+        [attemptsAccount, lockoutAccount].allSatisfy { name in
+            let result = readWithStatus(account: name)
+            return itemRead(status: result.status, data: result.data) != .sealed
+        }
+    }
+
     private static var failedAttempts: Int {
         let stored: Int
         if let data = read(account: attemptsAccount),
@@ -405,7 +426,12 @@ enum KeychainService {
     /// can't be stored, so callers fail the operation cleanly instead of baking in a weak
     /// salt or one that the next call would silently regenerate differently (F-21).
     private static func salt() -> Data? {
-        if let existing = readSalt() { return existing }
+        let result = readWithStatus(account: account + ".salt")
+        switch itemRead(status: result.status, data: result.data) {
+        case .sealed: return nil
+        case .found(let existing) where existing.count == 16: return existing
+        case .found, .missing: break
+        }
         var bytes = [UInt8](repeating: 0, count: 16)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
         let data = Data(bytes)
@@ -439,17 +465,6 @@ enum KeychainService {
         return status == kCCSuccess ? Data(derived) : Data()
     }
 
-    private static func legacySHA(_ pin: String) -> Data {
-        // READ-ONLY, like the v2 path (R1-M1, same rule as seventh-review #2): verification
-        // must never mint. The old get-or-create call here manufactured a fresh salt over a
-        // gap and silently bricked the legacy PIN — with presence still saying "present".
-        guard let s = readSalt() else { return Data() }   // no salt → empty → verify fails safe
-        var hasher = SHA256()
-        hasher.update(data: s)
-        hasher.update(data: Data(pin.utf8))
-        return Data(hasher.finalize())
-    }
-
     private static func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
         guard a.count == b.count, !a.isEmpty else { return false }
         var diff: UInt8 = 0
@@ -460,7 +475,6 @@ enum KeychainService {
     // MARK: - Keychain primitives
 
     private static func store(_ data: Data) -> Bool { write(data, account: account) }
-    private static func readHash() -> Data? { read(account: account) }
     @discardableResult
     private static func storeSalt(_ data: Data) -> Bool { write(data, account: account + ".salt") }
     private static func readSalt() -> Data? { read(account: account + ".salt") }
@@ -494,6 +508,8 @@ enum KeychainService {
     /// Test-only: every Keychain write reports failure, constructing the partial-failure state
     /// of item 73's R10 (reads fine, writes refused) against a live Keychain.
     nonisolated(unsafe) static var failWritesForTesting = false
+    /// Test-only read failure injection; production always consults the Keychain.
+    nonisolated(unsafe) static var readStatusForTesting: OSStatus?
     #endif
 
     @discardableResult
@@ -565,6 +581,9 @@ enum KeychainService {
     /// (locked device) from a missing one instead of collapsing both to nil (seventh
     /// review #2: that collapse is why a sealed salt read exactly like a lost one).
     private static func readWithStatus(account: String) -> (status: OSStatus, data: Data?) {
+        #if DEBUG
+        if let status = readStatusForTesting { return (status, nil) }
+        #endif
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

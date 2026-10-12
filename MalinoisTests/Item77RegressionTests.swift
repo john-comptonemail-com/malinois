@@ -572,22 +572,12 @@ final class Item77RegressionTests: XCTestCase {
 
     // MARK: - Finding 12: a clip whose session stop beat the pipeline's stop
 
-    /// A disarm shuts the camera down ahead of the pipeline's `endClip`. The output then reads
-    /// "not recording" with the delegate's finalize still on the way; failing at once lost the
-    /// usable partial clip. The stop must wait for the callback — bounded, and shorter than
-    /// the stop timeout — and fail at once only when no callback is expected at all. Pure
-    /// rule; device leg 3 (a disarm during a clip) is the proof on hardware.
+    /// A session stop can precede the movie delegate. Keep that exact file's callback;
+    /// the pipeline's independent whole-attempt deadline bounds the caller instead.
     func testAStopWaitsForAPendingFinalizeInsteadOfFailingTheClip() {
-        XCTAssertEqual(CameraController.recordingStopWait(isRecording: true, callbackPending: true,
-                                                          stopTimeout: 8, pendingFinalizeWait: 2), 8,
-                       "still recording: the ordinary stop and its timeout")
-        XCTAssertEqual(CameraController.recordingStopWait(isRecording: false, callbackPending: true,
-                                                          stopTimeout: 8, pendingFinalizeWait: 2), 2,
-                       "stopped from under us, callback pending: wait for the file")
-        XCTAssertNil(CameraController.recordingStopWait(isRecording: false, callbackPending: false,
-                                                        stopTimeout: 8, pendingFinalizeWait: 2),
-                     "nothing recording and nothing expected: fail now")
-        XCTAssertLessThan(CameraController.pendingFinalizeWait, 8, "the finalize wait is short by design")
+        XCTAssertTrue(CameraController.shouldAwaitRecording(isRecording: true, callbackPending: true))
+        XCTAssertTrue(CameraController.shouldAwaitRecording(isRecording: false, callbackPending: true))
+        XCTAssertFalse(CameraController.shouldAwaitRecording(isRecording: false, callbackPending: false))
     }
 
     // MARK: - Finding 13: a sealed Keychain never mints a trial

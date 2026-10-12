@@ -2,7 +2,10 @@
 
 This document is the single source of truth for Malinois's threat model, the
 mechanisms that defend it, and the things it explicitly does **not** protect
-against. It's written for reviewers and future maintainers so the design intent
+against. This revision describes the released **1.5.1 (58)**, not the unshipped
+2.0 work.
+
+It's written for reviewers and future maintainers so the design intent
 doesn't have to be re-derived from the code each time.
 
 > Use Malinois only on **your own device**. It is a personal anti-theft / anti-snoop
@@ -17,8 +20,8 @@ picking it up, unplugging it, plugging it into a computer, searching around it, 
 trying to power it off before the evidence escapes.
 
 **Adversary tiers:**
-- **Tier 1 — opportunistic snoop or thief, no credentials.** The design target; every
-  guarantee below applies in full.
+- **Tier 1 — opportunistic snoop or thief, no credentials.** The design target,
+  subject to sensor coverage, foreground execution, storage and delivery limits below.
 - **Tier 2 — someone holding one of the owner's credentials.** Bounded outcomes: a PIN
   holder can stop *future* monitoring but deletes nothing and is photographed doing it;
   a Guided Access passcode holder can close the app, which is logged and alerted — and,
@@ -32,32 +35,29 @@ trying to power it off before the evidence escapes.
   is what keeps a snoop from the home screen, and iOS's Screen Time restriction on deleting
   apps can deny it outright (README, *Enable it*). Pro's cloud copy survives a deletion and
   comes back at reinstall.
-- **Tier 3 — professionals (spyware, device forensics).** The core objective survives:
-  the tripwires still fire, and the record exists — usually off-device (Pro) — before
-  any toolchain can finish. What ends is the vault, not the tripwire: a compromised OS
-  reads everything. Stated honestly below.
+- **Tier 3 — compromised devices and advanced tooling.** Outside the guarantees.
+  A professional handling an otherwise intact phone may trigger it, but there is no
+  assured ordering between detection, upload and compromise.
 
-**Core guarantees:**
-1. **Detection never silently stops** — not for PIN entry (the open pad pauses just one
-   sensor, proximity, which would otherwise blank it — see the resilience notes), not for
-   a capture in flight (one stated exception: the Sound tripwire pauses for a clip that
-   records audio: its metering recorder stops while the shared audio session stays active
-   for the camera, then metering resumes; the default video-only clip pauses nothing), not
-   for a lapsed paywall.
-2. **Evidence precedes response.** The record is written before any alert or siren
-   fires, the jamming and flood escalations included (1.3.2 closed a milliseconds-wide
-   exception on both), and (Pro) the tamper *fact* reaches iCloud sub-second — a race
-   against power-off the design exists to win.
-3. **The log only accumulates.** No delete affordance, no destructive merge; changes
-   attach and label, never erase.
+**Implemented protections and their limits:**
+1. **Monitoring is maintained with sensor-specific pauses.** Proximity pauses during
+   PIN entry, and PIN keys are not touch trips. Sound pauses for clips recording audio
+   and while the siren owns audio. Vision requires a live camera and temporarily suppresses comparison around
+   capture startup, interruption and resettling. The countdown and calibration are not a live
+   watch. A rearm or watchdog is not proof of continuous sensor health.
+2. **The event precedes the response.** The app attempts to journal the event before
+   alerting and starts Pro metadata upload before camera capture. Write failures,
+   shutdown and network conditions can still prevent preservation or delivery.
+3. **No individual-event delete action in the UI.** Retained records gain annotations,
+   but retention can remove records and media, including pending evidence under pressure.
 4. **Recording is always indicated** (the REC badge and iOS's camera dot; with the Sound
    tripwire on, iOS's microphone dot for the whole watch) — covertness has a deliberate,
    non-negotiable bound.
 5. **Failures are loud.** Interrupted sessions, refused uploads, degraded persistence
    (a full disk, a quarantined log, a journal that cannot be written), and silent-clip
    conditions (a denied microphone, one that could not be attached) all surface to the
-   owner instead of passing quietly. Stated residual: a tripwire that stalls mid-session
-   restarts itself, and the restart is console-only today.
+   owner. This does not cover every failure: some sensor restarts and persistent
+   sensor-health failures have no event record or owner notice.
 
 **Honest limits:** a hardware force-restart can be raced but not blocked; no network at
 trigger time means local-only until reconnect; a compromised OS is out of scope; free-tier
@@ -104,17 +104,18 @@ owner's iCloud fast enough to survive the device being powered off afterward.
 
 **Adversary tiers.** Three, each analyzed and *bounded* below:
 
-**Tier 1 — the design target (full defense).** The opportunistic snoop or thief above, with
-no credentials. Every guarantee in this document applies.
+**Tier 1 — the design target.** The opportunistic snoop or thief above, with
+no credentials. The documented operating conditions and limits still apply.
 
 **Tier 2 — credentialed insiders (in scope, with bounded outcomes).** A partner, colleague,
 or repeat visitor who has obtained one of the owner's credentials. Each credential buys
 something specific and leaves something behind (details in
 [Non-goals](#non-goals--known-limitations)):
 - **Malinois PIN:** can disarm — stopping *future* monitoring — but cannot delete anything,
-  and the disarm itself becomes an undeletable, timestamped record. Detection continues
+  and the disarm creates a timestamped local record with no individual-delete UI.
+  Retention, app deletion before upload, or storage failure can remove that evidence. Detection continues
   during PIN entry, and the Touch tripwire has no switch (ADR 0015), so the hold that reveals
-  the pad is always recorded, and photographed unless the camera was switched off in Settings
+  the pad normally creates a Touch record and attempts capture unless the camera was switched off in Settings
   (which needs the PIN, and since 1.4 leaves a record of its own); on Pro with cross-device alerts on, the disarm is
   pushed to the owner's other devices the moment it happens — a PIN-holder's disarm is quiet
   on this device only. (A disarm that could not be sent then, from a phone offline for a while,
@@ -150,13 +151,16 @@ something specific and leaves something behind (details in
   records that went up, by name, and when most are gone it uploads this device's own records
   again and says so on Home. It does so only while the device is signed into the account those
   records went to (remembered the first time it found them in place); under another account it
-  says so and uploads nothing, so evidence never lands in someone else's iCloud. Until that
+  declines that recovery requeue and says so. Since 1.5.1 ordinary uploads are bound as
+  well: each event carries the account it was captured under, and evidence whose account
+  is unknown or different stays on this device instead of uploading to the signed-in
+  account (ADR 0039; *Installation enrollment* under Cloud). Until the next
   launch, and on a device that never held the rows, the loss shows only to someone who consults
   the cloud copy. **Absence of evidence is evidence, when it is looked for.** They can also
   **insert** fabricated
   records — but this device merges those only as clamped, labeled mirrors: never
   superseding first-hand evidence, timestamps believed at most a day ahead of the
-  record's own server stamp, and always first against the retention cap. Insertion buys
+  record's own server stamp, and first against the retention cap. Insertion buys
   distraction in the log, not reach into the on-device record (fourth pass, R2-F3 +
   R3-4).
 
@@ -166,20 +170,11 @@ surveillance industry: investigators and private-intelligence firms working a di
 custody dispute, a lawsuit, or corporate espionage, with budgets for commercial spyware and
 device-forensics tooling. Malinois does not claim to defeat this tier; here is where the
 lines fall:
-- **What still works: the core objective — you find out.** A professional still has to
-  physically handle the device to image it, implant on it, or search around it — and
-  detection, capture, and the sub-second fact push run exactly as for any other adversary;
-  jamming still forces the go-loud response. Compromise is not instantaneous: the first
-  touch trips before any toolchain finishes, so by the time an implant could silence
-  Malinois the record already exists — and with Pro it has usually already left the
-  device. Tampering *silently* therefore requires all three at once: ensuring the device
-  has no network before the first trip (to beat the sub-second push), gaining full
-  read-write control of an up-to-date iPhone, and laundering the app's local state without
-  leaving a seam. (On the free tier the first leg comes free — the record is local-only —
-  but the other two still stand.) Each leg sits at the edge of commercial capability, and
-  failing any one leaves loud evidence: a gap, an interrupted session, an armed record with
-  no disarm. Against this tier Malinois remains a functioning **tripwire** — what it stops
-  being is a **vault**.
+- **An intact phone can still detect ordinary handling.** The same tripwires apply
+  regardless of the person's occupation or equipment. That is not a defense against
+  spyware or forensic compromise: physical handling is not a prerequisite for every
+  compromise, and detection or upload need not finish before monitoring is defeated.
+  Already-uploaded evidence may remain available, subject to the cloud boundaries below.
 - **What fails: the device itself.** Mercenary spyware or an exploit chain on the phone
   reads everything the phone can read — the log, the media, app memory — and with full
   control could in principle edit the local record. The cloud copy (Pro) stays beyond its
@@ -225,7 +220,7 @@ drawn so that **the paywall never silently reduces protection**:
 Two consequences matter for the threat model:
 
 1. **Off-device durability is a Pro property.** The "two-shot exfiltration races a
-   power-off" guarantee below holds only on Pro (or in trial). A **free** or
+   power-off" design below applies only on Pro (or in trial), and delivery can fail. A **free** or
    lapsed-trial device keeps evidence **local-only**, which does not survive the device
    being taken or wiped — it defends "who touched my phone?", not "recover evidence
    after theft." This is stated plainly in-app and in the trial-end notification, not
@@ -281,27 +276,24 @@ Two consequences matter for the threat model:
   so a failed write (e.g. one attempted while the device is locked) can't destroy the
   PIN hash or silently reset the lockout counter. And "no hash on file" is only
   treated as first-time setup on a genuine fresh install: if setup was completed
-  before but the hash is unreadable, re-setup is **gated behind device
+  before but the hash is readably missing or malformed, re-setup is **gated behind device
   authentication**, so a stranger can't just set a new PIN and open the log.
-- **Both directions of a Keychain/flag disagreement are gated (M2).** `setPIN` writes the
-  Keychain hash first and the `UserDefaults` setup flag second, and `UserDefaults` persists
-  asynchronously — so a crash in between leaves a *legitimately set* PIN with no flag. That used
-  to be treated as a fresh install: the PIN was silently wiped and an **open** setup screen
-  presented, letting whoever held the unlocked device choose a PIN that then gated the still-
-  present event log. It also destroyed the owner's own PIN, a reliability bug in its own right.
-  The two producers of that state are told apart by whether an event log survives on disk — a
-  genuine reinstall has none (the container went with it, so nothing is left to protect and
-  wiping stays correct), while a lost flag has both the PIN and the log. The latter now goes
-  through device authentication, which **repairs the flag** rather than re-running setup, so
-  nothing is destroyed. `KeychainService.recoveryKind` is pure and unit-tested. The
-  recovery gate **fails closed** (sixth review, F4): if device authentication cannot run
-  at all — no device passcode set — recovery refuses and says a passcode is required,
-  rather than treating "cannot authenticate" as authenticated; setting a passcode in iOS
-  Settings re-enables it immediately, so the owner is never trapped. And "PIN present"
-  means *verifiable* (seventh review, #2/#3): the stored hash must carry the current
-  version byte and, for the PBKDF2 format, its salt — a lost or malformed salt classifies
-  as the recoverable lost-hash state instead of an unwinnable pad, and verification never
-  mints a salt over the gap.
+- **A surviving PIN is kept across reinstall (ADR 0040).** Missing local setup markers
+  or a missing event log never authorize deleting a PIN. Entering the existing PIN repairs
+  setup. Its rate limit remains in force. “Forgot PIN?” explicitly requests Face ID,
+  Touch ID, or the device passcode before a replacement can be chosen; ordinary disarm
+  stays app-PIN-only. The old credential stays stored until the replacement succeeds.
+  Cancellation, backgrounding, unavailable device authentication and failed writes do
+  not complete recovery. No device passcode means device-authenticated reset is unavailable.
+  Known prior setup or surviving local evidence without a usable PIN requires recovery;
+  the journal, media and attachment intents count even when `events.json` is absent.
+  Empty directories alone do not count; filesystem inspection errors take the conservative
+  recovery route. Recovery does not delete evidence.
+  Locked Keychain reads, unexpected errors and missing success payloads defer judgment.
+  Only an explicit item-not-found result is absence. Verification does not count an
+  unreadable credential as a wrong guess or mint a salt over it. A malformed hash or salt
+  remains a recovery case, while a sealed component prevents classification entirely.
+  Local PIN recovery does not itself grant permission to access cloud history.
   Debug builds expose a recovery preview inside authenticated Settings for cancellation
   checks. It uses the same device-authentication view, but success only updates the preview's
   message: it cannot reset the PIN, repair the setup flag, or unlock another screen. The
@@ -388,15 +380,13 @@ Two consequences matter for the threat model:
   detected only out-of-scope attacks while staying silent on the in-scope one — at the cost
   of false "tampering detected" warnings, which teach the owner to distrust the log and so
   damage the very thing it protects.
-- **Facts never mutate; changes only accumulate.** The core facts of an event —
+- **Retained first-hand facts and annotations.** The core facts of an event —
   `id`, `startDate`, `motionTrace`, `audioTrace` — are
-  `let`: fixed at capture time and unchangeable afterwards. Four fields *do* mutate, and
-  the distinction that matters is that every one of them only ever **accumulates**, never
-  erases: `triggeredSensors` (flood coalescing folds later sensors into the open event),
+  `let` properties in the event value. Other fields change during capture, coalescing,
+  attribution and synchronization, including: `triggeredSensors` (flood coalescing folds later sensors into the open event),
   `endDate` and `sustainedCount` (how long the handling went on), and `ownerAttributed`
   (set when a correct PIN follows, so an owner disarm is *labelled* rather than removed).
-  Nothing in the lifecycle deletes a recorded fact — restoring from iCloud follows the
-  same rule: a re-downloaded full-resolution capture *attaches* media to an event, never
+  Storage caps can evict entire records. For records that remain, a re-downloaded full-resolution capture *attaches* media to an event, never
   replaces or removes anything — and that survives later refreshes: when a newer cloud
   copy supersedes a mirror, it inherits the locally-downloaded media reference rather
   than erasing it (eighth review, M3). Store updates as a class preserve monotonic
@@ -404,8 +394,7 @@ Two consequences matter for the threat model:
   stale in-flight copy (sixth review, F2 — ADR 0006).
 - **Two-shot exfiltration** *(Pro)* races a power-off: the instant a tamper is
   logged — for *every* capture mode, *before* the camera capture even starts — a tiny
-  metadata record ("the fact") is pushed at `.userInitiated` QoS so it lands
-  sub-second; the full-res media (and a thumbnail) follow. Every push attempt is
+  metadata record ("the fact") starts uploading at `.userInitiated` QoS; the full-res media (and a thumbnail) follow. Every push attempt is
   **deadline-bounded (20 s)**: a network path that *stalls* without failing — CloudKit's
   own resource timeout is measured in days — is cancelled and counted as a network-class
   failure, so a stall can neither wedge the per-event pipeline nor mute the
@@ -415,7 +404,7 @@ Two consequences matter for the threat model:
   tier** that on-disk write is the whole story, since the iCloud pushes are Pro-gated
   (see [Protection tiering](#protection-tiering-free-vs-pro)). A still takes ~1 s to shoot
   and write and a clip far longer, so pushing the fact first (not just for clips)
-  keeps the sub-second guarantee uniform. **Writes for one event are serialized** (ADR
+  gives metadata a head start in every capture mode, without a delivery guarantee. **Writes for one event are serialized** (ADR
   0003): each starts only after the previous write for that event has finished, so a
   stalled early write can never land after — and overwrite — a richer later one;
   different events' uploads stay concurrent.
@@ -424,7 +413,8 @@ Two consequences matter for the threat model:
   saved or fallback to the front camera. These are original-attempt reasons and remain after
   a later retry. The encrypted metadata carries them to compatible receiving versions; older
   versions ignore the extra field. A receiver that already holds a same-revision sparse record
-  can still miss later failure details under the existing mirror-merge limitation. This is
+  accepts newly present `captureFailure` on an equal revision; this is a specific
+  enrichment rule, not a general acceptance of every changed field. This is
   not a guarantee that either camera always succeeds.
 - **Bounded retry.** Because a single dropped push at trigger time can mean lost
   evidence — a stolen device never comes back to retry — each push retries transient
@@ -467,31 +457,36 @@ Two consequences matter for the threat model:
   A copy previously marked synced may no longer exist remotely; re-download is
   possible only while that cloud copy remains. A
   pending capture the byte cap must discard in a storage emergency is
-  **marked on its event** — it can never silently read as synced later. A launch-time
+  **marked on its event** so the loss is visible. A launch-time
   sweep also reclaims media files no event references (true leaks); it deletes nothing
   while a corrupt-log backup exists — after a corruption, an unreferenced file may be
   evidence whose metadata was lost — and never touches referenced or recent files.
 
 ### Detection reliability
 
-- Tripwires are one-shot (they latch on firing to avoid spamming) and are always
-  re-armed — after the trigger they fired, or by a half-second sweep as the backstop —
-  so nothing can leave a sensor latched and silently deaf. And a trip that lands
+- Tripwires latch on firing and are re-armed after the trigger or by a half-second
+  sweep. That addresses stale latches, not every cause of missing sensor data. And a trip that lands
   **while a capture is already running is folded into that event's record** rather
   than dropped: a grab-then-unplug lists both sensors even when the second step falls
   inside the 1–5 s capture window (34-review M1 — previously the one hole in
   "any enabled tripwire fires on its own").
-- **Camera deadlines do not bound the entire capture.** Warm-up has an independent
-  deadline. Photo and movie-finalization timeouts depend on the camera's serial queue;
-  a blocked queue can prevent them from running. Light and interruption queries can
-  also wait without an outer deadline, including inside an until-clear recording's
-  duration loop. The initial event is logged before capture, but capture completion
-  and the subsequent response can stall. Disarm remains independent; actual camera
-  shutdown may be unconfirmed. The pipeline's priority rule (ADR 0003) is that the trigger
-  response outranks everything; the blackout and flood-cadence grabs yield to it and
-  to each other, are stills by construction (a frame answers their purpose, and a
-  still cannot contend for the movie output), and repeated stop requests are guarded.
-  These overlap controls do not guarantee completion when the camera framework stalls.
+- The **capture caller has an independent whole-attempt deadline**, including light
+  and interruption queries and finalization. Expiry logs the failure, requests
+  shutdown, and quarantines the camera until its old worker and shutdown drain.
+  It does not prove a blocked Apple camera API stopped; a permanent stall may need
+  relaunch. Later incidents can still be logged, but new evidence capture is refused
+  while that camera is recovering. Late media retains its original event destination
+  and cannot be consumed by a replacement capture. See ADR 0038.
+- Clip lengths are measured from each returned movie, independently for each lens.
+  Saved partial or unverified files carry a per-camera explanation; unknown duration
+  stays unknown. A missing thumbnail or a delegate error alone does not discard bytes.
+  Unclaimed movie files stay in protected Application Support/PendingCameraEvidence,
+  outside temporary-file cleanup; termination before finalization still does not
+  guarantee playable footage or automatic attachment after relaunch. A separate pending
+  allowance of 1,200 files / 2 GB limits admission; unreadable or linked entries refuse new
+  recordings without deleting retained evidence. Both lenses share one reservation
+  snapshot, and each movie output receives its share as a maximum file size. The limit
+  is admission plus AVFoundation's stopping policy, not an exact disk reservation.
 - **No arming gap after go-live.** The sensors start watching the moment calibration
   finishes — the brief "calibration complete" review the owner sees is not an unprotected
   window. A tamper during it fires normally (and drops the review straight to
@@ -499,7 +494,8 @@ Two consequences matter for the threat model:
   precisely (eighth review, L6): the ~3 s **calibration itself** — inside the owner's own
   set-down window, right after the deliberate grace period — is when baselines are
   learned, so power/proximity/touch adopt the settled state rather than tripping on it;
-  watching begins at go-live, not at the ARM tap.
+  watching begins at go-live, not at the ARM tap. This also applies to automatic
+  recovery countdowns. Actions wholly inside these windows can be missed.
 - **Detection keeps running through PIN entry — bar one sensor — and suppression needs
   *active* entry.** Revealing the disarm pad pauses exactly one tripwire, proximity, because a
   covered proximity sensor blanks the display — hiding the pad the owner is typing on; motion,
@@ -546,21 +542,25 @@ Two consequences matter for the threat model:
   scene being recorded must not judge itself), so under continuous tampering the other
   tripwires carry detection; vision's win here is the quiet stretches and the warm restart. (Siren is
   **not** the default response — Alert, a silent on-screen warning, is; Siren is opt-in.)
-- **An audio interruption can't silence a running siren.** Under **Guided Access — the
-  recommended armed config — incoming calls go straight to voicemail** (verified on device):
-  no ring, no audio interruption, no disturbance, so a call can neither silence the siren nor
-  suspend monitoring. This defense matters for the two cases GA doesn't cover: running
-  *without* GA (supported but not recommended), and non-call interruptions that can fire even
-  under GA (a Clock alarm, another app's audio). In all of those, iOS posts an audio
-  *interruption* that stops our player — so without handling it, a single incoming call, even
-  an accidental spam call, would permanently mute a sounding alarm with no PIN and no physical
-  access. Malinois observes `AVAudioSession.interruptionNotification` and, when the
+- **The siren attempts to resume after an audio interruption.** Guided Access and
+  iOS behavior vary: owner checks have seen both diverted calls and a call banner,
+  and Siri has appeared without interrupting Malinois. These observations do not
+  establish that calls or Siri can never interrupt audio. When iOS interrupts playback,
+  the player can stop for the duration of that interruption. Malinois observes `AVAudioSession.interruptionNotification` and, when the
   interruption ends, restarts the alarm if it should still be sounding — **at full volume**,
   never re-granting the ramp's quiet window (so a stream of interruptions can't keep it quiet),
   and independent of the system's `.shouldResume` hint. A siren the owner disarmed meanwhile
   stays silent. (Without GA, an *answered* call backgrounds the app and iOS suspends monitoring
   for the call's duration — the documented foreground limitation, distinct from this. Under GA
-  the call never reaches that point.)
+  behavior should be checked on the target iOS/device rather than assumed.)
+
+Sensor thresholds and calibration reduce nuisance alarms; they also bound detection.
+Small or slow movement can stay below a threshold. Vision uses sampled pixel changes,
+not person recognition, and can miss low-contrast or small scene changes. Its capture
+suppression and re-anchoring can absorb a changed scene. On Auto battery operation,
+the cold camera means Vision has no continuous frames; unplugging can change that
+coverage mid-watch. Watchdog restarts do not establish complete sensor-health reporting.
+These are limits to evaluate, not promises that environmental bypasses are impossible.
 
 ### Environmental attacks (the trigger *pattern* is a signal)
 
@@ -579,11 +579,13 @@ where the tell is the *pattern* of triggers, not any single one:
   can never be misread as synthetic noise (F3). Repeats **coalesce** into one "sustained
   activity" counter event instead of hundreds, and the app **goes loud** (abandons Stealth with an on-screen warning; the siren joins only in Siren mode — suspected jamming is the one escalation that always sirens). Crucially, coalescing suppresses **log spam and upload volume, not
   evidence**: capture continues on a bounded cadence (a photo every ~20 s) so a real
-  tamper that merely *looks* like a flood is never left un-photographed. A
+  tamper that looks like a flood still gets capture attempts, subject to camera
+  availability and the cadence limit. A
   **byte-aware retention cap** keeps synthetic clips from filling storage (their log
   entries are kept), and **both** the media (byte) cap **and** the event (count) cap
-  drop **coalesced flood records before genuine ones** — so synthetic noise can't
-  evict a real event's photo or push real evidence past the retention boundary. The
+  prefer dropping coalesced flood records before ordinary incidents. This reduces
+  displacement; it does not prevent sustained below-threshold activity or ordinary
+  storage pressure from eventually evicting old evidence, including pending records. The
   coalesced counter's *disk write* is itself throttled (~2 s cadence, final count flushed on
   clear) so a flood can't be converted into a whole-log-rewrite storm (F2).
 - **Audio baseline poisoning** (a slow noise ramp to walk the trip bar up and mask
@@ -611,7 +613,7 @@ where the tell is the *pattern* of triggers, not any single one:
 
 ### Signal jamming / exfiltration blackout
 
-An adversary can't stop you from *noticing their silence*. Malinois can't force
+Malinois cannot guarantee detection of every loss of service. It cannot force
 bits out of a jammed radio, and iOS exposes no signal-strength API — so it detects
 the **symptom** (total loss of every network path), never the cause. The
 discriminators below make that meaningful for a stationary anti-theft deployment
@@ -641,12 +643,13 @@ rather than jumpy:
   The alarm is silenced only by the PIN, or
   stands down if connectivity returns. This inverts the attack: the jammer meant to
   suppress your upload and instead triggered the loudest possible alarm. The
-  escalation **re-arms after each stand-down**, so an attacker can't burn it with a
-  brief jam-and-release and then jam for real in silence.
+  escalation re-arms after stand-down. Any online transition clears the current
+  offline interval and stands down this alarm. Repeated short outages can therefore
+  evade the continuous-loss debounce; a reported path also does not prove CloudKit
+  is reachable. Upload-failure escalation is a separate signal.
 - **Retry on reconnect.** The instant a path returns, pending evidence is
-  re-pushed (metadata-first), so it escapes the moment the jam lifts or the device
-  is carried back into signal. Events captured during a blackout are flagged
-  (`capturedOffline`) so the record shows the adversary's sophistication. The
+  retried (metadata-first); reconnection does not confirm delivery. Events captured during a blackout are flagged
+  (`capturedOffline`) to record observed connectivity, not an attacker or motive. The
   cross-device push subscriptions (tamper, and since 1.3 disarm) are also re-established on
   reconnect — if either failed to set up at arm (the network was briefly down then), the owner's other devices
   would otherwise get no alert for the whole session. Caveat: subscription setup is a
@@ -665,6 +668,33 @@ silence." Off-device escape remains the only real durability — local copies do
 survive a device wipe.
 
 ### Cloud (CloudKit)
+
+**Installation enrollment.** Cloud evidence access and account-wide controls require
+an installation-bound grant for the resolved CloudKit account. The owner explicitly
+verifies with iOS device-owner authentication (Face ID, Touch ID, or device passcode).
+Existing cloud users verify once after migration; a new installation cannot obtain a
+grant from Pro membership, a newly selected app PIN, or a surviving Keychain item.
+Until verified, local monitoring remains available and cloud operations are paused.
+The grant file is atomic, protected, and excluded from backups. Read/write errors,
+cancellation, unavailable authentication, and unknown account identity fail closed.
+
+Cloud service entry points, queued writes, retry pages, downloads, subscription changes,
+and cleanup carry account/generation checks. Account changes invalidate pending work;
+stale results cannot be applied to local evidence. Already accepted server operations
+cannot be recalled. First-hand evidence is bound at capture to an enrolled account;
+migration retains only known previous account bindings, and unknown history remains
+local rather than being silently adopted by a different account. The Event Log separates
+held evidence from retryable uploads and explains the hold without exposing account IDs.
+This presentation is not authorization: every upload still requires a fresh account lease.
+An explicit alerts-OFF
+requires fresh device authentication; a cancellation changes neither the saved setting
+nor subscriptions. CloudKit failures can leave a partial server change, which is reported.
+
+This policy trusts this device's owner credentials. It does not authenticate the producer
+of a cloud record, sign evidence, revoke older clients on Apple's servers, prevent app
+deletion, or prevent deletion through Apple's iCloud controls. Ordinary disarm still
+requires the Malinois PIN. See ADR 0039 for migration and notification-extension boundaries.
+
 
 > Cloud backup and the cross-device push subscription are **Pro** features; a free or
 > lapsed-trial device never writes to CloudKit and keeps evidence local-only.
@@ -691,14 +721,14 @@ survive a device wipe.
 - **Full-media retention is the owner's policy, floored for safety (1.2).** A Settings
   picker keeps full-resolution cloud media forever, prunes it manually, or auto-deletes
   it past 1–12 months (default 12). Only photo records (and old heartbeat trails, below) are
-  ever deleted — facts, thumbnails and audit records are permanent — and no EVENT newer than **30 days** can
+  deleted by this cleanup — it retains facts, thumbnails and audit records — and no EVENT newer than **30 days** can
   have media deleted by Malinois cleanup: the floor lives inside the purge entry point.
   Both the selected month policy and the floor use a lower bound from CloudKit system
   creation dates on existing audit/fact records. Device clock changes cannot advance
   that cutoff. An old observation delays cleanup; no usable observation means no deletion.
   This is not a fresh-server-time claim and does not constrain external iCloud deletion. (Precisely: eligibility keys on the event's age —
   a photo record that finished uploading late for an old event follows its event's age,
-  which is the anti-tamper direction; eighth review, L2.) A purge whose walk couldn't
+  which avoids treating upload delay as a new capture; eighth review, L2.) A purge whose walk couldn't
   read every candidate record reports failure rather than "Deleted" — under-deletion
   stays the safe direction, but observably so (ninth review, R3-3). The auto modes also
   delete the per-beat heartbeat records of this phone's past watches, keeping each watch's
@@ -718,18 +748,13 @@ survive a device wipe.
   1.3 (40) the permission itself is asked in context on the receiving side — Home's "Allow
   notifications" line (shown only once another device's evidence has arrived, hideable, mirrored
   under Settings → iCloud), or the Cross-device alerts switch — never at launch.
-- **The receiving iPhone words the alert itself (1.4, ADR 0017).** The push carries only the
-  subscription's fixed text, because every field of the record is encrypted. Malinois's
-  notification service extension on the receiving iPhone fetches the record the push names
-  from the owner's private database, which CloudKit decrypts for the signed-in owner, and
-  rewords the alert there: the device, the tripwires, a banner without sound for a trip only
-  the camera saw, Time Sensitive for every other tamper alert. Nothing new leaves either
-  device, and the words never pass through the push service. If the fetch fails or takes too
-  long, the alert shows as sent. The device's name is the only text an alert takes from the
-  record; the record is cloud input, so the name is shown as one line of at most 64 characters,
-  without control or direction-changing characters. The price of a useful alert: the receiving iPhone's lock
-  screen now shows which tripwire fired on which device, to anyone who can see it, unless iOS's
-  Show Previews setting hides previews until the phone is unlocked.
+- **Generic alerts preserve the enrollment boundary (ADR 0039).** The notification service
+  extension immediately delivers the subscription's fixed content and never reads private
+  CloudKit records. Device/sensor details and Vision-only quieting from ADR 0017 are suspended
+  from 1.5.1 on. Generic tamper alerts retain their configured sound and
+  interruption level; routine arm records remain silent. This avoids an unenrolled background
+  reader and introduces no shared authorization storage or new signing capability. Older
+  installed builds retain their previous alert behavior.
 - **Silence is on the record (1.4, the heartbeat; ADR 0020).** While a watch is live on Pro and
   online, the phone sends a small encrypted record to the owner's private iCloud every five
   minutes, one created once for each beat and one per watch that is saved over. Another of the
@@ -791,16 +816,15 @@ survive a device wipe.
 - Camera can't run in the true background on iOS, so covert mode keeps the app
   foregrounded with the screen forced black (brightness 0 + overlay + idle timer
   disabled). **Guided Access** (owner-enabled) locks the device to Malinois and
-  blocks app-switching and the soft power-off. It also **routes incoming calls to
-  voicemail** (verified on device) and disables Siri, so neither can background the app
-  or interrupt monitoring — which is a large part of why GA is the recommended armed
-  configuration rather than merely a nicety. Its Options should also disable the Side Button
+  restricts app-switching and ordinary power-off in the tested configuration. Call
+  and Siri behavior has varied across owner tests; neither is an unconditional
+  no-interruption guarantee. Guided Access remains the recommended configuration. Its Options should also disable the Side Button
   (Sleep/Wake Button on older phones): with it on (the default), one press locks the screen and suspends the watch until
   the owner unlocks — recorded as a lock, and the tripwires compare the live state with
   their baselines on resume, but nothing is watched meanwhile (README, *Enable it*). With it off, a
   press only shows the iOS banner that Guided Access is on and how to exit; the tripwires keep
   running, and ending Guided Access still needs its passcode.
-- **Disarmed under Guided Access, the screen stays on for ten minutes** (since 1.4; item 92,
+- **Disarmed under Guided Access, the screen stays on for ten minutes** (since 1.4,
   ADR 0021). iOS can wake a phone that slept under Guided Access into a stuck notification
   screen, so after Guided Access starts, a disarm or a cancelled countdown, or the app's return
   to the screen, Malinois turns auto-lock off for ten minutes. For those minutes a disarmed
@@ -869,7 +893,7 @@ These are out of scope by design — Malinois does not claim to defend against t
 
 - **Hardware force-restart.** Holding the buttons to force a restart cannot be
   blocked by any app or by Guided Access. Mitigation, not prevention: the
-  sub-second first upload is a race Malinois is built to win, not a guarantee.
+  early metadata upload is a race, not a guarantee of delivery before shutdown.
 - **Induced shutdowns that trip no sensor.** Thermal shutdown is the one "power-off" an
   attacker can cause without touching the device: heat it until iOS kills itself — slow,
   conspicuous, and nothing in the public APIs lets an app veto it. In the same family: an
@@ -884,12 +908,12 @@ These are out of scope by design — Malinois does not claim to defend against t
   the restart: the app cannot read its own log before the first unlock. A phone can also be
   heated until iOS shuts it down: while a watch is live, iOS's thermal state reaching
   "serious", and then "critical", each writes a record, so the log shows the heat before the
-  silence (on Pro the cloud copy lands while the phone still runs), and every capture's record
+  silence when iOS supplies the notification in time (Pro attempts a cloud upload), and every capture's record
   carries the thermal state it was made in. It never sounds the siren: ambient heat looks like
   induced heat (ADR 0001). Related, found on device (iOS 26.6): triggering the
   five-press Emergency SOS flow under Guided Access froze the phone until a force-restart —
-  for evidence purposes it behaves like the force-restart race, because five button presses
-  are handling, and handling trips the sensors first.
+  it can end monitoring like a force-restart. Handling may trip a sensor first, but
+  neither detection nor upload before the freeze is assured.
 - **A compromised / jailbroken device.** With code execution, an attacker can read
   the Keychain-protected hash, the on-disk evidence, and app memory. Data Protection
   and PBKDF2 raise the cost but don't stop a rooted attacker.
@@ -914,20 +938,22 @@ These are out of scope by design — Malinois does not claim to defend against t
   are enforced inside each deleting call, not the UI; unavailable time defers deletion). So a PIN-holder cannot use "free
   up iCloud space" to destroy the evidence of what they just did. What the PIN defeats is
   narrower — it stops *future* monitoring and silences the response; the GA passcode
-  unlocks the single-app lock (and exiting it is itself captured, with the alert to the
-  owner's other devices on its way before any Settings deletion could begin). Detection
+  unlocks the single-app restriction. Recorded interruptions and notification
+  attempts depend on the app running or being reopened; they cannot block deletion. Detection
   continues during disarm, and Touch cannot be switched off (ADR 0015), so a PIN-holder's
-  handling — the hold that reveals the pad — is always recorded and pushed (flagged
-  owner-attributed, not redacted), and every wrong PIN on the armed pad is a record of its
-  own (ADR 0014); both are photographed unless the camera was switched off in Settings
+  handling — the hold that reveals the pad — normally creates a record and starts
+  a Pro upload attempt (flagged owner-attributed, not redacted), and every wrong PIN on the armed pad is a record of its
+  own (ADR 0014); both attempt photography unless the camera was switched off in Settings
   beforehand, which needs the PIN and since 1.4 leaves a record of its own (ADR 0019). And every arm and
-  disarm is now written to the log as an explicit, non-deletable **"Monitoring
+  disarm is written to the log as an explicit **"Monitoring
   armed"/"disarmed"** record, so a PIN-holder who turns protection off leaves proof of
-  exactly *when* — the owner doesn't have to infer it from a re-armed session's start time.
+  when the app recorded it, provided that record survives retention and storage or
+  is successfully uploaded. These timestamps are not proof of an unaltered device clock.
   The one residual gap is *avoidance*, not destruction: a PIN-holder who disarms while
   triggering no sensor can then snoop with monitoring off — but even then the disarm is
-  logged, the re-armed session shows a **later start time than the true arm**, and a device
-  left disarmed is itself a tell, so the disarm can't be cleanly hidden.
+  normally logged and the re-armed session has a different start time. If the phone
+  stays offline and the app is deleted before uploading, the local disarm record is
+  lost; a previous cloud arm/heartbeat may be the only remaining indication.
 - **No network / jamming at trigger time.** Evidence is kept locally and re-pushed
   the instant connectivity returns, and a suspected blackout triggers the go-loud
   response (see *Signal jamming* above) — but if the device is destroyed before the
@@ -938,10 +964,10 @@ These are out of scope by design — Malinois does not claim to defend against t
 - **A hard crash while covert.** Covert mode forces the *system* screen brightness
   to 0; the app restores it on disarm and on backgrounding, but a crash or an
   out-of-memory kill gives no chance to run that restore, so the device can be left
-  dark until the owner raises brightness (or auto-brightness intervenes). Evidence
-  is unaffected — it's already on disk and, for a real tamper, in iCloud. On relaunch
-  the app also **re-arms automatically** (unless it's crash-looping), so a crash
-  doesn't silently leave the device unprotected.
+  dark until the owner raises brightness (or auto-brightness intervenes). Already
+  committed evidence can survive, but a crash can interrupt capture, persistence or
+  upload. Relaunch attempts automatic re-arm with its guards and countdown; there
+  is no monitoring while the app is stopped or during the new countdown/calibration.
 - **Siren volume.** iOS gives no app a way to override the hardware volume buttons,
   so a thief can turn the siren down. The `.playback` category defeats the silent
   switch, and the on-screen warning + already-escaped evidence are the deterrents
@@ -1032,9 +1058,9 @@ These are out of scope by design — Malinois does not claim to defend against t
   is skipped without voiding the rest. A completed write survives the *process*, but it sits
   in OS caches until the kernel flushes — an undocumented interval that can be tens of
   seconds — so **every append is followed by a full disk sync before anything else
-  proceeds** (about 4 ms on device): a forced power-off can no longer lose a
-  recorded line at all — and a line is retired only after the full log that supersedes it
-  has itself been synced, so the guarantee does not leak through the retirement. The sync
+  proceeds** when storage succeeds. A line is retired only after the replacement
+  full log has synced. This reduces loss windows; it does not guarantee survival
+  of storage failure or abrupt power loss. The sync
   costs are logged so they can be re-read on a device (ADR 0005, as amended).
 - **Completed first-hand media has an attachment recovery record (ADR 0037).** The
   event must already exist. A protected, synced intent identifies its event, start time,
@@ -1055,7 +1081,8 @@ These are out of scope by design — Malinois does not claim to defend against t
   foreground, another app took the camera or the microphone, iOS shed the camera under
   pressure), the file could not be written, or the owner disarmed while the capture was in
   flight — and the event's detail view reads it out.
-  An interruption-class failure gets **one bounded retry**: when the interruption ends — or
+  An interruption-class failure, or a shot refused because an earlier capture still
+  owns the camera, gets **one bounded retry**: when the interruption ends — or
   at once, if it ended while the shot was still failing — if the session is still armed, the
   event is recent and still without media, and no other capture owns the camera, a single
   still is taken and attached, labelled as the second attempt; the slot is cleared before

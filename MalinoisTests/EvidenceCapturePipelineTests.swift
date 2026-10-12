@@ -8,6 +8,7 @@
 //
 
 import XCTest
+import AVFoundation
 @testable import Malinois
 
 /// Records what a capture asked of the session, and answers with knobs.
@@ -30,10 +31,23 @@ final class FakeCaptureHost: CapturePipelineHost {
     func suppressVision(for seconds: TimeInterval) { visionSuppressions.append(seconds) }
     func syncVisionTap() { visionSyncs += 1 }
     func report(cameraNotice: String?) { notices.append(cameraNotice) }
+    func captureCameraBecameAvailable() {}
+    func clearCaptureNotice(matching notice: String) {
+        if notices.last == notice { notices.append(nil) }
+    }
 }
 
 @MainActor
 final class EvidenceCapturePipelineTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        TestIsolation.setUp(folderPrefix: "CameraDeadlineTests")
+    }
+    override func tearDown() {
+        TestIsolation.tearDownFolderAndFlags()
+        super.tearDown()
+    }
 
     private static let fastTiming: EngineTiming = {
         var t = EngineTiming.production
@@ -60,6 +74,394 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let pipeline = EvidenceCapturePipeline(camera: camera, timing: Self.fastTiming)
         pipeline.host = host
         return Rig(pipeline: pipeline, camera: camera, host: host)
+    }
+
+    // MARK: - Whole-attempt deadlines and measured movies
+
+    /// A held post-warmup query cannot wedge the caller. The fake does not simulate AVFoundation.
+    func testLightProbeCannotOutliveAttemptDeadline() async {
+        await characterizeHeldProbe(mode: .photo, illumination: .auto)
+    }
+
+    /// A blocked interruption query cannot defeat the whole-attempt ceiling.
+    func testInterruptionProbeCannotOutliveAttemptDeadline() async {
+        await characterizeHeldProbe(mode: .untilClear, illumination: .off)
+    }
+
+    private func characterizeHeldProbe(mode: CaptureMode, illumination: IlluminationMode) async {
+        let gate = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        if mode == .photo {
+            camera.lowLightProbeForTesting = { await gate.wait(); return false }
+        } else {
+            camera.interruptionProbeForTesting = { await gate.wait(); return true }
+        }
+        var timing = Self.fastTiming
+        timing.warmUpDeadline = 0.02
+        timing.untilClearIdle = 0.03
+        timing.untilClearMax = 0.05
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        var finished = false
+        let capture = Task { @MainActor in
+            let result = await pipeline.capture(from: .front, mode: mode, illumination: illumination)
+            finished = true
+            return result
+        }
+        // Always releases the only injected suspension, even if an assertion fails.
+        // Explicit release below is the normal path; await both tasks before leaving.
+        let safetyRelease = Task {
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            await gate.release()
+        }
+        let entryDeadline = Date().addingTimeInterval(1)
+        while !(await gate.entered), Date() < entryDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let entered = await gate.entered
+        try? await Task.sleep(for: .milliseconds(150))
+        let finishedWhileHeld = finished
+        let prematurelyStartedStills = camera.stills.count
+        let prematurelyEndedClips = camera.clipEnds
+        await gate.release()
+        let result = await capture.value
+        safetyRelease.cancel()
+        await safetyRelease.value
+        defer { if case .clip(let url) = result.capture?.source { try? FileManager.default.removeItem(at: url) } }
+
+        XCTAssertTrue(entered, "must reach the post-warmup dependency, not merely delay task scheduling")
+        XCTAssertTrue(finishedWhileHeld, "whole-attempt deadline must return while the camera dependency is held")
+        XCTAssertEqual(prematurelyStartedStills, 0)
+        XCTAssertEqual(prematurelyEndedClips, 0)
+        XCTAssertNotNil(result.failure, "expiry must report failure without taking new evidence after the deadline")
+    }
+
+    /// Early disarm preserves the real short movie and labels its encoded duration.
+    func testEarlyDisarmLabelsActualMovieDuration() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureInvestigation-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let movie = folder.appendingPathComponent("short.mov")
+        try await EventTests.playableClip(at: movie, frames: 4)
+        let assetDuration = try await AVURLAsset(url: movie).load(.duration).seconds
+        XCTAssertEqual(assetDuration, 0.4, accuracy: 0.05, "fixture must really contain a short video")
+        let rig = makeRig { $0.finalizedClipForTesting = movie }
+        let disarm = Task { @MainActor in
+            let deadline = Date().addingTimeInterval(1)
+            while rig.camera.clips.isEmpty, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            let began = !rig.camera.clips.isEmpty
+            rig.host.captureSessionIsOver = true
+            rig.camera.shutDown() // models the engine's disarm; fake returns the finalized partial
+            return began
+        }
+        let outcome = await rig.pipeline.capture(from: .front, mode: .clip3, illumination: .off)
+        let disarmedDuringClip = await disarm.value
+        let capture = try XCTUnwrap(outcome.capture)
+        XCTAssertTrue(disarmedDuringClip)
+        XCTAssertEqual(capture.camera, .front)
+        XCTAssertNil(outcome.failure, "a surviving file is currently represented as a successful capture")
+        XCTAssertEqual(try XCTUnwrap(capture.duration), assetDuration, accuracy: 0.05, "label must measure this movie, not time spent waiting")
+        guard case .clip(let returnedURL) = capture.source else { return XCTFail("expected preserved movie") }
+        XCTAssertEqual(returnedURL, movie, "partial evidence must survive; do not fix labeling by discarding it")
+        let retainedDuration = try await AVURLAsset(url: returnedURL).load(.duration).seconds
+        XCTAssertEqual(retainedDuration, assetDuration, accuracy: 0.001)
+        XCTAssertEqual(rig.host.audioResumes, 1)
+    }
+
+    func testCancelledQueuedWorkerCannotTouchReplacementWatch() async {
+        let gate = InvestigationCaptureGate()
+        let rig = makeRig()
+        rig.host.audioHandoffNeeded = true
+        rig.pipeline.beforeAttemptWorkForTesting = { await gate.wait() }
+        let task = Task { await rig.pipeline.capture(from: .front, mode: .clip3, illumination: .off) }
+        let end = Date().addingTimeInterval(1)
+        while !(await gate.entered), Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        rig.pipeline.cancelUntilClear()
+        rig.host.captureSessionIsOver = false
+        await gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.failure, .disarmed)
+        XCTAssertEqual(rig.host.audioPauses, 0, "the replacement Sound recorder must not be borrowed")
+        XCTAssertEqual(rig.host.visionSyncs, 0)
+        XCTAssertTrue(rig.host.visionSuppressions.isEmpty)
+        XCTAssertTrue(rig.camera.warmUps.isEmpty)
+        XCTAssertEqual(rig.camera.attemptBegins, 0)
+    }
+
+    func testBothPhotoPreservesFrontWhileRearDelegateIsStalled() async throws {
+        try await assertIndependentPhoto(heldLens: .rear)
+    }
+
+    func testBothPhotoPreservesRearWhileFrontDelegateIsStalled() async throws {
+        try await assertIndependentPhoto(heldLens: .front)
+    }
+
+    private func assertIndependentPhoto(heldLens: CameraChoice) async throws {
+        let gate = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        camera.supportsMultiCam = true
+        camera.heldBothPhotoLensForTesting = heldLens
+        camera.bothPhotoProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
+        store.add(event)
+        let result = await pipeline.captureBoth(mode: .photo, illumination: .off,
+                                                preservation: .init(event: event, store: store))
+        XCTAssertEqual(result.failure, .captureTimedOut)
+        try? await Task.sleep(for: .milliseconds(150))
+        let current = try XCTUnwrap(store.events.first { $0.id == event.id })
+        XCTAssertNotNil(heldLens == .rear ? current.mediaFilename : current.secondaryMediaFilename,
+                        "the finished lens must survive while its sibling callback remains blocked")
+        XCTAssertNil(heldLens == .rear ? current.secondaryMediaFilename : current.mediaFilename)
+        await gate.release()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    func testStillCompletedBeforeBlockedShutdownSurvivesDeadline() async throws {
+        let gate = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        camera.quarantineFinishProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        camera.onStillCapturedForTesting = { pipeline.cancelUntilClear() }
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
+        store.add(event)
+        let result = await pipeline.capture(from: .front, mode: .photo, illumination: .off,
+                                            preservation: .init(event: event, store: store))
+        XCTAssertEqual(result.failure, .disarmed)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(store.events.first { $0.id == event.id }?.mediaFilename,
+                        "the completed still must be retained even when shutdown confirmation stalls")
+        await gate.release()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    func testLateFinalizationPreservesOriginalEventAndCannotTouchRearmedHost() async throws {
+        let gate = InvestigationCaptureGate()
+        let movie = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        try await EventTests.playableClip(at: movie, frames: 4)
+        defer { try? FileManager.default.removeItem(at: movie) }
+        let camera = FakeCamera()
+        camera.finalizedClipForTesting = movie
+        camera.endClipProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.untilClearIdle = 0.02
+        timing.untilClearMax = 0.04
+        timing.captureFinalizationDeadline = 0.04
+        let host = FakeCaptureHost()
+        host.audioHandoffNeeded = true
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .synced)
+        store.add(event)
+        let other = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch])
+        store.add(other)
+        let outcome = await pipeline.capture(from: .rear, mode: .untilClear, illumination: .off,
+                                             preservation: .init(event: event, store: store))
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        let entered = await gate.entered
+        XCTAssertTrue(entered)
+        pipeline.cancelUntilClear()
+        host.captureSessionIsOver = false // a replacement watch starts before the old callback
+        XCTAssertEqual(host.audioResumes, 0)
+        XCTAssertTrue(host.notices.compactMap { $0 }.contains { $0.contains("Sound detection stays paused") })
+        let resumes = host.audioResumes
+        let rearms = host.rearms
+        let denied = await pipeline.capture(from: .front, mode: .photo, illumination: .on)
+        XCTAssertEqual(denied.failure, .cameraBusy)
+        camera.emitFinalizedClipForTesting(movie, camera: .rear)
+        let end = Date().addingTimeInterval(3)
+        while store.events.first(where: { $0.id == event.id })?.mediaFilename == nil, Date() < end {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let recovered = try XCTUnwrap(store.events.first(where: { $0.id == event.id }))
+        XCTAssertNotNil(recovered.mediaFilename)
+        XCTAssertEqual(try XCTUnwrap(recovered.primaryDuration), 0.4, accuracy: 0.05)
+        XCTAssertEqual(recovered.primaryCamera, "rear")
+        XCTAssertNil(recovered.secondaryMediaFilename)
+        XCTAssertEqual(recovered.captureFailuresByCamera?["rear"], CaptureFailureReason.captureTimedOut.rawValue)
+        XCTAssertEqual(recovered.cloudSyncState, .pending)
+        XCTAssertNil(store.events.first(where: { $0.id == other.id })?.mediaFilename)
+        XCTAssertEqual(host.audioResumes, resumes, "late worker cannot resume replacement session audio")
+        XCTAssertEqual(host.rearms, rearms, "late worker cannot rearm replacement tripwires")
+        await gate.release()
+        try? await Task.sleep(for: .milliseconds(30))
+    }
+
+    func testStalledStillReturnsAndKeepsNewCaptureQuarantinedUntilCallback() async {
+        let camera = FakeCamera()
+        camera.holdStills = true
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let outcome = await pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        let busy = await pipeline.capture(from: .rear, mode: .photo, illumination: .off)
+        XCTAssertEqual(busy.failure, .cameraBusy)
+        XCTAssertEqual(camera.stills.count, 1)
+        camera.releaseStills()
+        try? await Task.sleep(for: .milliseconds(30))
+        let next = await pipeline.capture(from: .rear, mode: .photo, illumination: .off)
+        XCTAssertNotNil(next.capture)
+        XCTAssertEqual(camera.stills.count, 2)
+    }
+
+    func testDisarmRearmDuringLightQueryDoesNotStartCaptureOrResumeNewAudio() async {
+        let gate = InvestigationCaptureGate()
+        let rig = makeRig { $0.lowLightProbeForTesting = { await gate.wait(); return true } }
+        let task = Task { await rig.pipeline.capture(from: .front, mode: .clip3, illumination: .auto) }
+        let end = Date().addingTimeInterval(1)
+        while !(await gate.entered), Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        rig.pipeline.cancelUntilClear()
+        rig.host.captureSessionIsOver = false
+        let resumes = rig.host.audioResumes
+        await gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.failure, .disarmed)
+        XCTAssertTrue(rig.camera.clips.isEmpty)
+        XCTAssertTrue(rig.host.flashStates.isEmpty)
+        XCTAssertEqual(rig.host.audioResumes, resumes)
+    }
+
+    func testDeadlineStillRunsWhileDisarmShutdownConfirmationIsBlocked() async {
+        let gate = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        camera.quarantineFinishProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        camera.onWarmUpForTesting = { pipeline.cancelUntilClear() }
+        let safety = Task { try? await Task.sleep(for: .seconds(2)); await gate.release() }
+        let start = ContinuousClock.now
+        let outcome = await pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        XCTAssertLessThan(start.duration(to: .now), .seconds(1), "shutdown confirmation is part of the bounded caller")
+        XCTAssertEqual(outcome.failure, .disarmed)
+        await gate.release()
+        safety.cancel()
+        await safety.value
+    }
+
+    func testSoundDoesNotResumeUntilCameraShutdownIsConfirmed() async {
+        let finalization = InvestigationCaptureGate()
+        let shutdown = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        camera.endClipProbeForTesting = { await finalization.wait() }
+        camera.quarantineFinishProbeForTesting = { await shutdown.wait() }
+        var timing = Self.fastTiming
+        timing.untilClearIdle = 0.02
+        timing.untilClearMax = 0.04
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        host.audioHandoffNeeded = true
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let outcome = await pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        XCTAssertEqual(host.audioResumes, 0)
+        await finalization.release()
+        let end = Date().addingTimeInterval(2)
+        while !(await shutdown.entered), Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        let entered = await shutdown.entered
+        XCTAssertTrue(entered)
+        XCTAssertEqual(host.audioResumes, 0)
+        await shutdown.release()
+        let resumeEnd = Date().addingTimeInterval(1)
+        while host.audioResumes == 0, Date() < resumeEnd { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(host.audioResumes, 1)
+    }
+
+    func testBothMoviesMeasureEachLensIndependently() async throws {
+        let front = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        let rear = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        defer { try? FileManager.default.removeItem(at: front); try? FileManager.default.removeItem(at: rear) }
+        try await EventTests.playableClip(at: front, frames: 4)
+        try await EventTests.playableClip(at: rear, frames: 7)
+        let rig = makeRig { $0.finalizedBothForTesting = (front, rear) }
+        let result = await rig.pipeline.captureBoth(mode: .untilClear, illumination: .off)
+        XCTAssertEqual(try XCTUnwrap(result.front?.duration), 0.4, accuracy: 0.05)
+        XCTAssertEqual(try XCTUnwrap(result.rear?.duration), 0.7, accuracy: 0.05)
+        XCTAssertNil(result.front?.issue)
+        XCTAssertNil(result.rear?.issue)
+    }
+
+    func testBothKeepsFinishedFrontEvenWhileRearDelegateIsStillHeld() async throws {
+        let gate = InvestigationCaptureGate()
+        let movie = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        defer { try? FileManager.default.removeItem(at: movie) }
+        try await EventTests.playableClip(at: movie, frames: 4)
+        let camera = FakeCamera()
+        camera.finalizedBothForTesting = (movie, nil)
+        camera.rearFinalizeProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.untilClearIdle = 0.02
+        timing.untilClearMax = 0.05
+        timing.captureFinalizationDeadline = 0.1
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
+        store.add(event)
+        let outcome = await pipeline.captureBoth(mode: .untilClear, illumination: .off,
+                                                 preservation: .init(event: event, store: store))
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        let deadline = Date().addingTimeInterval(2)
+        while store.events.first?.mediaFilename == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(store.events.first?.mediaFilename, "finished lens must be attached before the other callback answers")
+        XCTAssertNil(store.events.first?.secondaryMediaFilename)
+        await gate.release()
+        try? await Task.sleep(for: .milliseconds(30))
+    }
+
+    func testValidMovieWithIncompleteDelegateOutcomeIsKeptAsPartial() async throws {
+        let movie = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        defer { try? FileManager.default.removeItem(at: movie) }
+        try await EventTests.playableClip(at: movie, frames: 4)
+        let rig = makeRig { $0.finalizedClipForTesting = movie; $0.recordingSuccessForTesting = false }
+        let result = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        XCTAssertEqual(result.capture?.issue, .clipPartial)
+        XCTAssertEqual(try XCTUnwrap(result.capture?.duration), 0.4, accuracy: 0.05)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movie.path))
+    }
+
+    func testOpaqueFileIsPreservedWithoutInventingDuration() async throws {
+        let rig = makeRig()
+        let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
+        let capture = try XCTUnwrap(outcome.capture)
+        XCTAssertNil(capture.duration)
+        XCTAssertEqual(capture.issue, .clipUnverified)
+        guard case .clip(let url) = capture.source else { return XCTFail("expected preserved file") }
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(try Data(contentsOf: url), Data("fake-clip-payload".utf8))
+    }
+
+    func testDelegateSuccessFlagDoesNotDiscardUsableErrorOutput() {
+        XCTAssertTrue(CameraController.recordingSucceeded(error: nil))
+        XCTAssertTrue(CameraController.recordingSucceeded(error: NSError(domain: AVFoundationErrorDomain,
+            code: -11818, userInfo: [AVErrorRecordingSuccessfullyFinishedKey: true])))
+        XCTAssertFalse(CameraController.recordingSucceeded(error: NSError(domain: AVFoundationErrorDomain,
+            code: -11818, userInfo: [AVErrorRecordingSuccessfullyFinishedKey: false])))
+        XCTAssertFalse(CameraController.recordingSucceeded(error: NSError(domain: AVFoundationErrorDomain, code: -11818)))
     }
 
     // MARK: - Illumination
@@ -207,8 +609,9 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let outcome = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
         XCTAssertEqual(outcome.failure, .warmUpTimedOut)
         XCTAssertTrue(rig.camera.clips.isEmpty)
-        XCTAssertEqual(rig.host.audioResumes, 1)
+        XCTAssertEqual(rig.host.audioResumes, 0, "the microphone stays quarantined until shutdown confirms")
         try? await Task.sleep(nanoseconds: 550_000_000)
+        XCTAssertEqual(rig.host.audioResumes, 1)
         XCTAssertTrue(rig.camera.warmUps.isEmpty, "a late shutdown must not restart an abandoned capture")
     }
 
@@ -232,7 +635,7 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 550_000_000)
         XCTAssertTrue(rig.camera.warmUps.isEmpty)
         XCTAssertTrue(rig.camera.clips.isEmpty)
-        XCTAssertEqual(rig.host.audioResumes, 1, "host state guard prevents Sound resurrection after disarm")
+        XCTAssertEqual(rig.host.audioResumes, 0, "unconfirmed shutdown must not resume Sound, even after disarm")
     }
 
     // MARK: - Until clear
@@ -241,11 +644,12 @@ final class EvidenceCapturePipelineTests: XCTestCase {
     /// handed back, the tripwires were re-armed while it rolled, and the flag cleared.
     func testUntilClearEndsWhenTheSceneGoesQuiet() async throws {
         let rig = makeRig()
+        let started = Date()
         let captured = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
         let capture = try XCTUnwrap(captured.capture)
         XCTAssertEqual(capture.ext, "mov")
-        XCTAssertGreaterThanOrEqual(capture.duration, 0.15, "held at least the idle window")
-        XCTAssertLessThan(capture.duration, 0.6, "and not much longer — the scene was quiet")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.15, "held at least the idle window")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.6, "and not much longer — the scene was quiet")
         XCTAssertEqual(rig.camera.clips, [false])
         XCTAssertEqual(rig.camera.clipEnds, 1)
         XCTAssertEqual(rig.host.audioPauses, 1)
@@ -263,20 +667,22 @@ final class EvidenceCapturePipelineTests: XCTestCase {
                 rig.pipeline.noteActivity()
             }
         }
+        let started = Date()
         let captured = await rig.pipeline.capture(from: .rear, mode: .untilClear, illumination: .off)
-        let capture = try XCTUnwrap(captured.capture)
+        _ = try XCTUnwrap(captured.capture)
         feeder.cancel()
-        XCTAssertGreaterThanOrEqual(capture.duration, 0.9, "held to the ceiling")
-        XCTAssertLessThan(capture.duration, 1.6)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.9, "held to the ceiling")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.6)
     }
 
     /// An interrupted camera session (the app backgrounded) finalizes the clip at once,
     /// keeping the partial, instead of waiting out the ceiling.
     func testUntilClearFinalizesWhenTheCameraSessionIsInterrupted() async throws {
         let rig = makeRig { $0.clipInterrupted = true }
+        let started = Date()
         let captured = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
-        let capture = try XCTUnwrap(captured.capture)
-        XCTAssertLessThan(capture.duration, 0.15, "finalized at the first poll")
+        _ = try XCTUnwrap(captured.capture)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.15, "finalized at the first poll")
         XCTAssertEqual(rig.camera.clipEnds, 1, "the partial is kept")
     }
 
@@ -295,10 +701,11 @@ final class EvidenceCapturePipelineTests: XCTestCase {
                 rig.pipeline.noteActivity()
             }
         }
+        let started = Date()
         let captured = await rig.pipeline.capture(from: .front, mode: .untilClear, illumination: .off)
-        let capture = try XCTUnwrap(captured.capture)
+        _ = try XCTUnwrap(captured.capture)
         ender.cancel(); feeder.cancel()
-        XCTAssertLessThan(capture.duration, 0.5, "stopped when the session ended, well before the ceiling")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5, "stopped when the session ended, well before the ceiling")
     }
 
     // MARK: - Failure reasons (item 54)
@@ -420,4 +827,24 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertEqual(result.failuresByCamera, ["rear": .cameraUnavailable])
     }
 
+}
+
+/// Test-only one-shot gate. Every caller installs a safety release and drains its capture.
+private actor InvestigationCaptureGate {
+    private(set) var entered = false
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        entered = true
+        if released { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
 }

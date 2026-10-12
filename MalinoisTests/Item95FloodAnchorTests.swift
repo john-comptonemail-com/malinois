@@ -343,8 +343,7 @@ final class Item95FloodAnchorTests: XCTestCase {
         rig.engine.beginArming()
         rig.engine.confirmGuidedAccessAndStartGrace()
         XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 5))
-        // Fail only the new watch's first shot; the old held retry can still succeed.
-        rig.camera.stillFailuresRemaining = 1
+        // The old camera lease refuses the new shot without starting concurrent hardware work.
         rig.camera.interruptionReasonValue = .anotherApp
         rig.camera.onSessionEvent?(.interrupted(.anotherApp))
         rig.engine.noteWrongDisarmPIN()
@@ -356,7 +355,7 @@ final class Item95FloodAnchorTests: XCTestCase {
         for _ in 0..<3 { rig.camera.onSessionEvent?(.interruptionEnded) }
         pump(until: { false }, timeout: 0.3)
         XCTAssertEqual(rig.camera.attemptBegins, attempts, "the old watch's in-flight retry still owns the camera")
-        XCTAssertEqual(rig.camera.stills.count, count + 2, "only the old retry and new watch's failed shot started")
+        XCTAssertEqual(rig.camera.stills.count, count + 1, "the refused new shot must not touch the old recording session")
         XCTAssertNil(record(anchor, in: rig)?.mediaFilename)
         XCTAssertNil(record(replacement.id, in: rig)?.mediaFilename)
 
@@ -369,10 +368,10 @@ final class Item95FloodAnchorTests: XCTestCase {
         for _ in 0..<3 { rig.camera.onSessionEvent?(.interruptionEnded) }
         pump(until: { false }, timeout: 0.3)
         XCTAssertEqual(rig.camera.attemptBegins, attempts + 1)
-        XCTAssertEqual(rig.camera.stills.count, count + 3, "the new incident receives exactly one retry")
+        XCTAssertEqual(rig.camera.stills.count, count + 2, "the new incident receives exactly one retry")
         XCTAssertNotEqual(record(anchor, in: rig)?.mediaFilename, record(replacement.id, in: rig)?.mediaFilename)
         XCTAssertEqual(record(anchor, in: rig)?.captureFailure, CaptureFailureReason.interruptedInBackground.rawValue)
-        XCTAssertEqual(record(replacement.id, in: rig)?.captureFailure, CaptureFailureReason.interruptedByAnotherApp.rawValue)
+        XCTAssertEqual(record(replacement.id, in: rig)?.captureFailure, CaptureFailureReason.cameraBusy.rawValue)
     }
 
     func testOldRetryCompletionDoesNotStandDownReplacementWatchCamera() {
@@ -396,7 +395,7 @@ final class Item95FloodAnchorTests: XCTestCase {
         XCTAssertTrue(pump(until: { self.record(anchor, in: rig)?.mediaFilename != nil }, timeout: 3),
                       "evidence from the already-started attempt is still preserved")
         pump(until: { false }, timeout: 0.1)
-        XCTAssertEqual(rig.camera.shutDowns, shutdowns, "old completion cannot shut down the replacement watch's camera")
+        XCTAssertEqual(rig.camera.shutDowns, shutdowns + 1, "one confirmed quarantine shutdown precedes admission of any replacement capture")
         XCTAssertEqual(rig.camera.stills.count, count + 1)
         rig.engine.disarm()
     }

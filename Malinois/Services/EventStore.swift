@@ -92,18 +92,13 @@ final class EventStore: ObservableObject {
     // Directory URLs are computed with FileManager (thread-safe) and no actor
     // state, so the resolvers are `nonisolated static` — usable from `ioQueue`.
 
-    /// Whether a prior event log is on disk — i.e. this app's *container* survived, so the
-    /// launch is not a fresh install. Used to tell a genuine reinstall (Keychain PIN inherited,
-    /// container gone) apart from a lost setup flag (PIN and container both intact) — see
-    /// `KeychainService.recoveryKind`.
-    ///
-    /// Deliberately does NOT create anything, unlike the store's folder accessors (`ensured`):
-    /// it must stay a pure observation, and it is asked at launch *before* the store is built.
+    /// Whether any prior local evidence survives, including journal, media and attachment
+    /// intents when the primary log is missing. Empty directories and freshly generated
+    /// seen/restore bookkeeping are not evidence. Inspection errors require recovery.
+    /// Observation only: never creates, deletes or decrypts files.
     nonisolated static var containerHasPriorEvents: Bool {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let file = docs.appendingPathComponent("MalinoisEvents", isDirectory: true)
-                       .appendingPathComponent("events.json")
-        return FileManager.default.fileExists(atPath: file.path)
+        return KeychainService.hasPriorLocalEvidence(in: docs.appendingPathComponent("MalinoisEvents", isDirectory: true))
     }
 
     #if DEBUG
@@ -1100,6 +1095,7 @@ final class EventStore: ObservableObject {
         let secondary: Bool
         let camera: String
         let duration: Double?
+        var captureIssue: String?
         let filename: String
         var byteCount: Int64 = 0
         var thumbnail: Data?
@@ -1120,7 +1116,8 @@ final class EventStore: ObservableObject {
     /// Returns nil on any storage failure. This does not claim power-cut atomicity across
     /// directory renames; recovery validates both the intent and the completed media.
     func store(_ source: MediaSource, ext: String, attachingTo event: Event,
-               secondary: Bool = false, camera: String, duration: Double? = nil) async -> StoredMedia? {
+               secondary: Bool = false, camera: String, duration: Double? = nil,
+               captureIssue: String? = nil) async -> StoredMedia? {
         guard !loadFailed, !awaitingUnlock,
               let current = events.first(where: { $0.id == event.id }), current.startDate == event.startDate,
               camera == "front" || camera == "rear",
@@ -1130,7 +1127,7 @@ final class EventStore: ObservableObject {
         case .clip: guard ext == "mov" else { return nil }
         }
         let intent = AttachmentIntent(eventID: event.id, startDate: event.startDate, secondary: secondary,
-                                      camera: camera, duration: duration, filename: UUID().uuidString + "." + ext)
+                                      camera: camera, duration: duration, captureIssue: captureIssue, filename: UUID().uuidString + "." + ext)
         guard Self.accepts(intent, for: current) else { return nil }
         let stored: StoredMedia? = await withCheckedContinuation { continuation in
             ioQueue.async {
@@ -1140,6 +1137,10 @@ final class EventStore: ObservableObject {
         #if DEBUG
         if let stored { attachmentPublishedForTesting?(event.id, stored.filename) }
         #endif
+        // Publication suspends the caller. A deletion/discard or another attachment during
+        // that interval must not be undone by the late result. The durable intent remains
+        // subject to these same checks at recovery; the saved bytes are not destroyed here.
+        guard let latest = events.first(where: { $0.id == event.id }), Self.accepts(intent, for: latest) else { return nil }
         return stored
     }
 
@@ -1302,6 +1303,11 @@ final class EventStore: ObservableObject {
             guard cameras["\(intent.eventID)-\(intent.camera)"]?.count == 1 else { continue }
             guard let idx = events.firstIndex(where: { $0.id == intent.eventID }),
                   Self.accepts(intent, for: events[idx]) else { continue }
+            if let issue = intent.captureIssue, CaptureFailureReason(rawValue: issue) != nil {
+                var issues = events[idx].captureFailuresByCamera ?? [:]
+                issues[intent.camera] = issue
+                events[idx].captureFailuresByCamera = issues
+            }
             if intent.secondary {
                 events[idx].secondaryMediaFilename = intent.filename
                 events[idx].secondaryCamera = intent.camera

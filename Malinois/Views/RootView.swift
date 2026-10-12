@@ -14,16 +14,9 @@ struct RootView: View {
     @EnvironmentObject private var entitlements: ProEntitlements
     @Environment(\.scenePhase) private var scenePhase
     @State private var needsPINSetup = KeychainService.pinPresence == .absent
-    // The Keychain and the local setup flag disagree. Either direction must go behind device
-    // authentication rather than an open setup flow, or a stranger holding the unlocked device
-    // could claim the app and gate the surviving event log behind a PIN of their choosing.
+    // Retained PINs must be verified after a reinstall; missing credentials with known
+    // evidence need device-owner recovery. Storage errors must never mean open setup.
     @State private var recovery: KeychainService.RecoveryKind? = KeychainService.pendingRecovery
-    // A CloudKit push can construct this view on a LOCKED device (background launch, or the
-    // unlock-transition instant of a lock-screen notification tap), where the PIN hash reads
-    // as SEALED — unreadable, not absent (found live 2026-08-30). Neither setup nor recovery
-    // may be judged from a blind read: both @States above defer to the normal flow in that
-    // state (Home is safe unauthenticated; every PIN gate still gates), and this flag makes
-    // the judgment re-run once the Keychain can actually answer.
     @State private var pinStateUnresolved = KeychainService.pinPresence == .sealedByLock
 
     /// One-time trial explainer, shown between setup and Home — and only when there is a trial
@@ -40,8 +33,15 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let recovery {
-                PINRecoveryView(kind: recovery) { resolveRecovery(recovery) }
+            if pinStateUnresolved, engine.state == .disarmed {
+                VStack(spacing: 20) {
+                    Text("PIN storage unavailable").font(.headline)
+                    Text("Unlock this device, then retry. Your PIN and evidence have not been reset.")
+                        .multilineTextAlignment(.center)
+                    Button("Retry", action: refreshPINStateIfUnresolved)
+                }.padding(32)
+            } else if let recovery {
+                PINContinuityView(kind: recovery) { finishRecovery() }
             } else if needsPINSetup {
                 PINSetupView {
                     needsPINSetup = false
@@ -116,13 +116,12 @@ struct RootView: View {
         needsPINSetup = presence == .absent
     }
 
-    /// Device authentication succeeded. What that entitles depends on which way the state
-    /// disagreed: a lost *hash* can only be re-set up (there's nothing left to keep), while a
-    /// lost *flag* sits on an intact PIN and a surviving log — so repair the flag and destroy
-    /// nothing. Re-reading `hasPIN` afterwards routes each case to the right screen.
-    private func resolveRecovery(_ kind: KeychainService.RecoveryKind) {
-        if kind == .lostSetupFlag { KeychainService.markSetupCompleted() }
-        recovery = nil
-        needsPINSetup = !KeychainService.hasPIN
+    /// Local recovery completed with either the existing PIN or a successfully written
+    /// replacement after device authentication. This does not authorize cloud enrollment.
+    private func finishRecovery() {
+        let presence = KeychainService.pinPresence
+        guard presence != .sealedByLock else { pinStateUnresolved = true; return }
+        recovery = KeychainService.pendingRecovery
+        needsPINSetup = presence == .absent
     }
 }

@@ -26,7 +26,12 @@ final class EventTests: XCTestCase {
 
     /// A real movie: storage-only byte stubs cannot catch AVFoundation
     /// refusing a temporary filename or loss of playable duration during publication.
-    nonisolated private static func playableClip(at url: URL, frames: Int) async throws {
+    /// Shared with the pipeline investigation so duration assertions use actual media.
+    nonisolated static func playableClip(at url: URL, frames: Int) async throws {
+        try await Task.detached(priority: .utility) { try await writePlayableClip(at: url, frames: frames) }.value
+    }
+
+    nonisolated private static func writePlayableClip(at url: URL, frames: Int) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64
@@ -69,7 +74,36 @@ final class EventTests: XCTestCase {
     }
 
     @MainActor
-    private func assertPlayableRecovery(frames: Int) async throws {
+    func testPartialMovieIssueSurvivesRecoveryBeforeEngineAttachment() async throws {
+        try await assertPlayableRecovery(frames: 4, issue: .clipPartial)
+    }
+
+    @MainActor
+    func testPublicationCannotUndoDiscardOrReplaceAnotherAttachment() async throws {
+        let events = [logEntry(10), logEntry(20)]
+        let store = try recoveryFixture(events)
+        defer { store.attachmentPublishedForTesting = nil; store.drainIOForTesting() }
+        for (event, discard) in zip(events, [true, false]) {
+            var published = false
+            store.attachmentPublishedForTesting = { _, _ in
+                published = true
+                var changed = event
+                if discard { changed.mediaDiscarded = true }
+                else { changed.mediaFilename = "newer.jpg" }
+                store.update(changed)
+            }
+            let saved = await store.store(.still(Data([1, 2, 3])), ext: "jpg", attachingTo: event, camera: "front")
+            XCTAssertTrue(published, "exercise the suspended publication, not an earlier refusal")
+            XCTAssertNil(saved, "the returned file cannot overwrite a decision made during publication")
+            let current = try XCTUnwrap(store.events.first { $0.id == event.id })
+            XCTAssertEqual(current.mediaDiscarded == true, discard)
+            XCTAssertEqual(current.mediaFilename, discard ? nil : "newer.jpg")
+            store.attachmentPublishedForTesting = nil
+        }
+    }
+
+    @MainActor
+    private func assertPlayableRecovery(frames: Int, issue: CaptureFailureReason? = nil) async throws {
         let event = logEntry(10)
         let store = try recoveryFixture([event])
         let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
@@ -80,7 +114,8 @@ final class EventTests: XCTestCase {
         XCTAssertNotNil(sourceThumbnail, "the source itself must be decodable")
         let originalDuration = try await AVURLAsset(url: source).load(.duration).seconds
         XCTAssertEqual(originalDuration, Double(frames) / 10, accuracy: 0.05)
-        let result = await store.store(.clip(source), ext: "mov", attachingTo: event, camera: "front", duration: originalDuration)
+        let result = await store.store(.clip(source), ext: "mov", attachingTo: event, camera: "front",
+                                       duration: originalDuration, captureIssue: issue?.rawValue)
         let saved = try XCTUnwrap(result)
         XCTAssertNotNil(saved.thumbnail, "the recoverable save must preserve a playable clip's preview")
         let destination = root.appendingPathComponent("Media").appendingPathComponent(saved.filename)
@@ -92,6 +127,7 @@ final class EventTests: XCTestCase {
         XCTAssertNotNil(recovered.thumbnailData, "recovery must retain the preview before any engine attachment")
         XCTAssertEqual(recovered.thumbnailData, saved.thumbnail)
         XCTAssertEqual(recovered.primaryDuration, originalDuration)
+        XCTAssertEqual(recovered.captureFailuresByCamera?["front"], issue?.rawValue)
         store.drainIOForTesting()
         reopened.drainIOForTesting()
     }

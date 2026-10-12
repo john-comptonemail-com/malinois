@@ -14,6 +14,7 @@ struct HomeView: View {
     @EnvironmentObject private var cloud: CloudExfiltrator
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var entitlements: ProEntitlements
+    @ObservedObject private var enrollment = CloudEnrollment.shared
     @Environment(\.scenePhase) private var scenePhase
 
     /// PIN-gated areas. Both the event log and Settings require the PIN.
@@ -253,7 +254,9 @@ struct HomeView: View {
                 // know yet rather than guessing a tier and correcting it a moment later.
                 statusRow(ready: false, text: "Checking Pro status…")
             } else if entitlements.proActive {
-                statusRow(ready: cloud.accountState.isReady, text: cloud.accountState.displayName)
+                statusRow(ready: cloud.accountState.isReady && enrollment.verified,
+                          text: cloud.accountState.isReady && !enrollment.verified
+                            ? "iCloud verification needed" : cloud.accountState.displayName)
             } else {
                 statusRow(ready: false, text: "iCloud backup is Pro - evidence stays on device")
             }
@@ -332,7 +335,8 @@ struct HomeView: View {
             }
             if engine.cloudRestoreInProgress {
                 // The launch pull (owner, 2026-09-04): while it runs, an empty log is "loading".
-                Label("Restoring your event log from iCloud…", systemImage: "icloud.and.arrow.down")
+                // It says "Restoring" only for a real restore, otherwise "Checking" (2026-10-11).
+                Label(engine.currentLaunchPull.homeLabel, systemImage: "icloud.and.arrow.down")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -419,6 +423,13 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            if entitlements.proActive, !enrollment.verified, !cloud.cloudUnavailable {
+                Label("iCloud is paused. Open Settings and verify iCloud access. Local monitoring is available.", systemImage: "icloud.slash")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
             if cloud.cloudUnavailable {
                 Label("iCloud backup isn't available in this build - evidence is kept on-device only. A signed build with an iCloud container restores off-device sync.",
                       systemImage: "icloud.slash")
@@ -431,25 +442,15 @@ struct HomeView: View {
         }
     }
 
-    /// Pro status line. During Early-Access (BACKLOG 66) it states the promise — Pro, free,
-    /// permanently — and doubles as the door to the support screen. Otherwise: the 30-day trial
+    /// Pro status line. Purchased and Early-Access Pro share the collar badge; only
+    /// Early-Access links to the support screen. Otherwise: the 30-day trial
     /// starts at first launch, so a new install shows a low-key "Pro trial active — N days
     /// left" indicator (a positive status, not an upsell nag); once the trial lapses it makes
     /// the reduced protection explicit.
     @ViewBuilder
     private var proBanner: some View {
-        if entitlements.status == .earlyAccess {
-            Button { showPaywall = true } label: {
-                Label {
-                    Text("Pro")
-                } icon: {
-                    CollarIcon(height: 12)
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        } else if entitlements.trialEnded {
+        HomeProBadge(status: entitlements.status) { showPaywall = true }
+        if entitlements.trialEnded {
             VStack(spacing: 6) {
                 Label("Pro trial ended - your device is still protected. Local detection and evidence keep working; cloud backup and cross-device alerts are off.",
                       systemImage: "lock.circle")
@@ -489,4 +490,31 @@ struct HomeView: View {
         }
     }
 
+}
+
+/// The same permanent Pro branding for purchasers and Early-Access members. Only
+/// Early-Access opens the support sheet; purchasers are not offered another upgrade.
+struct HomeProBadge: View {
+    let status: ProEntitlements.Status
+    var showSupport: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if status == .pro {
+            badge
+        } else if status == .earlyAccess {
+            Button(action: showSupport) { badge }
+                .buttonStyle(.plain)
+        }
+    }
+
+    private var badge: some View {
+        Label {
+            Text("Pro")
+        } icon: {
+            CollarIcon(height: 12)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
 }

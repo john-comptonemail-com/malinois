@@ -5,6 +5,7 @@
 
 import XCTest
 import UIKit
+import SwiftUI
 @testable import Malinois
 
 final class AppSettingsTests: XCTestCase {
@@ -311,6 +312,36 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(ProEntitlements.earlyAccessProgramOpen, "1.3 ships with Early-Access open")
         XCTAssertTrue(ProEntitlements(resolvedAs: .earlyAccess).proActive, "Early-Access is Pro for every gate")
         XCTAssertNil(ProEntitlements(resolvedAs: .earlyAccess).trialDaysRemaining, "and it has no clock")
+    }
+
+    /// Render the actual Home badge: buying Pro must not remove the existing branding.
+    @MainActor
+    func testPurchasedProKeepsTheEarlyAccessBadge() throws {
+        let purchased = try renderedProBadge(.pro)
+        let earlyAccess = try renderedProBadge(.earlyAccess)
+        let free = try renderedProBadge(.free)
+        XCTAssertEqual(purchased, earlyAccess, "paid and Early-Access Pro have identical visible branding")
+        XCTAssertNotEqual(purchased, free, "the paid badge must not be empty")
+    }
+
+    /// Trial/free messaging is separate; neither gets the permanent-Pro badge.
+    @MainActor
+    func testPermanentProBadgeDoesNotReplaceTrialOrFreeMessaging() throws {
+        let free = try renderedProBadge(.free)
+        XCTAssertEqual(try renderedProBadge(.trial), free)
+        XCTAssertNotEqual(try renderedProBadge(.earlyAccess), free)
+    }
+
+    @MainActor
+    private func renderedProBadge(_ status: ProEntitlements.Status) throws -> Data {
+        let view = HomeProBadge(status: status, showSupport: {})
+            .frame(width: 160, height: 44)
+            .background(Color.black)
+            .environment(\.colorScheme, .dark)
+            .environment(\.dynamicTypeSize, .large)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        return try XCTUnwrap(renderer.uiImage?.pngData())
     }
 
     // MARK: - Onboarding

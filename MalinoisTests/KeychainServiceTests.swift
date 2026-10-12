@@ -136,14 +136,12 @@ final class KeychainServiceTests: XCTestCase {
 
     // MARK: - Launch-state classification (M2)
 
-    /// The dangerous state is `hasPIN && !hasCompletedSetup`, which a genuine reinstall and a
-    /// crash mid-`setPIN` both produce. Treating them alike either destroys a legitimate PIN or
-    /// leaves an inherited one in place; the surviving event log is what tells them apart.
-    func testRecoveryKindDistinguishesFreshInstallFromLostSetupFlag() {
-        // Genuine reinstall: Keychain PIN inherited, container (and its log) gone → wipe, no auth.
-        XCTAssertNil(KeychainService.recoveryKind(pinPresence: .present, hasCompletedSetup: false,
-                                                  containerHasPriorEvents: false),
-                     "a reinstall with no surviving log is a clean start, not a recovery")
+    /// A valid PIN is protected regardless of whether any local files survived reinstall.
+    func testRecoveryKindPreservesPINAcrossReinstallAndLostSetupFlag() {
+        // Genuine reinstall: inherit the PIN; require it before resuming local access.
+        XCTAssertEqual(KeychainService.recoveryKind(pinPresence: .present, hasCompletedSetup: false,
+                                                    containerHasPriorEvents: false), .lostSetupFlag,
+                       "a surviving PIN protects access even after reinstall")
 
         // Crash between setPIN's Keychain write and its (async) UserDefaults flag write. The PIN
         // is real and the evidence is still there — wiping would destroy the owner's PIN and
@@ -186,14 +184,13 @@ final class KeychainServiceTests: XCTestCase {
         }
     }
 
-    /// The read→ItemRead mapping: only the lock's own error is a seal; everything else
-    /// unreadable is missing; a readable payload is found.
+    /// Only explicit not-found means absence; all unreadable storage defers classification.
     func testItemReadKeepsSealDistinctFromAbsence() {
         XCTAssertEqual(KeychainService.itemRead(status: errSecInteractionNotAllowed, data: nil), .sealed,
                        "the locked-device error is a seal even with no data returned")
         XCTAssertEqual(KeychainService.itemRead(status: errSecItemNotFound, data: nil), .missing)
-        XCTAssertEqual(KeychainService.itemRead(status: errSecSuccess, data: nil), .missing,
-                       "success with no payload is still nothing to judge")
+        XCTAssertEqual(KeychainService.itemRead(status: errSecSuccess, data: nil), .sealed,
+                       "success without a readable payload must defer")
         XCTAssertEqual(KeychainService.itemRead(status: errSecSuccess, data: Data([1])), .found(Data([1])))
     }
 
@@ -280,8 +277,7 @@ final class KeychainServiceTests: XCTestCase {
         KeychainService.resetAttempts()
     }
 
-    /// Early-Access (BACKLOG 66): the membership marker round-trips, survives the PIN wipe a
-    /// reinstall performs, and is only ever cleared by the test seam.
+    /// Membership survives even explicit test-only credential cleanup.
     func testEarlyAccessMarkerRoundTripsAndSurvivesThePINWipe() throws {
         KeychainService.clearEarlyAccessMemberForTesting()
         XCTAssertFalse(KeychainService.earlyAccessMember)
@@ -291,6 +287,138 @@ final class KeychainServiceTests: XCTestCase {
         XCTAssertTrue(KeychainService.earlyAccessMember)
         XCTAssertTrue(KeychainService.markEarlyAccessMember(), "marking twice is a no-op, not a failure")
         KeychainService.wipeStalePINData()
-        XCTAssertTrue(KeychainService.earlyAccessMember, "the promise survives a reinstall's PIN wipe")
+        XCTAssertTrue(KeychainService.earlyAccessMember, "test-only credential cleanup does not affect membership")
     }
+
+    func testPriorEvidenceWithoutSetupMarkerRequiresRecovery() {
+        XCTAssertEqual(KeychainService.recoveryKind(pinPresence: .absent, hasCompletedSetup: false,
+                                                    containerHasPriorEvents: true), .lostHash)
+    }
+
+    func testUnexpectedKeychainErrorsDeferClassification() {
+        for status in [errSecNotAvailable, errSecAuthFailed, errSecDecode, errSecParam] {
+            XCTAssertEqual(KeychainService.itemRead(status: status, data: nil), .sealed)
+        }
+        XCTAssertEqual(KeychainService.presence(hash: .missing, salt: .sealed), .sealedByLock)
+        XCTAssertEqual(KeychainService.presence(hash: .found(Data()), salt: .sealed), .sealedByLock)
+    }
+
+    func testKeychainReadFailureCannotReplacePINOrMutateLockout() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer {
+            KeychainService.readStatusForTesting = nil
+            KeychainService.resetAttempts()
+        }
+        for _ in 0..<4 { _ = KeychainService.recordFailure() }
+        KeychainService.readStatusForTesting = errSecNotAvailable
+        XCTAssertFalse(KeychainService.setPIN("1357"))
+        XCTAssertFalse(KeychainService.verify("4821"))
+        KeychainService.readStatusForTesting = nil
+        XCTAssertEqual(KeychainService.lockoutRemaining(), 0, "an unreadable PIN is not a wrong guess")
+        XCTAssertGreaterThan(KeychainService.recordFailure(), 0, "failed replacement preserves four failures")
+        KeychainService.resetAttempts()
+        XCTAssertTrue(KeychainService.verify("4821"), "the original credential survives")
+        XCTAssertFalse(KeychainService.verify("1357"))
+    }
+
+    func testPriorLocalEvidenceIncludesJournalAndMediaWithoutLog() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertFalse(KeychainService.hasPriorLocalEvidence(in: root))
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertFalse(KeychainService.hasPriorLocalEvidence(in: root))
+        for relative in ["events.json", "events.journal", "Media/clip.mov", "MediaAttachments/intent.json"] {
+            let file = root.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("preserved".utf8).write(to: file)
+            XCTAssertTrue(KeychainService.hasPriorLocalEvidence(in: root), relative)
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
+    @MainActor
+    func testResetRequiresAuthenticationAndCancellationKeepsPIN() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer { KeychainService.resetAttempts() }
+        let permission = PINResetPermission()
+        XCTAssertFalse(permission.savePIN("1357"))
+        XCTAssertFalse(permission.authenticationFinished(success: false))
+        XCTAssertFalse(permission.savePIN("1357"))
+        XCTAssertTrue(KeychainService.verify("4821"))
+        XCTAssertTrue(permission.authenticationFinished(success: true))
+        permission.revoke()
+        XCTAssertFalse(permission.savePIN("1357"), "background/cancel revokes the permission")
+        XCTAssertTrue(KeychainService.verify("4821"))
+        XCTAssertFalse(PINResetPermission().authorized, "permission does not survive recreation")
+    }
+
+    @MainActor
+    func testAuthenticatedReplacementPreservesOldPINOnWriteFailure() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer {
+            KeychainService.failWritesForTesting = false
+            KeychainService.resetAttempts()
+        }
+        let permission = PINResetPermission()
+        XCTAssertTrue(permission.authenticationFinished(success: true))
+        KeychainService.failWritesForTesting = true
+        XCTAssertFalse(permission.savePIN("1357"))
+        KeychainService.failWritesForTesting = false
+        XCTAssertTrue(KeychainService.verify("4821"), "old PIN survives a refused replacement")
+        XCTAssertTrue(permission.savePIN("1357"))
+        XCTAssertFalse(permission.authorized, "successful replacement consumes permission")
+        XCTAssertTrue(KeychainService.verify("1357"))
+        XCTAssertFalse(KeychainService.verify("4821"))
+    }
+
+    @MainActor
+    func testUnreadableStorageCannotGrantOrUseResetPermission() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer { KeychainService.readStatusForTesting = nil; KeychainService.resetAttempts() }
+        let permission = PINResetPermission()
+        KeychainService.readStatusForTesting = errSecInteractionNotAllowed
+        XCTAssertFalse(permission.authenticationFinished(success: true))
+        KeychainService.readStatusForTesting = nil
+        XCTAssertTrue(permission.authenticationFinished(success: true))
+        KeychainService.readStatusForTesting = errSecAuthFailed
+        XCTAssertFalse(permission.savePIN("1357"))
+        XCTAssertFalse(permission.authorized)
+        XCTAssertFalse(KeychainService.markSetupCompleted())
+        KeychainService.readStatusForTesting = nil
+        XCTAssertTrue(KeychainService.verify("4821"))
+    }
+
+    func testExistingPINRepairsMarkerAndKeepsSurvivingLockout() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer { KeychainService.markSetupCompleted(); KeychainService.resetAttempts() }
+        UserDefaults.standard.removeObject(forKey: "com.malinois.setupCompleted")
+        for _ in 0..<5 { _ = KeychainService.recordFailure() }
+        XCTAssertEqual(KeychainService.pendingRecovery, .lostSetupFlag)
+        XCTAssertFalse(KeychainService.verify("4821"), "reinstall does not clear a lockout")
+        XCTAssertFalse(KeychainService.hasCompletedSetup)
+        KeychainService.resetAttempts() // represent waiting for the existing deadline
+        XCTAssertTrue(KeychainService.verify("4821"))
+        XCTAssertTrue(KeychainService.markSetupCompleted())
+        XCTAssertTrue(KeychainService.hasCompletedSetup)
+        XCTAssertTrue(KeychainService.verify("4821"))
+    }
+
+    func testFreshStoreBookkeepingDoesNotRequireRecovery() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("[]".utf8).write(to: root.appendingPathComponent("seen.json"))
+        try Data("{}".utf8).write(to: root.appendingPathComponent("restore-owed.json"))
+        XCTAssertFalse(KeychainService.hasPriorLocalEvidence(in: root))
+    }
+
+    func testDamagedCredentialFragmentsStillRequireRecoveryWithoutMarker() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer { _ = KeychainService.setPIN("4821"); KeychainService.resetAttempts() }
+        KeychainService.removeSaltForTesting()
+        UserDefaults.standard.removeObject(forKey: "com.malinois.setupCompleted")
+        XCTAssertEqual(KeychainService.pinPresence, .absent)
+        XCTAssertEqual(KeychainService.pendingRecovery, .lostHash)
+    }
+
 }

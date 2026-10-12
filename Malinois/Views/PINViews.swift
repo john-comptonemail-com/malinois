@@ -133,6 +133,9 @@ struct PINPad: View {
 // MARK: - First-launch setup
 
 struct PINSetupView: View {
+    /// Recovery supplies a guarded save; ordinary first setup and PIN-authorized changes
+    /// retain the existing service path. A failed write never completes the view.
+    var savePIN: (String) -> Bool = KeychainService.setPIN
     var onDone: () -> Void
 
     @State private var stage: Stage = .create
@@ -207,7 +210,7 @@ struct PINSetupView: View {
                 withAnimation { stage = .create }
                 return
             }
-            if KeychainService.setPIN(first) {
+            if savePIN(first) {
                 onDone()
             } else {
                 error = "Couldn't save PIN."
@@ -220,26 +223,111 @@ struct PINSetupView: View {
 
 // MARK: - Modal entry (disarm / view log)
 
-/// Shown when the Keychain and the local setup flag disagree. Gates the fix behind device
-/// authentication so a stranger holding the unlocked device can't claim the app — either by
-/// setting a new PIN over an unreadable hash, or by inheriting a container whose setup flag
-/// was lost mid-write.
+/// Ephemeral permission granted only by the device-owner authentication callback. The
+/// view revokes it on background/dismissal. Credentials remain intact until a successful
+/// replacement write; unreadable Keychain state never authorizes replacement.
+@MainActor
+final class PINResetPermission: ObservableObject {
+    @Published private(set) var authorized = false
+
+    @discardableResult
+    func authenticationFinished(success: Bool) -> Bool {
+        authorized = success && KeychainService.pinPresence != .sealedByLock
+        return authorized
+    }
+
+    func revoke() { authorized = false }
+
+    func savePIN(_ pin: String) -> Bool {
+        guard authorized else { return false }
+        guard KeychainService.pinPresence != .sealedByLock else { revoke(); return false }
+        guard KeychainService.setPIN(pin) else { return false }
+        revoke()
+        return true
+    }
+}
+
+/// Local recovery for a missing setup marker or damaged credential. A surviving PIN
+/// resumes access without a new device-auth policy for ordinary disarm. The explicit
+/// forgotten-PIN route instead requests device-owner authentication before replacement.
+struct PINContinuityView: View {
+    let kind: KeychainService.RecoveryKind
+    var onDone: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var permission = PINResetPermission()
+    @State private var showPIN = false
+    @State private var requestedReset = false
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if permission.authorized {
+                VStack {
+                    PINSetupView(savePIN: permission.savePIN, onDone: onDone)
+                    Button("Cancel reset") { permission.revoke(); requestedReset = false }
+                        .padding(.bottom)
+                }
+            } else if kind == .lostHash || requestedReset {
+                PINRecoveryView(kind: .lostHash, replacingExistingPIN: kind == .lostSetupFlag, onAuthenticated: {
+                    if !permission.authenticationFinished(success: true) {
+                        error = "PIN storage is unavailable. Unlock this device and try again."
+                    }
+                }, onCancel: kind == .lostSetupFlag ? { requestedReset = false } : nil)
+            } else {
+                VStack(spacing: 24) {
+                    Image(systemName: "lock.shield").font(.system(size: 54))
+                    Text("Your Malinois PIN was kept").font(.title2.weight(.semibold))
+                    Text("Enter your existing PIN to resume. If you forgot it, verify with Face ID, Touch ID, or your device passcode to choose a new one.")
+                        .multilineTextAlignment(.center)
+                    if let error { Text(error).foregroundStyle(.orange) }
+                    Button("Use existing PIN") { showPIN = true }.buttonStyle(.borderedProminent)
+                    Button("Forgot PIN?") { requestedReset = true }
+                }.padding(32)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
+        .sheet(isPresented: $showPIN) {
+            PINEntryView(title: "Enter your existing Malinois PIN", onSuccess: {
+                showPIN = false
+                if KeychainService.markSetupCompleted() { onDone() }
+                else { error = "PIN storage is unavailable. Unlock this device and try again." }
+            }, onCancel: { showPIN = false })
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { permission.revoke(); requestedReset = false }
+        }
+        .onDisappear { permission.revoke() }
+    }
+}
+
+/// Requests the existing device-owner policy, never changing credentials itself. A
+/// dismissed/backgrounded prompt cannot deliver a late authorization to a replacement view.
 struct PINRecoveryView: View {
     let kind: KeychainService.RecoveryKind
+    var replacingExistingPIN = false
     var onAuthenticated: () -> Void
+    var onCancel: (() -> Void)?
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var context: LAContext?
+    @State private var requestID: UUID?
     @State private var failed = false
     @State private var authUnavailable = false
     @State private var guidedAccessBlocked = false
 
     private var title: String {
-        kind == .lostHash ? "PIN unavailable" : "Verify it's you"
+        replacingExistingPIN ? "Reset Malinois PIN" : (kind == .lostHash ? "PIN unavailable" : "Verify it's you")
     }
     private var explanation: String {
+        if replacingExistingPIN {
+            return "Verify with Face ID, Touch ID, or your device passcode to choose a new Malinois PIN. Your existing PIN stays in place until the new one is saved."
+        }
         switch kind {
         case .lostHash:
-            return "Your Malinois PIN can't be read on this device. Authenticate with your device passcode to set a new one."
+            return "Your Malinois PIN can't be read on this device. Authenticate with Face ID, Touch ID, or your device passcode to set a new one."
         case .lostSetupFlag:
-            return "Malinois didn't finish saving its setup. Your PIN and your recorded evidence are intact - authenticate with your device passcode to restore access."
+            return "Your Malinois PIN was kept. Authenticate with Face ID, Touch ID, or your device passcode to continue."
         }
     }
 
@@ -275,14 +363,27 @@ struct PINRecoveryView: View {
                 Button("Authenticate", action: authenticate)
                     .buttonStyle(.borderedProminent)
             }
+            if let onCancel { Button("Cancel") { cancelAuthentication(); onCancel() } }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())   // same dark treatment as setup/entry
         .environment(\.colorScheme, .dark)
         .onAppear(perform: authenticate)
+        .onDisappear(perform: cancelAuthentication)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { cancelAuthentication(); failed = true }
+        }
+    }
+
+    private func cancelAuthentication() {
+        requestID = nil
+        context?.invalidate()
+        context = nil
     }
 
     private func authenticate() {
+        cancelAuthentication()
+        guard UIApplication.shared.applicationState == .active else { failed = true; return }
         // Same OS behavior as the gate's Face ID offer (BACKLOG 44): under Guided Access
         // the system auth sheet is DEFERRED, not refused — canEvaluatePolicy still says
         // yes, and the request queues silently until GA ends. Recovery is fail-closed
@@ -294,6 +395,9 @@ struct PINRecoveryView: View {
         }
         guidedAccessBlocked = false
         let ctx = LAContext()
+        context = ctx
+        let id = UUID()
+        requestID = id
         var error: NSError?
         // Fail CLOSED when device authentication can't run (sixth review, F4): "cannot be
         // performed" must not become success on the one gate protecting PIN re-setup — on a
@@ -310,7 +414,11 @@ struct PINRecoveryView: View {
             : "Authenticate to restore access to Malinois"
         ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in
             Task { @MainActor in
-                if ok { onAuthenticated() } else { failed = true }
+                guard requestID == id else { return }
+                requestID = nil
+                context = nil
+                if ok { onAuthenticated() }
+                failed = true // If storage refused recovery, the still-visible view offers retry.
             }
         }
     }

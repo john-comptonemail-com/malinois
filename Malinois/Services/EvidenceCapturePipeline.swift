@@ -12,6 +12,7 @@
 //
 
 import Foundation
+@preconcurrency import AVFoundation
 
 /// What a capture needs from the session it runs inside (1.3 step 5). Kept small on
 /// purpose: everything else travels in as a parameter of the capture call.
@@ -37,6 +38,10 @@ protocol CapturePipelineHost: AnyObject {
     func syncVisionTap()
     /// Surface — or clear — the owner-facing camera notice.
     func report(cameraNotice: String?)
+    /// Clear only the notice owned by this capture; preserve unrelated camera warnings.
+    func clearCaptureNotice(matching notice: String)
+    /// The prior operation and its required shutdown have drained; deferred work may retry.
+    func captureCameraBecameAvailable()
 }
 
 /// Why the system interrupted a capture session — `AVCaptureSession.InterruptionReason` as
@@ -90,12 +95,14 @@ extension CaptureFailureReason {
 
 @MainActor
 final class EvidenceCapturePipeline {
-    /// A captured piece of evidence tagged with its camera and recorded length.
+    /// Original evidence, its physical camera, measured movie duration (nil if unknown),
+    /// and any saved-file issue. A still has duration zero; no duration is inferred from waits.
     struct Capture {
         let source: EventStore.MediaSource
         let ext: String
-        let duration: Double
+        let duration: Double?
         let camera: CameraChoice
+        var issue: CaptureFailureReason?
     }
 
     /// What one capture produced — the evidence, or the reason there is none (item 54).
@@ -133,14 +140,186 @@ final class EvidenceCapturePipeline {
         self.timing = timing
     }
 
+    /// Destination captured before suspension: late evidence may only join this original event.
+    struct Preservation {
+        let event: Event
+        let store: EventStore
+    }
+
+    @MainActor private final class Attempt {
+        var stopped = false
+        var sessionCancelled = false
+        var microphoneYielded = false
+        var notice: String?
+        var expired = false
+        var quarantined = false
+        var warming = true
+        var recordingInterrupted = false
+        var audioBorrowed = false
+        var flashed = false
+        var cleaned = false
+        var completed = false
+        var preservation: Preservation?
+        var both = false
+        var finalized: [String: Capture] = [:]
+        var inspections: [URL: Task<Capture, Never>] = [:]
+        var lateHandled: Set<String> = []
+    }
+    private var attempt: Attempt?
+    #if DEBUG
+    var beforeAttemptWorkForTesting: (@MainActor () async -> Void)?
+    #endif
+    var isBusy: Bool { attempt != nil }
+
     /// A trip during an until-clear recording refreshes the activity clock.
     func noteActivity() { lastActivity = Date() }
 
-    /// The session ended mid-recording: drop the flag now, so nothing reads a stale "still
-    /// recording" before the loop notices at its next poll.
-    func cancelUntilClear() { isCapturingUntilClear = false }
+    /// Invalidates this capture's session identity immediately, even if the host re-arms
+    /// before a queued operation answers. The worker may finish existing media only.
+    func cancelUntilClear() {
+        isCapturingUntilClear = false
+        if let attempt {
+            attempt.stopped = true
+            attempt.sessionCancelled = true
+            attempt.quarantined = true
+            camera.quarantineCapture()
+            cleanUp(attempt)
+        }
+    }
 
-    private var sessionIsOver: Bool { host?.captureSessionIsOver ?? true }
+    private var sessionIsOver: Bool { attempt?.stopped == true || host?.captureSessionIsOver != false }
+
+    private func cleanUp(_ token: Attempt) {
+        guard !token.cleaned else { return }
+        token.cleaned = true
+        isCapturingUntilClear = false
+        if token.flashed { host?.setCaptureFlash(false) }
+        if token.audioBorrowed && !token.quarantined { host?.resumeAudioAfterCapture() }
+    }
+
+    /// Races the entire attempt, including camera queries and finalization, against an
+    /// independent clock. The lease remains held until the real worker drains; cancellation
+    /// is never treated as proof that AVFoundation has stopped.
+    private func run(mode: CaptureMode, preservation: Preservation?, both: Bool = false,
+                     work: @escaping @MainActor () async -> BothOutcome) async -> BothOutcome {
+        guard attempt == nil else { return BothOutcome(front: nil, rear: nil, failure: .cameraBusy) }
+        let token = Attempt()
+        token.preservation = preservation
+        token.both = both
+        attempt = token
+        if mode.isClip {
+            camera.setFinalizedClipHandler { [self] url, lens in
+                Task { @MainActor in await receiveFinalized(url, lens: lens, mode: mode, token: token) }
+            }
+        }
+        let budget = timing.warmUpDeadline + timing.reconfigureSettle + timing.autoExposureSettle
+            + timing.flashSettle + (mode.fixedDuration ?? (mode.isClip ? timing.untilClearMax : 0))
+            + timing.captureFinalizationDeadline
+        return await withCheckedContinuation { continuation in
+            @MainActor func finish(_ value: BothOutcome) {
+                guard !token.completed else { return }
+                token.completed = true
+                continuation.resume(returning: value)
+            }
+            let deadline = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(budget)) } catch { return }
+                guard !token.completed else { return }
+                let reason: CaptureFailureReason = endedByDisarm ? .disarmed : .captureTimedOut
+                expire(token)
+                finish(BothOutcome(front: nil, rear: nil, failure: reason))
+            }
+            let warmDeadline = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(timing.warmUpDeadline)) } catch { return }
+                guard !token.completed, token.warming else { return }
+                let reason: CaptureFailureReason = endedByDisarm ? .disarmed : .warmUpTimedOut
+                expire(token)
+                finish(BothOutcome(front: nil, rear: nil, failure: reason))
+            }
+            Task { @MainActor in
+                #if DEBUG
+                await beforeAttemptWorkForTesting?()
+                #endif
+                let value: BothOutcome
+                if token.stopped || attempt !== token || host?.captureSessionIsOver != false {
+                    value = BothOutcome(front: nil, rear: nil, failure: .disarmed)
+                } else {
+                    value = await work()
+                }
+                // Cache completed stills as well as movies before waiting for shutdown.
+                // The independent clock may expire during that await and must retain them.
+                if let front = value.front { token.finalized[front.camera.rawValue] = front }
+                if let rear = value.rear { token.finalized[rear.camera.rawValue] = rear }
+                if token.expired {
+                    // No UI/session side effects after expiry. Preserve only to the destination
+                    // captured by this caller; never hand old footage to the next response.
+                    await preserveLate(value, for: token)
+                }
+                if token.quarantined {
+                    await camera.finishCaptureQuarantine()
+                    if token.expired { await preserveLate(value, for: token) }
+                    if !token.sessionCancelled, host?.captureSessionIsOver == false {
+                        if token.audioBorrowed { host?.resumeAudioAfterCapture() }
+                        if let notice = token.notice { host?.clearCaptureNotice(matching: notice) }
+                    }
+                }
+                deadline.cancel()
+                warmDeadline.cancel()
+                cleanUp(token)
+                camera.setFinalizedClipHandler(nil)
+                if attempt === token {
+                    attempt = nil
+                    host?.captureCameraBecameAvailable()
+                }
+                finish(value)
+            }
+        }
+    }
+
+    private func expire(_ token: Attempt) {
+        let wasDisarmed = token.stopped || host?.captureSessionIsOver == true
+        token.expired = true
+        token.quarantined = true
+        token.stopped = true
+        camera.quarantineCapture()
+        cleanUp(token)
+        Task { @MainActor in
+            let front = token.both ? token.finalized["front"] : token.finalized.values.first
+            await preserveLate(BothOutcome(front: front, rear: token.both ? token.finalized["rear"] : nil, failure: nil), for: token)
+        }
+        if !wasDisarmed {
+            let sound = token.microphoneYielded ? " Sound detection stays paused until camera shutdown is confirmed." : ""
+            let notice = "Camera unavailable - response timed out; recovery is pending. The event was logged." + sound
+            token.notice = notice
+            host?.report(cameraNotice: notice)
+        }
+    }
+
+    private func preserveLate(_ value: BothOutcome, for token: Attempt) async {
+        guard let destination = token.preservation else { return }
+        for (capture, secondary) in [(value.front, false), (value.rear, true)] {
+            guard let capture, token.lateHandled.insert(capture.camera.rawValue).inserted else { continue }
+            guard let stored = await destination.store.store(capture.source, ext: capture.ext,
+                    attachingTo: destination.event, secondary: secondary,
+                    camera: capture.camera.rawValue, duration: capture.ext == "mov" ? capture.duration : nil,
+                    captureIssue: (capture.issue ?? (token.sessionCancelled ? .disarmed : .captureTimedOut)).rawValue),
+                  var current = destination.store.events.first(where: { $0.id == destination.event.id }) else { continue }
+            if secondary {
+                current.secondaryMediaFilename = stored.filename
+                current.secondaryCamera = capture.camera.rawValue
+                current.secondaryDuration = capture.duration
+            } else {
+                current.mediaFilename = stored.filename
+                current.primaryCamera = capture.camera.rawValue
+                current.primaryDuration = capture.ext == "mov" ? capture.duration : nil
+                current.thumbnailData = stored.thumbnail
+            }
+            var issues = current.captureFailuresByCamera ?? [:]
+            issues[capture.camera.rawValue] = (capture.issue ?? (token.sessionCancelled ? .disarmed : .captureTimedOut)).rawValue
+            current.captureFailuresByCamera = issues
+            destination.store.update(current)
+            destination.store.reopenForReupload(current.id)
+        }
+    }
 
     // MARK: - Bounded camera warm-up (34's warmUp hardening)
 
@@ -191,10 +370,20 @@ final class EvidenceCapturePipeline {
     /// fact push, and now the reason, like any capture failure.
     /// A capture that fails after the owner has disarmed is not a fault: the disarm stopped
     /// the camera (item 63 leg 6). The record says so and Home gets no notice.
-    private var endedByDisarm: Bool { host?.captureSessionIsOver == true }
+    private var endedByDisarm: Bool { sessionIsOver }
+    private var mayAffectSession: Bool { attempt?.cleaned != true }
 
     func capture(from position: CameraChoice, mode: CaptureMode,
-                 illumination: IlluminationMode) async -> Outcome {
+                 illumination: IlluminationMode, preservation: Preservation? = nil) async -> Outcome {
+        let value = await run(mode: mode, preservation: preservation) {
+            let single = await self.captureSingle(from: position, mode: mode, illumination: illumination)
+            return BothOutcome(front: single.capture, rear: nil, failure: single.failure)
+        }
+        return value.front.map(Outcome.captured) ?? .failed(value.failure ?? .captureFailed)
+    }
+
+    private func captureSingle(from position: CameraChoice, mode: CaptureMode,
+                               illumination: IlluminationMode) async -> Outcome {
         host?.syncVisionTap()
         host?.suppressVision(for: 4)
         camera.beginCaptureAttempt()   // this attempt's failure is classified by THIS attempt (item 65, finding 5)
@@ -202,12 +391,13 @@ final class EvidenceCapturePipeline {
         // pipeline. Every stand-down in the engine needs an armed state or a cold policy, so a
         // session the warm-up below restarted would otherwise stay up on a disarmed phone —
         // green dot on, no badge on Home — until the next arm.
-        defer { if endedByDisarm { camera.shutDown() } }
+        defer { if endedByDisarm && mayAffectSession { camera.shutDown() } }
 
         // Sound must yield before a microphone-bearing session starts. A camera that was
         // kept warm alongside its recorder must restart to reacquire audio cleanly.
         let audioHandoff = mode.isClip && (host?.pauseAudioForCapture() ?? false)
-        defer { if mode.isClip { host?.resumeAudioAfterCapture() } }
+        attempt?.microphoneYielded = audioHandoff
+        if mode.isClip { attempt?.audioBorrowed = true }
         let warmDeadline = Date().addingTimeInterval(timing.warmUpDeadline)
 
         // Point the session at the requested camera. If that fails, return nil — never
@@ -215,17 +405,14 @@ final class EvidenceCapturePipeline {
         // duplicate/wrong-camera "old" captures).
         let reconfigured: Bool
         do {
-            // Bounded (34's warmUp hardening): this await sits on the trigger path, where a
-            // blocked `startRunning()` used to wedge the engine's response with its
-            // trigger-handling flag stuck — detection dead until disarm. On timeout the
-            // capture fails cleanly; the stale warm-up finishing later is harmless here (the
-            // response is over) and the engine's stand-down still runs after it.
-            reconfigured = try await Self.withDeadline(timing.warmUpDeadline) { [camera] in
-                if audioHandoff {
-                    return try await camera.warmUpForAudioHandoff(camera: position, deadline: warmDeadline)
-                }
-                return try await camera.warmUp(forClips: mode.isClip, camera: position)
+            // The outer attempt owns the warm-up clock and retains its lease until this
+            // real operation drains. Do not nest a race here that loses the worker lifetime.
+            if audioHandoff {
+                reconfigured = try await camera.warmUpForAudioHandoff(camera: position, deadline: warmDeadline)
+            } else {
+                reconfigured = try await camera.warmUp(forClips: mode.isClip, camera: position)
             }
+            attempt?.warming = false
         } catch {
             if endedByDisarm {
                 Log.engine.info("Warm-up ended by the disarm")
@@ -255,6 +442,7 @@ final class EvidenceCapturePipeline {
             try? await Task.sleep(nanoseconds: UInt64(timing.autoExposureSettle * 1_000_000_000))
         }
 
+        if endedByDisarm { return .failed(.disarmed) }
         let illuminate = await shouldIlluminate(illumination)   // read AFTER settle, BEFORE flashing
         let useScreenFlash = illuminate && position == .front
         let useHardwareLight = illuminate && position == .rear
@@ -263,14 +451,13 @@ final class EvidenceCapturePipeline {
         if endedByDisarm { return .failed(.disarmed) }   // the settle and the light check took time: ask once more before the lens
 
         if mode.isClip {
-            let recordStart = Date()
             camera.beginClip(torch: useHardwareLight)
             await recordClipDuration(mode)
             do {
                 let url = try await camera.endClip()
-                let elapsed = Date().timeIntervalSince(recordStart)
-                // Hand the clip file on by URL — no in-memory read here.
-                return .captured(Capture(source: .clip(url), ext: "mov", duration: elapsed, camera: position))
+                guard let token = attempt else { return .failed(.captureFailed) }
+                await receiveFinalized(url, lens: position, mode: mode, token: token)
+                return token.finalized[position.rawValue].map(Outcome.captured) ?? .failed(.captureFailed)
             } catch {
                 if endedByDisarm {
                     Log.engine.info("Clip ended by the disarm")
@@ -283,8 +470,8 @@ final class EvidenceCapturePipeline {
                 return .failed(CaptureFailureReason.forCaptureFailure(interruption: await camera.interruptionReason()))
             }
         } else {
-            // captureStill is internally bounded (see CameraController) so a stalled photo
-            // delegate can never hang the pipeline or leak.
+            // The whole-attempt clock bounds this await independently of the camera queue.
+            // A late delegate retains its original destination while the camera is quarantined.
             do {
                 let data = try await camera.captureStill(hardwareFlash: useHardwareLight)
                 return .captured(Capture(source: .still(data), ext: "jpg", duration: 0, camera: position))   // stills have no clip length
@@ -305,22 +492,30 @@ final class EvidenceCapturePipeline {
     /// Captures front AND rear simultaneously via the multi-cam session. Front is lit by
     /// the screen flash, rear by its LED / torch. Falls back to a front-only single capture
     /// if the multi-cam session can't be brought up.
-    func captureBoth(mode: CaptureMode, illumination: IlluminationMode) async -> BothOutcome {
+    func captureBoth(mode: CaptureMode, illumination: IlluminationMode,
+                     preservation: Preservation? = nil) async -> BothOutcome {
+        await run(mode: mode, preservation: preservation, both: true) {
+            await self.captureBothOwned(mode: mode, illumination: illumination)
+        }
+    }
+
+    private func captureBothOwned(mode: CaptureMode, illumination: IlluminationMode) async -> BothOutcome {
         host?.suppressVision(for: 4)
         camera.beginCaptureAttempt()   // item 65, finding 5
-        defer { if endedByDisarm { camera.shutDown() } }   // review 3, R3.1 — see capture(from:)
+        defer { if endedByDisarm && mayAffectSession { camera.shutDown() } }   // review 3, R3.1 — see capture(from:)
         do {
-            let coldStarted = try await Self.withDeadline(timing.warmUpDeadline) { [camera] in
-                try await camera.warmUpMultiCam(forClips: mode.isClip)
-            }
+            let coldStarted = try await camera.warmUpMultiCam(forClips: mode.isClip)
+            attempt?.warming = false
+            if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
             host?.report(cameraNotice: nil)   // multi-cam is working
             // Cold start (battery saver / Auto on battery): let exposure ramp before capture.
             if coldStarted { try? await Task.sleep(nanoseconds: UInt64(timing.reconfigureSettle * 1_000_000_000)) }
         } catch {
+            if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
             host?.report(cameraNotice: "Multi-cam capture unavailable - recorded the front camera only. (\((error as NSError).localizedDescription))")
             Log.engine.error("Multi-cam warm-up failed, falling back to front only: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
             let rearFailure = CaptureFailureReason.forWarmUpFailure(error)
-            let fallback = await capture(from: .front, mode: mode, illumination: illumination)
+            let fallback = await captureSingle(from: .front, mode: mode, illumination: illumination)
             var failures = ["rear": rearFailure]
             if let reason = fallback.failure { failures["front"] = reason }
             if !endedByDisarm { host?.report(cameraNotice: "Rear camera unavailable - see the event for capture details.") }
@@ -339,6 +534,7 @@ final class EvidenceCapturePipeline {
             // Let auto-exposure re-meter the current scene before the light check.
             try? await Task.sleep(nanoseconds: UInt64(timing.autoExposureSettle * 1_000_000_000))
             screenFlash = await camera.isLowLightFront()
+            if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
             rearLight = await camera.isLowLightRear()
         }
 
@@ -347,23 +543,45 @@ final class EvidenceCapturePipeline {
         if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
 
         if mode.isClip {
-            let start = Date()
-            host?.pauseAudioForCapture()                 // free the mic for the clip (F-14)
-            defer { host?.resumeAudioAfterCapture() }
+            attempt?.microphoneYielded = host?.pauseAudioForCapture() ?? false
+            attempt?.audioBorrowed = true
             camera.beginBothClips(rearTorch: rearLight)
             await recordClipDuration(mode)
-            let urls = try? await camera.endBothClips()
-            let elapsed = Date().timeIntervalSince(start)
-            // Carry the clip files by URL — the store MOVES them off-main; we never read a
-            // (potentially huge) clip into memory here.
-            let front = urls?.front.map { Capture(source: .clip($0), ext: "mov", duration: elapsed, camera: .front) }
-            let rear = urls?.rear.map { Capture(source: .clip($0), ext: "mov", duration: elapsed, camera: .rear) }
-            return await bothOutcome(front, rear)
+            guard let token = attempt else { return BothOutcome(front: nil, rear: nil, failure: .captureFailed) }
+            _ = await camera.endBothClips { [self] url, lens in
+                await receiveFinalized(url, lens: lens, mode: mode, token: token)
+            }
+            return await bothOutcome(token.finalized["front"], token.finalized["rear"])
         } else {
-            let both = try? await camera.captureBothStills(rearHardwareFlash: rearLight)
-            let front = both?.front.map { Capture(source: .still($0), ext: "jpg", duration: 0, camera: .front) }
-            let rear = both?.rear.map { Capture(source: .still($0), ext: "jpg", duration: 0, camera: .rear) }
-            return await bothOutcome(front, rear)
+            guard let token = attempt else { return BothOutcome(front: nil, rear: nil, failure: .captureFailed) }
+            _ = await camera.captureBothStills(rearHardwareFlash: rearLight) { [self] data, lens in
+                let capture = Capture(source: .still(data), ext: "jpg", duration: 0, camera: lens)
+                await receivePhoto(capture, token: token)
+            }
+            return await bothOutcome(token.finalized["front"], token.finalized["rear"])
+        }
+    }
+
+    private func receivePhoto(_ capture: Capture, token: Attempt) async {
+        token.finalized[capture.camera.rawValue] = capture
+        if token.expired {
+            await preserveLate(BothOutcome(front: capture.camera == .front ? capture : nil,
+                                           rear: capture.camera == .rear ? capture : nil, failure: nil), for: token)
+        }
+    }
+
+    private func receiveFinalized(_ url: URL, lens: CameraChoice, mode: CaptureMode, token: Attempt) async {
+        let inspection: Task<Capture, Never>
+        if let running = token.inspections[url] { inspection = running }
+        else {
+            inspection = Task { @MainActor in await measuredClip(url, camera: lens, mode: mode) }
+            token.inspections[url] = inspection
+        }
+        let capture = await inspection.value
+        token.finalized[lens.rawValue] = capture
+        if token.expired {
+            await preserveLate(BothOutcome(front: !token.both || lens == .front ? capture : nil,
+                rear: token.both && lens == .rear ? capture : nil, failure: nil), for: token)
         }
     }
 
@@ -389,7 +607,10 @@ final class EvidenceCapturePipeline {
     /// `untilClearMax`).
     private func recordClipDuration(_ mode: CaptureMode) async {
         if let fixed = mode.fixedDuration {
-            try? await Task.sleep(nanoseconds: UInt64(fixed * 1_000_000_000))
+            let end = ContinuousClock.now.advanced(by: .seconds(fixed))
+            while !sessionIsOver, ContinuousClock.now < end {
+                try? await Task.sleep(for: .seconds(min(timing.untilClearPoll, 0.1)))
+            }
             return
         }
         // Until-clear: sensor trips during recording refresh the activity clock.
@@ -403,7 +624,11 @@ final class EvidenceCapturePipeline {
             // If the app was backgrounded, the capture session is interrupted and the
             // recording already stopped — finalize now (keeping the partial) instead of
             // waiting up to the ceiling on a dead session.
-            if await camera.clipWasInterrupted() { break }
+            if await camera.clipWasInterrupted() {
+                attempt?.recordingInterrupted = true
+                break
+            }
+            if sessionIsOver { break }
             // Re-arm the tripwires so continued tampering keeps registering.
             host?.rearmTripwiresDuringCapture()
             let idle = Date().timeIntervalSince(lastActivity ?? start)
@@ -425,12 +650,40 @@ final class EvidenceCapturePipeline {
     /// Light the scene for a front-camera capture by flashing the screen white — when the
     /// host allows it (see `CapturePipelineHost.mayFlashScreen`).
     private func illuminateForCapture() async {
-        guard host?.mayFlashScreen == true else { return }
+        guard !sessionIsOver, host?.mayFlashScreen == true else { return }
+        attempt?.flashed = true
         host?.setCaptureFlash(true)
         try? await Task.sleep(nanoseconds: UInt64(timing.flashSettle * 1_000_000_000))   // ~0.35 s to light + settle
     }
 
     private func endIllumination() {
+        guard mayAffectSession else { return }
+        attempt?.flashed = false
         host?.setCaptureFlash(false)
+    }
+
+    /// Inspects each finalized movie independently. Waiting time is never a footage length.
+    /// Unknown/unreadable media remains preserved, but is explicitly unverified and has no
+    /// invented duration. A thumbnail is neither required nor used as a validity test.
+    private func measuredClip(_ url: URL, camera position: CameraChoice, mode: CaptureMode) async -> Capture {
+        let measured = try? await Self.withDeadline(2) {
+            let asset = AVURLAsset(url: url)
+            let duration = try await asset.load(.duration).seconds
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            let playable = try await asset.load(.isPlayable)
+            guard duration.isFinite, duration > 0, !tracks.isEmpty, playable else { throw CameraController.CameraError.captureFailed }
+            return duration
+        }
+        let finished = camera.recordingFinishedSuccessfully(at: url)
+        let issue: CaptureFailureReason?
+        if measured == nil { issue = .clipUnverified }
+        else if attempt?.expired == true { issue = .captureTimedOut }
+        else if endedByDisarm { issue = .disarmed }
+        else if finished == false || attempt?.recordingInterrupted == true
+                    || mode.fixedDuration.map({ (measured ?? 0) + 0.25 < $0 }) == true {
+            issue = .clipPartial
+        } else if finished == nil { issue = .clipUnverified }
+        else { issue = nil }
+        return Capture(source: .clip(url), ext: "mov", duration: measured, camera: position, issue: issue)
     }
 }

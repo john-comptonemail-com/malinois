@@ -36,10 +36,6 @@ struct MalinoisApp: App {
         #if DEBUG
         Self.builtServices = true
         #endif
-        // iOS keeps Keychain items across app deletion, so a fresh install can inherit a PIN
-        // from a previous install and skip setup. Clear that stale PIN data first, before any
-        // view reads `KeychainService.hasPIN`. (The Pro trial start is kept — see the method.)
-        KeychainService.wipeStalePINDataOnFreshInstall()
         // Clear clip temp files a failed store-move orphaned (disk full mid-recording). Off the
         // launch path — nothing waits on it, and it only touches files over a day old.
         Task.detached(priority: .background) { CameraController.sweepOrphanedClips() }

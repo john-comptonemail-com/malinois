@@ -14,6 +14,12 @@ struct EventDetailView: View {
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var engine: MonitoringEngine
     @EnvironmentObject private var entitlements: ProEntitlements
+    @ObservedObject private var enrollment = CloudEnrollment.shared
+
+    private var holdReason: CloudEnrollment.UploadHoldReason? {
+        entitlements.proActive ? enrollment.uploadHoldReason(for: current) : nil
+    }
+
     @State private var showShare = false
     @State private var downloading = false
     @State private var downloadFoundNothing = false
@@ -190,10 +196,14 @@ struct EventDetailView: View {
             HStack {
                 Text("Exfiltration").foregroundStyle(.secondary)
                 Spacer()
-                Label(current.cloudSyncState.displayName, systemImage: "icloud")
-                    .foregroundStyle(syncColor)
+                Label(holdReason == nil ? current.cloudSyncState.displayName : "Local only", systemImage: "icloud")
+                    .foregroundStyle(holdReason == nil ? syncColor : .secondary)
             }
             .font(.subheadline)
+            if let holdReason {
+                Text(holdReason.explanation)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))

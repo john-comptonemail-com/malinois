@@ -176,6 +176,7 @@ struct ArmingView: View {
             .font(.caption.weight(.semibold))
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .frame(maxWidth: .infinity)   // centered in the notice (owner, 2026-10-11)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
