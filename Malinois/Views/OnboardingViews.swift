@@ -26,6 +26,7 @@ enum OnboardingState {
     private static let welcomeKey = "com.malinois.onboarding.seenTrialWelcome"
     private static let guidedAccessKey = "com.malinois.onboarding.seenGuidedAccessPrompt"
     private static let armedOnceKey = "com.malinois.onboarding.hasArmedOnce"
+    private static let disarmedOnceKey = "com.malinois.onboarding.hasDisarmedOnce"
     private static let notificationAskHiddenKey = "com.malinois.onboarding.notificationAskHidden"
 
     static var hasSeenTrialWelcome: Bool {
@@ -51,6 +52,24 @@ enum OnboardingState {
     static var hasArmedOnce: Bool {
         get { UserDefaults.standard.bool(forKey: armedOnceKey) }
         set { UserDefaults.standard.set(newValue, forKey: armedOnceKey) }
+    }
+
+    /// Whether the owner has disarmed from the black screen with the PIN on this install (item
+    /// 107). Until then the tamper warning shows how to disarm (`DisarmTip`). Set by a correct PIN
+    /// on the armed screen's pad; cleared with the app, so a reinstall shows the tip again.
+    static var hasDisarmedOnce: Bool {
+        get { UserDefaults.standard.bool(forKey: disarmedOnceKey) }
+        set { UserDefaults.standard.set(newValue, forKey: disarmedOnceKey) }
+    }
+
+    /// Writes `hasDisarmedOnce`'s starting value once, at launch, before anything can arm: a new
+    /// install starts with the tip; an install that armed before this build starts without it
+    /// (`DisarmTip.initialHasDisarmedOnce`). A stored value is kept.
+    static func seedHasDisarmedOnce() {
+        let defaults = UserDefaults.standard
+        let stored = defaults.object(forKey: disarmedOnceKey) as? Bool
+        defaults.set(DisarmTip.initialHasDisarmedOnce(stored: stored, hasArmedOnce: hasArmedOnce),
+                     forKey: disarmedOnceKey)
     }
 
     /// Whether the post-session Guided Access nudge is due. Pure (unit-tested).
@@ -101,7 +120,7 @@ struct TrialWelcomeView: View {
     private var closingNote: String {
         switch entitlements.status {
         case .pro:
-            "Nothing expires and there's nothing to renew. Your evidence stays on this device and in your own private iCloud - nobody else can read it, including me."
+            "Nothing expires and there's nothing to renew. Your events and evidence stay on this device and in your own private iCloud - the developer can't read them, and with Advanced Data Protection on, neither can Apple."
         case .earlyAccess:
             "Nothing expires and there's nothing to renew. If Pro ever becomes a paid unlock, that will apply to new installs only. Your data stays yours. No account, no server, nothing sent to the developer."
         case .trial:

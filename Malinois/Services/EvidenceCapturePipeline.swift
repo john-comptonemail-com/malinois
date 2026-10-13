@@ -42,6 +42,10 @@ protocol CapturePipelineHost: AnyObject {
     func clearCaptureNotice(matching notice: String)
     /// The prior operation and its required shutdown have drained; deferred work may retry.
     func captureCameraBecameAvailable()
+    /// Camera evidence finished after the capture deadline was stored on its event, and the
+    /// event reopened for upload (item 108, CE-01): the response's own upload ran before the
+    /// evidence existed, so the host starts another.
+    func captureEvidenceStoredLate()
 }
 
 /// Why the system interrupted a capture session — `AVCaptureSession.InterruptionReason` as
@@ -296,6 +300,8 @@ final class EvidenceCapturePipeline {
 
     private func preserveLate(_ value: BothOutcome, for token: Attempt) async {
         guard let destination = token.preservation else { return }
+        var storedAny = false
+        defer { if storedAny { host?.captureEvidenceStoredLate() } }   // item 108, CE-01
         for (capture, secondary) in [(value.front, false), (value.rear, true)] {
             guard let capture, token.lateHandled.insert(capture.camera.rawValue).inserted else { continue }
             guard let stored = await destination.store.store(capture.source, ext: capture.ext,
@@ -318,6 +324,7 @@ final class EvidenceCapturePipeline {
             current.captureFailuresByCamera = issues
             destination.store.update(current)
             destination.store.reopenForReupload(current.id)
+            storedAny = true
         }
     }
 
@@ -543,8 +550,9 @@ final class EvidenceCapturePipeline {
         if endedByDisarm { return BothOutcome(front: nil, rear: nil, failure: .disarmed) }
 
         if mode.isClip {
-            attempt?.microphoneYielded = host?.pauseAudioForCapture() ?? false
-            attempt?.audioBorrowed = true
+            // The multi-cam session has no microphone input: a Both clip records no audio, so the
+            // Sound tripwire keeps listening through it (item 108, F14). It used to be paused
+            // for nothing, deaf for the length of every Both clip.
             camera.beginBothClips(rearTorch: rearLight)
             await recordClipDuration(mode)
             guard let token = attempt else { return BothOutcome(front: nil, rear: nil, failure: .captureFailed) }

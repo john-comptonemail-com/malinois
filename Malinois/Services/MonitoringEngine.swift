@@ -845,7 +845,7 @@ final class MonitoringEngine: ObservableObject {
     /// correctly-worded push on the owner's other devices (BACKLOG 59) — never through the
     /// tamper subscription, whose static body would be wrong and noisy for a routine arm.
     @discardableResult
-    private func logStateChange(_ kind: String, sessionCloudAllowed: Bool? = nil) -> Event {
+    func logStateChange(_ kind: String, sessionCloudAllowed: Bool? = nil) -> Event {
         // `.pending` rather than `.localOnly`: these now DO leave the device (BACKLOG 8),
         // via the silent `TamperEventState` type. `exfiltrate` resolves the state — and
         // marks it `.localOnly` for a genuinely free user, so the badge stays honest.
@@ -985,7 +985,7 @@ final class MonitoringEngine: ObservableObject {
         }
         let power = PowerMonitor()
         let proximity = ProximityMonitor()
-        let audio = AudioMonitor()
+        let audio = makeAudioMonitor()   // health reports wired (item 105, F-09)
         let vision = VisionMonitor()
         monitors = [
             .motion: motion, .power: power, .proximity: proximity, .audio: audio, .vision: vision

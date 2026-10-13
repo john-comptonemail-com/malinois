@@ -84,7 +84,23 @@ final class SirenPlayer {
     /// path needs audio contention timed against activation — not unit-constructible, see
     /// BACKLOG 42's device-leg note), so SR-1's consume-once rule can be regression-tested.
     func setActivationExhaustedForTesting() { activationExhausted = true }
+    /// Test-only: the playing player's volume, nil when none plays.
+    var volumeForTesting: Float? { player?.volume }
+
+    /// Under the test runner the siren plays at zero volume (owner, 2026-10-13): the suite reaches
+    /// the real player (suspected jamming sounds it whatever the response mode), and the Simulator
+    /// played it through the Mac's speakers. Its state is unchanged, so what reads it sees a phone's.
+    private static let silentUnderTests = TestHost.isTestRunnerLaunch(
+        xcTestLoaded: NSClassFromString("XCTestCase") != nil, environment: ProcessInfo.processInfo.environment)
     #endif
+
+    /// `level`, or silence under the test runner (Debug builds only; see `silentUnderTests`).
+    private static func audible(_ level: Float) -> Float {
+        #if DEBUG
+        if silentUnderTests { return 0 }
+        #endif
+        return level
+    }
 
     /// Pure (unit-tested): whether a fresh activation attempt is owed — the alarm should be
     /// sounding and isn't. Extending the alert window is fresh evidence the incident is
@@ -133,7 +149,7 @@ final class SirenPlayer {
         shouldBeSounding = true
         rampTimer?.invalidate(); rampTimer = nil
         if let p = player, p.isPlaying {
-            p.setVolume(1.0, fadeDuration: 0)
+            p.setVolume(Self.audible(1.0), fadeDuration: 0)
         } else {
             beginPlayback(rampUp: false)   // not started, or interrupted → (re)start loud
         }
@@ -157,7 +173,7 @@ final class SirenPlayer {
             try session.setActive(true)
             let p = try loadPlayer()
             p.numberOfLoops = -1     // loop until stopped
-            p.volume = rampUp ? Self.rampStartVolume : 1.0
+            p.volume = Self.audible(rampUp ? Self.rampStartVolume : 1.0)
             p.prepareToPlay()
             p.play()
             player = p
@@ -188,7 +204,7 @@ final class SirenPlayer {
         rampTimer = Timer.commonMode(interval: Self.rampHoldSeconds, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let p = self.player else { return }
-                p.setVolume(1.0, fadeDuration: Self.rampFadeSeconds)
+                p.setVolume(Self.audible(1.0), fadeDuration: Self.rampFadeSeconds)
                 self.rampTimer = nil
             }
         }

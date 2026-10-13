@@ -32,6 +32,8 @@ final class FakeCaptureHost: CapturePipelineHost {
     func syncVisionTap() { visionSyncs += 1 }
     func report(cameraNotice: String?) { notices.append(cameraNotice) }
     func captureCameraBecameAvailable() {}
+    private(set) var lateEvidenceStored = 0
+    func captureEvidenceStoredLate() { lateEvidenceStored += 1 }
     func clearCaptureNotice(matching notice: String) {
         if notices.last == notice { notices.append(nil) }
     }
@@ -825,6 +827,44 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertNotNil(result.front)
         XCTAssertNil(result.failure)
         XCTAssertEqual(result.failuresByCamera, ["rear": .cameraUnavailable])
+    }
+
+    // MARK: - Item 108 (the 1.6 reviews): late evidence is uploaded; Both clips keep Sound listening
+
+    /// CE-01: evidence stored after the capture deadline asks the host to upload it, since the
+    /// response's own upload ran before it existed.
+    func testLateEvidenceAsksTheHostToUploadIt() async throws {
+        let gate = InvestigationCaptureGate()
+        let camera = FakeCamera()
+        camera.supportsMultiCam = true
+        camera.heldBothPhotoLensForTesting = .rear
+        camera.bothPhotoProbeForTesting = { await gate.wait() }
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .synced)
+        store.add(event)
+        let result = await pipeline.captureBoth(mode: .photo, illumination: .off,
+                                                preservation: .init(event: event, store: store))
+        XCTAssertEqual(result.failure, .captureTimedOut)
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(store.events.first { $0.id == event.id }?.mediaFilename, "the finished lens was stored late")
+        XCTAssertGreaterThan(host.lateEvidenceStored, 0, "and the host was asked to upload it")
+        await gate.release()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    /// F14: a Both-camera clip records no audio, so the Sound tripwire keeps listening through it.
+    func testBothCameraClipsKeepTheSoundTripwireListening() async {
+        let rig = makeRig { $0.omittedBothCameras = ["rear"] }
+        rig.host.audioHandoffNeeded = true
+        let result = await rig.pipeline.captureBoth(mode: .clip3, illumination: .off)
+        defer { if case .clip(let url) = result.front?.source { try? FileManager.default.removeItem(at: url) } }
+        XCTAssertEqual(rig.host.audioPauses, 0, "nothing to hand the microphone to")
+        XCTAssertEqual(rig.host.audioResumes, 0)
     }
 
 }

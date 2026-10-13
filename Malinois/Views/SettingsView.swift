@@ -87,7 +87,7 @@ struct SettingsView: View {
                             Spacer()
                             Text("Active").foregroundStyle(.green)
                         }
-                        Text("Free and permanent for Early-Access installs. Tap to support the project - one-time \(entitlements.product?.displayPrice ?? "$9.99"); it adds nothing you don't already have.")
+                        Text("Free and permanent for Early-Access installs. Tap to support the project; it adds nothing you don't already have. \(PaywallView.oneTimeCaption(displayPrice: entitlements.product?.displayPrice))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -107,9 +107,10 @@ struct SettingsView: View {
                                 Text("\(d)d left").font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        let price = PaywallView.oneTimeCaption(displayPrice: entitlements.product?.displayPrice)
                         Text(entitlements.status == .trial
-                             ? "Everything's unlocked during your trial. Buy now to keep it - one-time \(entitlements.product?.displayPrice ?? "$9.99")."
-                             : "iCloud backup, cross-device alerts, both cameras, longer clips, and the sound tripwire. One-time \(entitlements.product?.displayPrice ?? "$9.99").")
+                             ? "Everything's unlocked during your trial. Buy now to keep it. \(price)"
+                             : "iCloud backup, cross-device alerts, both cameras, longer clips, and the sound tripwire. \(price)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -310,7 +311,7 @@ struct SettingsView: View {
     private var responseHint: String {
         switch settings.responseMode {
         case .alert:   return "Evidence is captured silently, then a warning appears on screen - a deterrent that also serves as the disarm prompt."
-        case .stealth: return "Fully covert: the screen stays black and nothing is shown. Evidence is still captured and uploaded."
+        case .stealth: return "Covert: no warning appears and the screen stays dark, apart from the REC badge and the iOS recording indicator while the camera records. Evidence is still captured and uploaded."
         case .siren:   return "Captures evidence, shows the warning, and sounds a loud alarm (plays even on silent) until the tamper stops or you disarm."
         }
     }
@@ -488,7 +489,7 @@ struct SettingsView: View {
                 set: { applyCrossDeviceAlerts($0) })) {
                 VStack(alignment: .leading) {
                     HStack { Text("Cross-device alerts"); proMark }
-                    Text("Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. One switch for the whole account: off requires fresh device authentication and removes alerts for all devices. On restores them. Another device with alerts enabled may restore the subscriptions.")
+                    Text("Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. One switch for the whole account: off requires fresh device authentication and removes alerts for all devices. On restores them. Another device with alerts enabled may restore the subscriptions. An Apple Watch gets these alerts after Malinois has been opened on it once.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

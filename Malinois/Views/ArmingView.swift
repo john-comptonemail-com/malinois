@@ -18,7 +18,7 @@ struct ArmingView: View {
         VStack(spacing: 28) {
             switch engine.state {
             case .guidedAccessCheck: guidedAccessStep
-            case .arming:            graceStep
+            case .arming:            scrollingIfNeeded(graceStep)
             case .calibrating:       calibrationStep
             default:                 EmptyView()
             }
@@ -35,6 +35,16 @@ struct ArmingView: View {
                 showCancelPIN = false
                 engine.disarm()
             } onCancel: { showCancelPIN = false }
+        }
+    }
+
+    /// `content` as laid out, or scrolling when it is taller than the screen: the countdown's lines
+    /// outgrow an iPhone SE once a warning joins them (item 108's Guided Access warning cut the
+    /// last line of the battery note short there). A screen it fits looks exactly as before.
+    private func scrollingIfNeeded<Content: View>(_ content: Content) -> some View {
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
         }
     }
 
@@ -107,6 +117,23 @@ struct ArmingView: View {
         return parts.joined(separator: " ")
     }
 
+    /// Said while an arm goes ahead without Guided Access (item 108, the owner's decision 2A): the
+    /// first arm lifts the requirement by itself (item 68), and the owner can lift it for any arm.
+    /// Armed, the phone is unlocked behind a black screen, and Malinois can record someone leaving
+    /// it but cannot stop them.
+    static let unconfinedWarning = "Guided Access is off for this arm: anyone who picks it up can leave Malinois and use your unlocked phone. Stay nearby."
+
+    /// Pure (unit-tested). Whether to show `unconfinedWarning`: the requirement was lifted for this
+    /// arm and Guided Access is off. A blocked arm shows the "required" notice instead.
+    static func showsUnconfinedWarning(liftedThisArm: Bool, guidedAccessOn: Bool) -> Bool {
+        liftedThisArm && !guidedAccessOn
+    }
+
+    private var unconfined: Bool {
+        Self.showsUnconfinedWarning(liftedThisArm: engine.guidedAccessLiftedThisArm,
+                                    guidedAccessOn: engine.guidedAccessEnabled)
+    }
+
     // MARK: - Guided Access coaching
 
     private var guidedAccessStep: some View {
@@ -128,6 +155,14 @@ struct ArmingView: View {
                 }
 
                 if engine.armingBlockedByGuidedAccess { guidedAccessRequiredNotice }
+                if unconfined {
+                    Label(Self.unconfinedWarning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
+                }
                 if engine.cameraAskBlockedByGuidedAccess { cameraAskBlockedNotice }
 
                 guidedAccessRecommendation
@@ -216,18 +251,30 @@ struct ArmingView: View {
         }
     }
 
-    /// Shown on the arming screen so the owner knows how to get back in later —
-    /// the armed screen is black and gives no hints.
+    /// Shown first on the arming screen so the owner knows how to get back in later: the armed
+    /// screen is black, and after the first disarm its warning gives no hints. The hold leads, in
+    /// large type, because owners missed it as the first of three small steps (item 107).
     private var disarmInstructions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Disarm Instructions", systemImage: "hand.raised.fill")
+        VStack(alignment: .leading, spacing: 12) {
+            Label("How to disarm", systemImage: "hand.raised.fill")
                 .font(.subheadline.weight(.semibold))
-            instruction(1, "On the blank screen, press and hold anywhere for 5 seconds. The screen brightens and a PIN pad appears.")
+                .foregroundStyle(.secondary)
+            HStack(spacing: 14) {
+                Image(systemName: "hand.tap.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tint)
+                Text(DisarmTip.holdHeadline)
+                    .font(.title3.weight(.bold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            instruction(1, "Keep your finger down the whole time; a quick tap won't open it. A short vibration and a brighter screen mean the PIN pad is up.")
             instruction(2, "Enter your Malinois PIN to disarm. This works even while Guided Access is still on.")
             instruction(3, "Then triple-click the side (or Home) button and enter your Guided Access passcode to end Guided Access.")
         }
         .padding()
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.08)))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 1.5))
     }
 
     private var guidedAccessIndicator: some View {
@@ -261,10 +308,25 @@ struct ArmingView: View {
             Text("\(engine.graceRemaining)")
                 .font(.system(size: 96, weight: .bold, design: .rounded))
                 .monospacedDigit()
-            Text("Set the device down and step away. The screen will go black.")
+            Text("Set the device down and step away. The screen will go dark.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            // The last thing read before the screen goes dark (item 107), in red so it stands out
+            // (owner, 2026-10-13): under Guided Access the hold and the PIN are the only way back in.
+            Label(DisarmTip.countdownReminder, systemImage: "hand.tap.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            if unconfined {
+                Label(Self.unconfinedWarning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)   // never cut short on a small screen
+                    .padding(.horizontal)
+            }
             if engine.armWasAutoRecovered {
                 Label("Re-arming after an interrupted session - PIN required to stop.",
                       systemImage: "arrow.clockwise.circle")

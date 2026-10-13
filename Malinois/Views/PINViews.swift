@@ -16,9 +16,9 @@ import UIKit
 struct PINPad: View {
     @Binding var digits: String
     let maxLength: Int
-    /// When true, hide the target length (F-25): show a dot only per *typed* digit (no
-    /// empty placeholders revealing the count) and submit via an explicit ✓ rather than
-    /// auto-firing at a fixed length. Used for the disarm/gate pad; setup leaves it off.
+    /// When true, show a dot only per *typed* digit (no empty placeholders revealing the
+    /// count) and, without `autoSubmitLength`, submit via an explicit ✓ (F-25's length
+    /// concealment, relaxed by item 106). Used for the disarm/gate pad; setup leaves it off.
     var conceal: Bool = false
     /// When true, randomize the digit positions so an observer can't read the PIN from
     /// finger positions (shoulder-surf / smudge / thermal). ✓ and ⌫ stay put — only the
@@ -27,6 +27,22 @@ struct PINPad: View {
     /// Called on every keypress — lets the disarm flow reset its inactivity timeout (R-09).
     var onActivity: (() -> Void)?
     var onComplete: (() -> Void)?
+    /// Item 106: the PIN's confirmed length. When set, the pad submits itself once that many
+    /// digits are typed, like the iPhone's passcode, and shows no ✓; the entry is checked exactly
+    /// as an explicit submit is, so a wrong one counts toward the lockout. Nil keeps the ✓.
+    var autoSubmitLength: Int?
+
+    /// Pure (unit-tested; item 106): whether the entry submits itself after this keypress.
+    nonisolated static func submitsAutomatically(count: Int, maxLength: Int, conceal: Bool,
+                                                 autoSubmitLength: Int?) -> Bool {
+        if let autoSubmitLength { return count == autoSubmitLength }
+        return !conceal && count == maxLength
+    }
+
+    /// Pure (unit-tested; item 106): whether the pad shows the explicit submit key.
+    nonisolated static func showsSubmitKey(conceal: Bool, autoSubmitLength: Int?) -> Bool {
+        conceal && autoSubmitLength == nil
+    }
 
     private static let minLength = 4
     private static let naturalOrder = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -39,7 +55,9 @@ struct PINPad: View {
     @State private var digitOrder: [String]
 
     init(digits: Binding<String>, maxLength: Int, conceal: Bool = false, scramble: Bool = false,
+         autoSubmitLength: Int? = nil,
          onActivity: (() -> Void)? = nil, onComplete: (() -> Void)? = nil) {
+        self.autoSubmitLength = autoSubmitLength
         self._digits = digits
         self.maxLength = maxLength
         self.conceal = conceal
@@ -53,7 +71,8 @@ struct PINPad: View {
         [Array(digitOrder[0...2]),
          Array(digitOrder[3...5]),
          Array(digitOrder[6...8]),
-         [conceal ? "✓" : "", digitOrder[9], "⌫"]]
+         [Self.showsSubmitKey(conceal: conceal, autoSubmitLength: autoSubmitLength) ? "✓" : "",
+          digitOrder[9], "⌫"]]
     }
     private var canSubmit: Bool { digits.count >= Self.minLength }
 
@@ -124,9 +143,10 @@ struct PINPad: View {
         }
         guard digits.count < maxLength else { return }
         digits.append(key)
-        // Auto-submit at the fixed length only when NOT concealing (setup uses its own
-        // Continue button; the concealed entry pad submits via ✓).
-        if !conceal, digits.count == maxLength { onComplete?() }
+        // Setup advances at its fixed length; the entry pad at the confirmed length, or via ✓
+        // without one (item 106).
+        if Self.submitsAutomatically(count: digits.count, maxLength: maxLength, conceal: conceal,
+                                     autoSubmitLength: autoSubmitLength) { onComplete?() }
     }
 }
 
@@ -142,20 +162,14 @@ struct PINSetupView: View {
     @State private var first = ""
     @State private var confirm = ""
     @State private var error: String?
+    @State private var length = PINSetupView.defaultLength
+    @State private var easyToGuess = false
 
-    // PINs may be 4–6 digits. The pad shows the maximum; a Continue button
-    // commits whatever length (4–6) the user chose. That chosen length is then
-    // stored and reused by every entry screen.
-    private let maxLength = 6
-    private let minLength = 4
+    /// Item 106 (owner, 2026-10-12): new PINs are 4 digits by default, with 6 available; the pad
+    /// advances by itself at the chosen length. An existing 5-digit PIN keeps working until changed.
+    nonisolated static let defaultLength = 4
+    nonisolated static let allowedLengths = [4, 6]
     enum Stage { case create, confirm }
-
-    private var current: String { stage == .create ? first : confirm }
-    private var canContinue: Bool {
-        stage == .create
-            ? (minLength...maxLength).contains(first.count)
-            : confirm.count == first.count
-    }
 
     var body: some View {
         VStack(spacing: 28) {
@@ -166,9 +180,12 @@ struct PINSetupView: View {
                 .accessibilityLabel("Malinois")
             Text(stage == .create ? "Create a PIN" : "Confirm your PIN")
                 .font(.title2.weight(.semibold))
-            // R1-L1 + R2 convergence: two reviews independently asked for a 6-digit nudge.
-            // Copy only — 4 stays allowed; lockout remains the real defense (SECURITY.md).
-            Text("4–6 digits (6 recommended). Required to disarm Malinois and to view captured evidence.")
+            // Item 106: 4 digits by default with 6 one tap away; the easy-to-guess warning below
+            // replaced R1-L1 and R2's "6 recommended" nudge, since people's 6-digit choices are
+            // barely harder to guess; the lockout remains the real defense (SECURITY.md).
+            // Item 108 (the owner's decision 3, 2026-10-13): a code shared with the iPhone or Guided
+            // Access falls with it, to one glance over the owner's shoulder.
+            Text("\(length) digits. Required to disarm Malinois and to view captured evidence. Use a code different from your iPhone passcode and your Guided Access passcode.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -179,14 +196,15 @@ struct PINSetupView: View {
             }
 
             PINPad(digits: stage == .create ? $first : $confirm,
-                   maxLength: maxLength)
+                   maxLength: length, onComplete: advance)
 
-            Button(action: advance) {
-                Text(stage == .create ? "Continue" : "Set PIN")
-                    .frame(maxWidth: 220)
+            if stage == .create {
+                Button(length == 4 ? "Use 6 digits" : "Use 4 digits") {
+                    length = length == 4 ? 6 : 4
+                    first = ""
+                }
+                .font(.footnote)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canContinue)
         }
         .padding()
         // Match PINEntryView's dark treatment so setup and disarm-entry look like one flow.
@@ -196,14 +214,22 @@ struct PINSetupView: View {
         .environment(\.colorScheme, .dark)
         .onChange(of: first) { _, _ in error = nil }
         .onChange(of: confirm) { _, _ in error = nil }
+        .alert("This PIN is easy to guess", isPresented: $easyToGuess) {
+            Button("Use Anyway") { withAnimation { stage = .confirm } }
+            Button("Choose Another", role: .cancel) { first = "" }
+        } message: {
+            Text("PINs like 1234, repeated digits and years are among the first an intruder tries.")
+        }
     }
 
     private func advance() {
         switch stage {
         case .create:
-            guard (minLength...maxLength).contains(first.count) else { return }
+            guard first.count == length else { return }
+            if PINStrength.isEasilyGuessed(first) { easyToGuess = true; return }   // item 106
             withAnimation { stage = .confirm }
         case .confirm:
+            guard confirm.count == first.count else { return }
             guard first == confirm else {
                 error = "PINs didn't match. Try again."
                 first = ""; confirm = ""
@@ -446,6 +472,8 @@ struct PINEntryView: View {
     @State private var error = false
     @State private var shakes: CGFloat = 0   // bumped on a wrong PIN to shake the pad
     @State private var lockoutRemaining: TimeInterval = KeychainService.lockoutRemaining()
+    /// Item 106: read once per presentation; nil keeps the explicit submit.
+    @State private var autoSubmitLength = KeychainService.confirmedPINLength
     @State private var gaActive = UIAccessibility.isGuidedAccessEnabled
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -478,7 +506,7 @@ struct PINEntryView: View {
                     .multilineTextAlignment(.center)
             }
             PINPad(digits: $digits, maxLength: 6, conceal: true, scramble: settings.scramblePINPad,
-                   onActivity: onActivity, onComplete: check)
+                   autoSubmitLength: autoSubmitLength, onActivity: onActivity, onComplete: check)
                 .environment(\.colorScheme, .dark)
                 .disabled(isLocked)
                 .opacity(isLocked ? 0.35 : 1)
@@ -536,8 +564,9 @@ struct PINEntryView: View {
 
     private func check() {
         guard !isLocked else { digits = ""; return }
-        // Fires when the owner submits (✓). `verify` accepts any 4–6 digit length, so the
-        // pad never needs to know — or reveal — the stored length.
+        // Fires on the explicit ✓ or, with a confirmed length, once that many digits are typed
+        // (item 106). Either way `verify` counts a wrong entry, and the armed pad's `onFailure`
+        // records it: auto-submit gives no free guesses.
         if KeychainService.verify(digits) {
             // `verify` itself cleared the failure counter (the service owns BOTH halves of
             // the rate-limit contract — seventh review #1); nothing to reset here.
@@ -545,6 +574,10 @@ struct PINEntryView: View {
         } else {
             error = true
             digits = ""
+            // The rest of this entry submits with ✓ (item 108, F10): were the confirmed length
+            // ever wrong, auto-submit would fire at it on every try and the owner could never
+            // enter the real PIN. The next presentation reads the length again.
+            autoSubmitLength = nil
             withAnimation(.linear(duration: 0.4)) { shakes += 1 }   // shake + error haptic
             // `verify` already counted this failure (F2 — the service owns rate limiting;
             // counting here too would escalate the lockout at double rate). Just read the

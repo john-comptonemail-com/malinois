@@ -1052,8 +1052,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             self.clipInterrupted = false
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.single)
-            if torch { self.setTorch(true, device: self.videoDevice) }
             guard let destination = Self.pendingMovieDestinations(outputs: 1)?.first else { return }
+            // Lit only once there is somewhere to record (item 108, F8): lit before, a refused
+            // clip left the torch on, recording nothing, until the clip's end turned it off.
+            if torch { self.setTorch(true, device: self.videoDevice) }
             let url = destination.url
             self.movieOutput.maxRecordedFileSize = destination.limit
             self.registerFile(url, camera: self.configuredPosition == .back ? .rear : .front)
@@ -1104,9 +1106,9 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.front)
             self.discardParkedClip(.rear)
-            if rearTorch { self.setTorch(true, device: self.rearDevice) }
             guard !self.frontMovieOutput.isRecording, !self.rearMovieOutput.isRecording,
                   let destinations = Self.pendingMovieDestinations(outputs: 2) else { return }
+            if rearTorch { self.setTorch(true, device: self.rearDevice) }   // as beginClip (item 108, F8)
             if !self.frontMovieOutput.isRecording {
                 let url = destinations[0].url
                 self.frontMovieOutput.maxRecordedFileSize = destinations[0].limit
@@ -1292,9 +1294,15 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return (0..<outputs).map { _ in (root.appendingPathComponent(UUID().uuidString + ".mov"), limit) }
     }
 
-    private static func pendingMovieDestinations(outputs: Int) -> [(url: URL, limit: Int64)]? {
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    /// Where recordings wait until the event log takes them: the log moves each clip out as it
+    /// attaches it.
+    nonisolated static var pendingClipsFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PendingCameraEvidence", isDirectory: true)
+    }
+
+    private static func pendingMovieDestinations(outputs: Int) -> [(url: URL, limit: Int64)]? {
+        let root = pendingClipsFolder
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                                                     attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
@@ -1304,6 +1312,29 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             return nil
         }
         return destinations
+    }
+
+    /// Removes recordings no event took from `pendingClipsFolder` once they are `age` old (item
+    /// 108, F8). The event log moves every clip it attaches out of that folder at once and nothing
+    /// else reads it, so a clip still there after a month is one no path will ever attach: a
+    /// recording whose response ended without it, or whose app was ended mid-recording. Kept,
+    /// they counted against the folder's admission budget (`pendingMovieAllowance`), and enough
+    /// of them refused every new clip. Only this class's own `<UUID>.mov` files are touched.
+    /// Run at launch, off the main thread. `root` and `now` are for tests.
+    nonisolated static func sweepOrphanedPendingClips(in root: URL? = nil, olderThan age: TimeInterval = 30 * 86_400,
+                                                      now: Date = Date()) {
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: root ?? pendingClipsFolder,
+                                                                      includingPropertiesForKeys: keys,
+                                                                      options: [.skipsHiddenFiles]) else { return }
+        let cutoff = now.addingTimeInterval(-age)
+        for url in urls where url.pathExtension == "mov"
+            && UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true, let modified = values?.contentModificationDate,
+                  modified < cutoff else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// Sweeps legacy temporary movies created before protected pending evidence storage.
@@ -1331,16 +1362,12 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
     // MARK: - Thumbnails
 
+    /// A JPEG thumbnail at most `maxDimension` pixels on its longer side, orientation applied.
+    /// Decoded through `BoundedImageDecoder` (item 105, F-10): an image over its pixel cap gets
+    /// no thumbnail and is never decoded at full size.
     static func thumbnail(from imageData: Data, maxDimension: CGFloat = 200) -> Data? {
-        guard let image = UIImage(data: imageData) else { return nil }
-        let size = image.size
-        let scale = min(maxDimension / max(size.width, size.height), 1)
-        let target = CGSize(width: size.width * scale, height: size.height * scale)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: target, format: format)
-        let thumb = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: target)) }
-        return thumb.jpegData(compressionQuality: 0.4)
+        guard let image = BoundedImageDecoder.image(from: imageData, maxPixelSize: Int(maxDimension)) else { return nil }
+        return image.jpegData(compressionQuality: 0.4)
     }
 
     static func videoThumbnail(from url: URL, maxDimension: CGFloat = 200) -> Data? {

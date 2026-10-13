@@ -22,6 +22,10 @@ final class AudioMonitor: SensorMonitor {
     var isEnabled: Bool = true
     var sensitivity: Sensitivity = .medium
     var onTrip: ((SensorType) -> Void)?
+    /// Item 105, F-09: an outage of the metering recorder during a live watch, and its recovery
+    /// (`SoundHealthTracker` decides). The engine records each as a quiet status entry.
+    var onHealthReport: ((SoundHealthTracker.Report) -> Void)?
+    private var healthTracker = SoundHealthTracker()
 
     var requiresCalibration: Bool { true }
 
@@ -56,6 +60,8 @@ final class AudioMonitor: SensorMonitor {
     var warmupSamplesRemainingForTesting: Int { warmupSamples }
     var deactivateAudioSessionForTesting: (() -> Void)?
     var currentLevelForTesting: (() -> Double)?
+    var recordingForTesting: (() -> Bool)?
+    var nowForTesting: (() -> Date)?
     func queuedMeterTickForTesting(calibration: Bool) -> () -> Void {
         { [weak self] in
             if calibration { self?.sampleCalibration() } else { self?.evaluate() }
@@ -158,6 +164,7 @@ final class AudioMonitor: SensorMonitor {
     // MARK: - Calibration
 
     func beginCalibration() {
+        healthTracker.reset()   // a new watch (item 105, F-09)
         makeRecorderIfNeeded()
         calibrating = true
         calibrationSamples.removeAll()
@@ -169,7 +176,11 @@ final class AudioMonitor: SensorMonitor {
 
     private func sampleCalibration() {
         guard calibrating, meterTimer?.isValid == true else { return }
-        calibrationSamples.append(currentLevel())
+        let level = currentLevel()
+        // Item 108, SE-01: a microphone that is down reads the -160 dBFS floor. That is missing
+        // data, not a quiet room: learning it would set a baseline the room itself then trips.
+        guard recorderIsRecording else { return }
+        calibrationSamples.append(level)
     }
 
     func endCalibration() {
@@ -219,6 +230,7 @@ final class AudioMonitor: SensorMonitor {
     }
 
     private func stopMetering() {
+        healthTracker.pause()   // a planned pause restarts the outage clock (item 105, F-09)
         meterTimer?.invalidate(); meterTimer = nil
         recorder?.stop(); recorder = nil
         hasTripped = false
@@ -239,6 +251,11 @@ final class AudioMonitor: SensorMonitor {
         // Reject that tick before currentLevel can restart the recorder during capture.
         guard meterTimer?.isValid == true else { return }
         let level = currentLevel()
+        // Item 108, SE-01: while the microphone is down (a restart failed, or a call holds it),
+        // its -160 dBFS reading is not silence. Feeding it to the rolling baseline sank the trip
+        // bar by tens of dB, so the unchanged room tripped a false Sound event when the microphone
+        // came back. Skip the tick: the warm-up, the baseline and the trace wait for real samples.
+        guard observeRecorderHealth() else { return }
         traceBuffer.append(level)
         if traceBuffer.count > traceCapacity { traceBuffer.removeFirst() }
 
@@ -274,6 +291,28 @@ final class AudioMonitor: SensorMonitor {
                                         baseline: baselineDB, maxDrift: maxBaselineDrift)
     }
 
+    /// Item 105, F-09: samples the recorder's liveness on each watching tick. `currentLevel` has
+    /// just rebuilt the recorder if a rebuild was due, so one still not recording is down.
+    /// Returns whether it is recording, that is, whether this tick's level is a real sample.
+    private func observeRecorderHealth() -> Bool {
+        let recording = recorderIsRecording
+        #if DEBUG
+        let now = nowForTesting?() ?? Date()
+        #else
+        let now = Date()
+        #endif
+        if let report = healthTracker.observe(recording: recording, at: now) { onHealthReport?(report) }
+        return recording
+    }
+
+    /// Whether the metering recorder is running, so that the level just read came from the room.
+    private var recorderIsRecording: Bool {
+        #if DEBUG
+        if let recordingForTesting { return recordingForTesting() }
+        #endif
+        return recorder?.isRecording == true
+    }
+
     /// Pure: the next rolling baseline, capped at `baseline + maxDrift` (unit-tested).
     nonisolated static func clampedRolling(_ proposed: Double, baseline: Double, maxDrift: Double) -> Double {
         min(proposed, baseline + maxDrift)
@@ -307,4 +346,46 @@ final class AudioMonitor: SensorMonitor {
         let mid = sorted.count / 2
         return sorted.count.isMultiple(of: 2) ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
     }
+}
+
+/// Pure (unit-tested; item 105, F-09): turns the Sound recorder's liveness, sampled on each tick of
+/// a live watch, into one `unavailable` report per outage and a `restored` report when the recorder
+/// works again. An outage is a recorder that worked earlier this watch and has then been down for
+/// `threshold` seconds in a row; one that never worked (no microphone permission) is shown as "Mic
+/// unavailable" before go-live and is not reported. Planned pauses (a clip recording audio, the
+/// siren) restart the clock. At most `maxOutagesPerWatch` outages are reported, so a flapping
+/// microphone cannot fill the status history, and the last one's recovery is not reported: the log
+/// errs toward "unavailable".
+struct SoundHealthTracker: Equatable, Sendable {
+    enum Report: Equatable, Sendable { case unavailable, restored }
+
+    static let threshold: TimeInterval = 30
+    static let maxOutagesPerWatch = 3
+
+    private(set) var hasRecorded = false
+    private(set) var downSince: Date?
+    private(set) var reportedDown = false
+    private(set) var outagesReported = 0
+
+    mutating func observe(recording: Bool, at now: Date) -> Report? {
+        if recording {
+            hasRecorded = true
+            downSince = nil
+            guard reportedDown else { return nil }
+            reportedDown = false
+            return outagesReported < Self.maxOutagesPerWatch ? .restored : nil
+        }
+        guard hasRecorded, !reportedDown, outagesReported < Self.maxOutagesPerWatch else { return nil }
+        guard let since = downSince else { downSince = now; return nil }
+        guard now.timeIntervalSince(since) >= Self.threshold else { return nil }
+        reportedDown = true
+        outagesReported += 1
+        return .unavailable
+    }
+
+    /// A planned pause: the outage clock restarts when metering resumes.
+    mutating func pause() { downSince = nil }
+
+    /// A new watch.
+    mutating func reset() { self = SoundHealthTracker() }
 }

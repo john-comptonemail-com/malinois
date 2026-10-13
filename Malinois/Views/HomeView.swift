@@ -457,7 +457,7 @@ struct HomeView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
-                Button("Restore protection - \(entitlements.product?.displayPrice ?? "$9.99")") { showPaywall = true }
+                Button(PaywallView.priced("Restore protection", displayPrice: entitlements.product?.displayPrice)) { showPaywall = true }
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)

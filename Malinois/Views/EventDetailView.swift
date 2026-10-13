@@ -291,7 +291,10 @@ struct EvidenceMediaView: View {
                 // Present but still decoding — a neutral placeholder, never the
                 // "not on this device" badge (which would flash misleadingly).
                 placeholder
-            } else if let fallbackThumbnail, let ui = UIImage(data: fallbackThumbnail) {
+            } else if let fallbackThumbnail,
+                      let ui = BoundedImageDecoder.image(from: fallbackThumbnail,
+                                                         maxPixelSize: BoundedImageDecoder.thumbnailDisplayPixels,
+                                                         maxSourcePixels: BoundedImageDecoder.maxThumbnailSourcePixels) {
                 Image(uiImage: ui)
                     .resizable()
                     .scaledToFit()
@@ -322,11 +325,12 @@ struct EvidenceMediaView: View {
             player = AVPlayer(url: url)
             return
         }
-        // Read the full-res still off the main thread; decode on return.
-        let data = await Task.detached(priority: .userInitiated) {
-            try? Data(contentsOf: url)
+        // Read and decode the full-res still off the main thread, within the decoder's bounds
+        // (item 105, F-10): an image over its pixel cap keeps the neutral placeholder.
+        image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return BoundedImageDecoder.image(from: data, maxPixelSize: BoundedImageDecoder.fullDisplayPixels)
         }.value
-        if let data { image = UIImage(data: data) }
     }
 
     private var placeholder: some View {

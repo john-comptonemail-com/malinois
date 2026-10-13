@@ -550,10 +550,14 @@ final class CloudExfiltrator: ObservableObject {
     /// The monotonic revision of this event's metadata record.
     ///
     /// Derived from the event rather than passed in by the caller, so it cannot disagree with
-    /// what is actually being written: the sparse pre-capture fact is 1, the post-capture
-    /// record carrying evidence (a thumbnail or a stored media file) is 2, and an
-    /// owner-attributed re-push is 3. Every component only ever becomes true, so the number
-    /// only ever rises.
+    /// what is actually being written: the sparse pre-capture fact is 1; each camera slot
+    /// carrying evidence adds 1 (the first slot: a thumbnail or a stored media file; the second:
+    /// its stored file or its camera's name, which survives the media byte cap's eviction); an
+    /// owner attribution adds 1. So a one-camera capture is 2, both cameras 3, and an
+    /// owner-attributed re-push one more. The slots count separately because the second
+    /// camera's evidence can arrive after the first's, as late evidence (item 108, CE-02): a
+    /// device holding the first copy refused the copy that added the other camera, its equal
+    /// revision. Every component only ever becomes true, so the number only ever rises.
     ///
     /// The capture stage is keyed on **evidence actually attached — never on `endDate`**
     /// (34-review B2). It used to be `endDate > startDate`, and the real fact is *born* that
@@ -570,8 +574,8 @@ final class CloudExfiltrator: ObservableObject {
     /// through the per-event chain (`enqueue`), strictly after the previous one finished.
     nonisolated static func metaRevision(for event: Event) -> Int {
         var revision = 1
-        if event.thumbnailData != nil || event.mediaFilename != nil
-            || event.secondaryMediaFilename != nil { revision += 1 }
+        if event.thumbnailData != nil || event.mediaFilename != nil { revision += 1 }
+        if event.secondaryMediaFilename != nil || event.secondaryCamera != nil { revision += 1 }
         if event.ownerAttributed == true { revision += 1 }
         return revision
     }
@@ -1071,7 +1075,8 @@ final class CloudExfiltrator: ObservableObject {
               // state, or a corrupted field — must be dropped, not rendered. It used to fall
               // through `sensorSummary` and display as "Signal loss", which asserts an attack.
               ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted",
-               "thermalSerious", "thermalCritical"].contains(kind)   // the last two: item 38
+               "thermalSerious", "thermalCritical",   // item 38
+               "soundUnavailable", "soundRestored"].contains(kind)   // item 105, F-09
                 || Event.protectionChangeKinds.contains(kind)   // item 91
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())

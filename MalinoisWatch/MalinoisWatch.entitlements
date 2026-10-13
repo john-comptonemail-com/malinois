@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The watch shares the iPhone app's container BY NAME. The iPhone entitlements derive it
+	     from $(PRODUCT_BUNDLE_IDENTIFIER); here that would yield the watch app's own identifier
+	     plus ".watchkitapp", a different container with none of the records. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.johncompton.Malinois</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- Relayed tamper alerts are Time Sensitive (ADR 0045), as the iPhone's are. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

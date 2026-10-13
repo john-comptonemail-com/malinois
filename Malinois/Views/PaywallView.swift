@@ -113,8 +113,8 @@ struct PaywallView: View {
                 HStack {
                     if working { ProgressView().tint(.white) }
                     Text(working ? "…"
-                         : entitlements.status == .earlyAccess ? "Support Malinois - \(priceText)"
-                                                               : "Unlock Pro - \(priceText)")
+                         : Self.priced(entitlements.status == .earlyAccess ? "Support Malinois" : "Unlock Pro",
+                                       displayPrice: entitlements.product?.displayPrice))
                         .font(.headline)
                 }
                 .frame(maxWidth: .infinity)
@@ -128,8 +128,17 @@ struct PaywallView: View {
         .background(.bar)
     }
 
-    private var priceText: String {
-        entitlements.product?.displayPrice ?? "$9.99"
+    /// `label` with the App Store's price appended, or `label` alone until StoreKit has supplied
+    /// one (item 108, D-07). The price is the storefront's own, in its currency; a fixed "$9.99"
+    /// used to stand in, shown in every country and before the product had loaded.
+    static func priced(_ label: String, displayPrice: String?) -> String {
+        guard let displayPrice else { return label }
+        return "\(label) - \(displayPrice)"
+    }
+
+    /// "One-time" and the App Store's price, as a sentence; without a price yet, "One-time purchase."
+    static func oneTimeCaption(displayPrice: String?) -> String {
+        displayPrice.map { "One-time \($0)." } ?? "One-time purchase."
     }
 
     private func benefitRow(_ b: Benefit, emphasized: Bool) -> some View {

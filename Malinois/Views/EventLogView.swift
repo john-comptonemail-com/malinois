@@ -261,7 +261,9 @@ struct EventRow: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let data = event.thumbnailData, let ui = UIImage(data: data) {
+        if let data = event.thumbnailData,
+           let ui = BoundedImageDecoder.image(from: data, maxPixelSize: BoundedImageDecoder.thumbnailDisplayPixels,
+                                              maxSourcePixels: BoundedImageDecoder.maxThumbnailSourcePixels) {
             Image(uiImage: ui)
                 .resizable()
                 .scaledToFill()
@@ -293,6 +295,8 @@ struct EventRow: View {
         case "armingInterrupted": return "exclamationmark.shield"
         case "thermalSerious":    return "thermometer.medium"   // item 38
         case "thermalCritical":   return "thermometer.high"
+        case "soundUnavailable":  return "mic.slash"   // item 105, F-09
+        case "soundRestored":     return "mic"
         case let kind? where Event.protectionChangeKinds.contains(kind): return "slider.horizontal.3"   // item 91
         default:         return "camera.metering.none"
         }

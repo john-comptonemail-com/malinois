@@ -528,14 +528,16 @@ final class CoreTypesTests: XCTestCase {
     /// UUIDs, which would reach any sysdiagnose. The pattern is `Log.ref(error)` public +
     /// description `.private`; this sweep fails on the banned shape coming back anywhere.
     func testNoErrorDescriptionIsLoggedPublicly() throws {
-        let sourcesRoot = URL(fileURLWithPath: #filePath)
+        let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Malinois", isDirectory: true)
-        let files = try XCTUnwrap(FileManager.default.enumerator(at: sourcesRoot,
-                                                                 includingPropertiesForKeys: nil))
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" }
+        // The watch app's sources too (1.6): its logs reach the same unified log.
+        let files = try ["Malinois", "MalinoisWatch"].flatMap { folder in
+            try XCTUnwrap(FileManager.default.enumerator(at: repoRoot.appendingPathComponent(folder, isDirectory: true),
+                                                         includingPropertiesForKeys: nil))
+                .compactMap { $0 as? URL }
+                .filter { $0.pathExtension == "swift" }
+        }
         XCTAssertGreaterThan(files.count, 10, "the sweep did not find the app sources — path assumption broke")
 
         let banned = [#"String(describing: error), privacy: .public"#,

@@ -18,6 +18,8 @@ enum KeychainService {
     private static let service = "Malinois"
     private static let account = "com.malinois.pin"
     private static let lengthAccount = "com.malinois.pin.length"
+    /// The length the pad auto-submits at, confirmed by a successful PIN change or entry (item 106).
+    private static let confirmedLengthAccount = "com.malinois.pin.confirmedLength"
     private static let attemptsAccount = "com.malinois.pin.attempts"
     private static let lockoutAccount = "com.malinois.pin.lockout"
 
@@ -202,7 +204,8 @@ enum KeychainService {
 
     /// Even damaged credential fragments demonstrate a previous PIN, despite lost markers.
     private static var priorPINArtifacts: Bool {
-        [account, account + ".salt", lengthAccount, attemptsAccount, lockoutAccount].contains { name in
+        [account, account + ".salt", lengthAccount, confirmedLengthAccount, attemptsAccount,
+         lockoutAccount].contains { name in
             let result = readWithStatus(account: name)
             if case .found = itemRead(status: result.status, data: result.data) { return true }
             return false
@@ -227,13 +230,38 @@ enum KeychainService {
         delete(account: account)
         delete(account: account + ".salt")
         delete(account: lengthAccount)
+        delete(account: confirmedLengthAccount)
         delete(account: attemptsAccount)
         delete(account: lockoutAccount)
         UserDefaults.standard.removeObject(forKey: setupCompletedKey)
     }
     #endif
 
-    /// The digit-length of the stored PIN (4–6). Defaults to 4 if unset.
+    /// The PIN's length as confirmed by a successful PIN change or entry (item 106): the pad
+    /// auto-submits at it. Nil when unconfirmed, unreadable or out of range, and the pad then
+    /// waits for the explicit submit. Never taken from `pinLength`, which builds before 1.6
+    /// wrote without checking the write: a stale length would submit early and lock the owner out.
+    static var confirmedPINLength: Int? {
+        guard let data = read(account: confirmedLengthAccount),
+              let text = String(data: data, encoding: .utf8),
+              let length = Int(text), (4...6).contains(length) else { return nil }
+        return length
+    }
+
+    /// Records `length` as confirmed. Best effort: a failed write leaves it unconfirmed, and the
+    /// pad shows the explicit submit until the next successful entry.
+    private static func confirmLength(_ length: Int) {
+        guard confirmedPINLength != length else { return }
+        write(Data("\(length)".utf8), account: confirmedLengthAccount)
+    }
+
+    #if DEBUG
+    /// Test-only: removes the confirmed length alone, as after an upgrade from a build before 1.6.
+    static func removeConfirmedLengthForTesting() { delete(account: confirmedLengthAccount) }
+    #endif
+
+    /// The digit-length of the stored PIN (4–6). Defaults to 4 if unset. Not used to
+    /// auto-submit: see `confirmedPINLength` (item 106).
     static var pinLength: Int {
         guard let data = read(account: lengthAccount),
               let text = String(data: data, encoding: .utf8),
@@ -250,8 +278,13 @@ enum KeychainService {
         // 1-byte "[version]" hash would be unverifiable — locking the owner out forever
         // rather than failing the setup cleanly (F-21).
         guard hash.count == 33 else { return false }
+        // Unconfirm the length before the PIN changes (item 106): if anything below fails, the
+        // pad waits for the explicit submit instead of submitting at the old PIN's length.
+        delete(account: confirmedLengthAccount)
+        guard read(account: confirmedLengthAccount) == nil else { return false }
         guard store(hash) else { return false }
         _ = write(Data("\(pin.count)".utf8), account: lengthAccount)
+        confirmLength(pin.count)
         resetAttempts()   // a fresh PIN clears any lockout
         UserDefaults.standard.set(true, forKey: setupCompletedKey)
         return true
@@ -278,6 +311,7 @@ enum KeychainService {
         // would leave stale failures standing, and SECURITY.md's "a correct PIN clears
         // everything" was a property of one screen, not of the service it names.
         resetAttempts()
+        confirmLength(pin.count)   // the pad may now auto-submit at it (item 106)
         return true
     }
 

@@ -577,6 +577,21 @@ final class MonitoringEngineTests: XCTestCase {
                        "and never again — a quiet later session must not re-raise the notice")
     }
 
+    /// The suite reaches the real siren: suspected jamming sounds it at full volume whatever the
+    /// response mode, and the Simulator played it through the Mac's speakers during test runs
+    /// (owner, 2026-10-13). Under the test runner it plays at zero volume, its state unchanged.
+    func testTheSirenPlaysSilentlyUnderTheTestRunner() {
+        let loud = SirenPlayer()
+        loud.goFullVolume()
+        defer { loud.stop() }
+        XCTAssertTrue(loud.isPlaying, "still playing, so everything that reads its state sees a phone's")
+        XCTAssertEqual(loud.volumeForTesting, 0)
+        let ramped = SirenPlayer()
+        ramped.start(rampUp: true)
+        defer { ramped.stop() }
+        XCTAssertEqual(ramped.volumeForTesting, 0)
+    }
+
     /// F1: a bare touch must NOT be able to hold the alarm off. The disarm-*candidate*
     /// window opens on any touch-down (for owner attribution), so if presentation were
     /// gated on it, a snoop tapping and swiping the screen — exactly what snooping is —

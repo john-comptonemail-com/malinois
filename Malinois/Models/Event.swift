@@ -304,9 +304,15 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "armingInterrupted": return "Arming did not complete: the app ended during the countdown"
         case "thermalSerious":    return "Phone running hot while armed"                         // item 38
         case "thermalCritical":   return "Phone overheating while armed: iOS may shut it down"
+        case "soundUnavailable":  return "Sound tripwire unavailable while armed: the microphone could not be restarted"   // item 105, F-09
+        case "soundRestored":     return "Sound tripwire working again"
         default:         break
         }
         if let kind = stateChange, let words = Self.protectionChangeSummary(kind: kind) { return words }
+        // A status entry this build does not know (a newer build's kind, or a damaged log) is
+        // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
+        // kinds; this covers the local log (item 105, F-09).
+        if stateChange != nil { return "Status entry this version of Malinois does not recognize" }
         if interrupted == true {
             // BACKLOG 53: say what the launch could tell; a cause this build does not know,
             // or none at all (older records, a marker with no stamp), keeps the bare sentence.

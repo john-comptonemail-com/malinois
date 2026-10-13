@@ -15,11 +15,11 @@ With Guided Access on, its Side Button option off, and iOS set to ask before new
 
 ## Try it out
 
-1. **First run** — set a 4–6 digit PIN.
+1. **First run** — set a 4-digit PIN (or 6).
 2. Tap **ARM**. The camera prompt appears the first time; allow it.
-3. (Optional) On the arming screen, **triple-click the side button** to start **Guided Access** (one-time iOS setup: Settings → Accessibility → Guided Access).
-4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes black.
-5. **To disarm:** press and hold the black screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
+3. On the arming screen, **triple-click the side button** to start **Guided Access** (one-time iOS setup: Settings → Accessibility → Guided Access).
+4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes dark.
+5. **To disarm:** press and hold the screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
 
 **Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. Using a PIN instead of Face ID for Guided Access is recommended due to the open "Guided Access is not available" iOS bug. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
 
@@ -33,7 +33,7 @@ This is ultimately a personal project, but it's a project I think others might f
 
 **Early-Access:** while the program is open, Pro is free for every install, permanently — no card, nothing to cancel, nothing to do. If Pro ever becomes a paid unlock, that will apply to new installs only; Early-Access installs keep everything.
 
-A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (evidence survives even if the phone is destroyed seconds later), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
+A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (each event's record reaches iCloud within moments, then its photo or clip, so a phone destroyed seconds later can still leave its record behind), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
@@ -88,10 +88,25 @@ Stronger protection for your PIN and iCloud evidence, and more accurate camera c
 - Home shows the Pro badge for both purchased and Early Access Pro.
 - During routine iCloud checks, Home now says “Checking iCloud for new events” instead of “Restoring your event log”.
 
+**Shipped in 1.6**
+
+Glotfelty Edition\
+Apple Watch alerts, a PIN pad that submits itself, and clearer records.
+
+- New Apple Watch app: tamper and disarm alerts arrive on your wrist, even when the armed iPhone is the one your watch is paired with. Open Malinois on the watch once to turn it on. (Pro)
+- Tamper alerts break through Focus and Sleep again, on iPhone and Apple Watch.
+- The PIN pad submits as soon as you've typed your PIN, with no check mark to press. Your first entry after updating, and any retry after a wrong PIN, still use check mark.
+- New PINs are 4 digits by default, with 6 available. A PIN that is easy to guess, like 1234, shows a warning, and setup suggests a code different from your iPhone and Guided Access passcodes.
+- The arming screen and countdown show more clearly how to disarm, and on a new install the warning screen shows it too, until your first disarm.
+- Arming without Guided Access now warns that anyone who picks up your iPhone can leave Malinois and use it, so stay nearby.
+- If the Sound tripwire's microphone stops working while armed, the Event Log now says so, and again when it works.
+- Fixes: Sound no longer gives a false alarm when the microphone comes back after an outage; a photo or clip that finishes late uploads right away; with both cameras, your other devices now show the second camera's evidence when it arrives after the first; prices show in your own currency.
+- Images are checked before they're opened, so a damaged or oversized file can't overload the app.
+- The Face ID permission text now lists every use of Face ID in Malinois.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.
-- **Apple Watch alerts** — the tamper alert as a tap on your wrist. (An iOS quirk makes this need a real watch app: an armed phone that is unlocked and in the foreground never mirrors its notifications to its own paired watch.)
 
 ---
 
@@ -101,9 +116,9 @@ This is the **source of each shipped release**, published so the app's privacy
 and security claims can be checked against the code rather than taken on
 trust. Each commit here corresponds to one App Store release. The app source
 is byte-identical to what was submitted, with exactly one change: the developer
-team ID is removed from the project file. (This README, the licence files, and
-light adaptations to SECURITY.md — internal-tracker citations reworded, a
-reporting section added — exist only in this mirror.)
+team ID is removed from the project file. (This README and the licence files
+exist only in this mirror. SECURITY.md is published as written from 1.6 on;
+earlier releases carried light adaptations to it.)
 
 It is a **mirror, not a project**: development happens elsewhere, issues and
 pull requests are not monitored, and the two histories never merge. New code

@@ -25,6 +25,8 @@ struct MalinoisApp: App {
     @StateObject private var camera: CameraController
     @StateObject private var entitlements: ProEntitlements
     @StateObject private var engine: MonitoringEngine
+    /// Sends this iPhone's own alerts straight to its paired watch (item 57, ADR 0043).
+    private let watchRelay: WatchAlertRelay
 
     #if DEBUG
     /// Set when this app builds its services (item 84): a unit test asserts that the test
@@ -36,14 +38,24 @@ struct MalinoisApp: App {
         #if DEBUG
         Self.builtServices = true
         #endif
-        // Clear clip temp files a failed store-move orphaned (disk full mid-recording). Off the
-        // launch path — nothing waits on it, and it only touches files over a day old.
-        Task.detached(priority: .background) { CameraController.sweepOrphanedClips() }
+        // Before anything can arm: whether the tamper warning still shows how to disarm (item 107).
+        OnboardingState.seedHasDisarmedOnce()
+        // Clear clip temp files a failed store-move orphaned (disk full mid-recording), and
+        // pending recordings no event took (item 108, F8). Off the launch path — nothing waits
+        // on it, and it only touches files over a day (temp) or a month (pending) old.
+        Task.detached(priority: .background) {
+            CameraController.sweepOrphanedClips()
+            CameraController.sweepOrphanedPendingClips()
+        }
         let settings = AppSettings.load()
         let eventStore = EventStore()
         let cloud = CloudExfiltrator()
         let camera = CameraController()
         let entitlements = ProEntitlements()
+        // Started before the engine, so a record the engine writes at launch is relayed too.
+        let watchRelay = WatchAlertRelay(store: eventStore, settings: settings, entitlements: entitlements)
+        watchRelay.start()
+        self.watchRelay = watchRelay
         let engine = MonitoringEngine(settings: settings,
                                       eventStore: eventStore,
                                       cloud: cloud,

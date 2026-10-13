@@ -45,6 +45,11 @@ final class EventStore: ObservableObject {
     /// a log still locked after a restart, or one started fresh, reads as empty.
     var hasReadTheLog: Bool { loadedCleanly && !loadFailed && !awaitingUnlock }
 
+    /// True while a deferred load reads the log at unlock (item 57, the 1.6 review's finding 1):
+    /// what appears in `events` meanwhile is history from disk, not news, so the watch relay sends
+    /// nothing for it.
+    private(set) var isReadingHistory = false
+
     /// True after a RUNTIME persist failure (disk full, I/O error) until the next successful
     /// write (F6): "written to disk" is an async dispatch, and a failed write used to be
     /// log-only — the owner saw events in the UI that were never durably stored. Surfaced on
@@ -1575,8 +1580,10 @@ final class EventStore: ObservableObject {
         // keys arrive, or the device re-locked before an unlock notice was handled) leaves both
         // alone: persistence stays blocked, `queued` is still all we have, and the load waits
         // again.
+        isReadingHistory = true
         load()
         recoverFromJournal()   // the protected file is readable now too (ADR 0005)
+        isReadingHistory = false
         recoverMediaAttachments()
         establishSeenMark()    // item 81: the history is known now; what was queued stays new
         guard !queued.isEmpty else { enforceCountCapsAfterLoad(); return }

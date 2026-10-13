@@ -38,6 +38,7 @@ struct ArmedView: View {
 
             if engine.disarmEntryActive {
                 PINEntryView(title: "Enter PIN to disarm", onSuccess: {
+                    OnboardingState.hasDisarmedOnce = true   // the hold is learned: the warning drops its tip (item 107)
                     engine.disarm()   // restores brightness + returns to Home
                 }, onCancel: {
                     engine.endDisarmEntry()   // back to covert black
@@ -84,12 +85,15 @@ struct ArmedView: View {
             // Tamper warning (alert / siren modes). Non-interactive so the
             // press-and-hold to disarm still works underneath it. An escalation
             // (jamming blackout / tamper flood) shows its own aggressive warning.
+            // Until the owner's first disarm it also says how to disarm (item 107).
             if engine.alertActive && !engine.disarmEntryActive {
                 // Clamped at the render (R1-L4, the deviceLabel rule): bounded and
                 // never blank, whatever the stored value or decode admitted.
-                AlertMessageView(message: MonitoringEngine.sanitizedAlertMessage(
-                    engine.escalation?.message ?? settings.alertMessage,
-                    fallback: AppSettings.defaultAlertMessage))
+                AlertMessageView(
+                    message: MonitoringEngine.sanitizedAlertMessage(
+                        engine.escalation?.message ?? settings.alertMessage,
+                        fallback: AppSettings.defaultAlertMessage),
+                    disarmTip: DisarmTip.alertTip(hasDisarmedOnce: OnboardingState.hasDisarmedOnce))
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
@@ -199,6 +203,11 @@ struct RecordingIndicator: View {
 /// The full-screen tamper warning shown on trigger (alert / siren modes).
 struct AlertMessageView: View {
     let message: String
+    /// How to disarm, shown under the warning until the owner's first disarm, then `nil`
+    /// (`DisarmTip.alertTip`, item 107, ADR 0044). The hold only opens the PIN pad: a running
+    /// alarm stays up until a correct PIN, and a wrong one is recorded and counts toward the
+    /// lockout. Still, after the first disarm the owner knows it and a later intruder is not shown it.
+    var disarmTip: String?
 
     var body: some View {
         VStack(spacing: 18) {
@@ -209,8 +218,23 @@ struct AlertMessageView: View {
                 .font(.title3.weight(.bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
-            // No disarm-gesture hint here: the owner learns the hold on the arming
-            // screen; printing it on the tamper alert would hand a thief the bypass.
+            if let disarmTip {
+                VStack(spacing: 8) {
+                    Image(systemName: "hand.tap.fill")
+                        .font(.title2)
+                    Text(disarmTip)
+                        .font(.callout.weight(.semibold))
+                    Text(DisarmTip.alertTipFootnote)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .foregroundStyle(.white.opacity(0.9))
+                .multilineTextAlignment(.center)
+                .padding(16)
+                .frame(maxWidth: .infinity)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.1)))
+                .padding(.top, 10)
+            }
         }
         .padding(36)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
