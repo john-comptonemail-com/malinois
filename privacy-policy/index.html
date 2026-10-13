@@ -54,7 +54,7 @@
   <div class="meta">
     <!-- ⚠️ 1.1: bump this to the date 1.1 actually goes live before pasting into Sites. The
          Vision paragraph below describes a build users do not have until then. -->
-    <div><strong>Effective date:</strong> 5 September 2026</div>
+    <div><strong>Effective date:</strong> 13 October 2026</div>
     <div><strong>Developer:</strong> John Compton</div>
     <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
   </div>
@@ -112,8 +112,11 @@
     evidence is also saved to <strong>your</strong> private iCloud database (Apple CloudKit
     private database) so it survives the device being switched off. This is your personal iCloud
     storage, governed by <a href="https://www.apple.com/legal/privacy/">Apple’s Privacy
-    Policy</a>. <strong>The developer cannot access it.</strong> You can turn off cross-device
-    alerts and cloud use in the app’s settings.</li>
+    Policy</a>. <strong>The developer cannot access it.</strong> The app’s <em>Cross-device
+    alerts</em> setting turns off the alerts to your other devices, not these iCloud copies; to
+    stop those, turn Malinois off in the iOS Settings app, under your name → iCloud, among the
+    apps that use iCloud. Events recorded while it is off stay on the device and are uploaded once
+    it is back on.</li>
     <li><strong>To your other devices (optional).</strong> If enabled, a “tamper detected” alert
     — and, when the app is disarmed, a “disarmed” alert — is delivered to your other Apple
     devices signed into the same iCloud account, via Apple’s push infrastructure.</li>
@@ -136,7 +139,10 @@
   <ul>
     <li>Evidence is retained locally up to the app’s storage limits, after which the oldest items
     are pruned automatically. You can review and manage events in the app’s Event Log.</li>
-    <li>Deleting the app removes all locally stored evidence and settings.</li>
+    <li>Deleting the app removes all locally stored evidence and settings, except your Malinois
+    PIN, the start date of your Pro trial and your Early Access membership. These stay in the
+    device’s Keychain, so a reinstall can’t bypass the PIN or start a new trial; the membership
+    also syncs through iCloud Keychain, so it follows you to a new iPhone.</li>
     <li>Evidence in your private iCloud is yours to manage and delete through your iCloud storage.</li>
   </ul>
 

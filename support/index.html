@@ -17,6 +17,7 @@
     }
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0; padding: 2.5rem 1.25rem 4rem;
     background: var(--bg); color: var(--fg);
@@ -31,15 +32,19 @@
   }
   h3 { font-size: 1.02rem; margin: 1.5rem 0 .35rem; }
   p, li { margin: 0 0 .85rem; }
-  ul { padding-left: 1.25rem; }
+  ul, ol { padding-left: 1.35rem; }
+  ol li { margin-bottom: .6rem; }
   a { color: var(--accent); }
   strong { font-weight: 600; }
   .tagline { color: var(--muted); margin-bottom: 1.75rem; }
-  .contact {
+  .contact, .toc {
     background: var(--card); border-radius: 12px;
     padding: 1rem 1.15rem; margin: 0 0 1rem;
   }
   .contact p:last-child { margin-bottom: 0; }
+  .toc p { margin: 0 0 .35rem; font-weight: 600; }
+  .toc ul { margin: 0; }
+  .toc li { margin: 0 0 .2rem; }
   footer {
     margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
     color: var(--muted); font-size: .9rem;
@@ -54,113 +59,239 @@
 
   <div class="contact">
     <p><strong>Email:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></p>
-    <p>One person answers this, usually within a couple of days. Telling me your iPhone model and
-    iOS version helps a lot.</p>
+    <p>One person answers this, usually within a couple of days. It helps a lot to include your
+    iPhone model, your iOS version and your Malinois version (iOS Settings → General → iPhone
+    Storage → Malinois).</p>
   </div>
 
-  <h2>Common questions</h2>
+  <nav class="toc" aria-label="On this page">
+    <p>On this page</p>
+    <ul>
+      <li><a href="#quick-start">Quick start</a></li>
+      <li><a href="#disarming">Disarming and your PIN</a></li>
+      <li><a href="#guided-access">Guided Access</a></li>
+      <li><a href="#alerts">Alerts and Apple Watch</a></li>
+      <li><a href="#evidence">Evidence, iCloud and privacy</a></li>
+      <li><a href="#troubleshooting">Troubleshooting</a></li>
+      <li><a href="#pro">Malinois Pro</a></li>
+    </ul>
+  </nav>
 
-  <h3>The screen went black. Is it broken?</h3>
-  <p>No — that’s the point. While armed, Malinois blacks out the screen so the device looks
-  switched off. It’s still watching. To get back in, <strong>press and hold anywhere on the
-  screen for 5 seconds</strong>, then enter your PIN.</p>
-  <p>If your iPhone is plugged in you’ll see a dimmed screen carrying a red <strong>REC</strong>
-  badge rather than a fully black one. That’s expected — the next answer explains it.</p>
+  <h2 id="quick-start">Quick start</h2>
+  <ol>
+    <li><strong>Set a Malinois PIN.</strong> Four digits, or six. Use a code that is different
+    from your iPhone passcode and your Guided Access passcode.</li>
+    <li><strong>Set up Guided Access once.</strong> It locks the iPhone to Malinois while it is
+    armed. The steps are <a href="#guided-access-setup">below</a>, and the arming screen shows
+    them too.</li>
+    <li><strong>Arm.</strong> Tap <strong>ARM</strong>. Triple-click the side button and tap
+    <strong>Start</strong> to begin Guided Access, then tap <strong>Start countdown</strong> and set
+    the iPhone down. When the countdown ends, Malinois calibrates for a few seconds and the screen
+    goes dark: it is watching.</li>
+    <li><strong>Disarm.</strong> Press and hold the screen for 5 seconds and enter your PIN. Then
+    triple-click the side button and enter your Guided Access passcode.</li>
+  </ol>
 
-  <h3>Why does my screen show a red REC badge while armed?</h3>
-  <p>Because the camera really is on. While the iPhone is charging, Malinois keeps the camera
-  ready so that evidence capture is instant instead of losing the first second or two to
-  starting the camera up. Whenever a camera session is live — warmed up or actually recording —
-  Malinois shows a pulsing red dot and the word <strong>REC</strong>, and lifts the screen out
-  of full black. <strong>That indicator cannot be switched off.</strong> It is there so anyone
-  in front of the device can tell the camera is running.</p>
-  <p>On battery the camera stays off until something trips a tripwire, so the screen is fully
-  black and the badge appears only for the few seconds of an actual capture.</p>
-  <p>You choose the behaviour under <em>Settings → Capture → Battery mode</em>:</p>
+  <h2 id="disarming">Disarming and your PIN</h2>
+
+  <h3>How do I disarm?</h3>
+  <ol>
+    <li>Press and hold anywhere on the screen for 5 seconds. Keep your finger down: a short
+    vibration and a brighter screen mean the keypad is up.</li>
+    <li>Type your PIN. The keypad submits as soon as you have typed it.</li>
+    <li>If Guided Access is on, triple-click the side button and enter your Guided Access passcode
+    to end it.</li>
+  </ol>
+  <p>A quick tap does not open the keypad, and Malinois records it as someone touching the
+  iPhone.</p>
+
+  <h3>The screen went dark. Is it broken?</h3>
+  <p>No. While armed, Malinois darkens the screen so the iPhone looks switched off. It is still
+  watching.</p>
+  <p>If the iPhone is charging, the screen is dimmed rather than black, with a red
+  <strong>REC</strong> badge, and iOS shows its own camera indicator. Malinois keeps the camera
+  ready while charging, so a photo is taken instantly. The badge shows whenever the camera is on,
+  and it cannot be turned off. On battery the camera stays off until something trips, so the
+  screen is fully black.</p>
+  <p>You choose this under <strong>Settings → Capture → Battery mode</strong>:</p>
   <ul>
-    <li><strong>Auto</strong> (the default) — camera ready while charging, off while on battery.</li>
-    <li><strong>Battery saver</strong> — camera always off until a trigger, so the screen stays
-    fully black the whole time. The first frame takes a moment longer to capture.</li>
-    <li><strong>Instant</strong> — camera always ready, so the badge always shows.</li>
+    <li><strong>Auto</strong> (the default): the camera is ready while charging and off on battery.</li>
+    <li><strong>Battery saver</strong>: the camera is off until something trips, so the screen stays
+    fully black. The first photo takes a moment longer.</li>
+    <li><strong>Instant</strong>: the camera is always ready, so the badge always shows.</li>
   </ul>
-  <p>If you want the darkest possible screen while plugged in, choose <strong>Battery
-  saver</strong>.</p>
 
-  <h3>How do I disarm it?</h3>
-  <p>Press and hold the black screen for 5 seconds until the keypad appears, then enter your
-  PIN. A quick tap won’t do it — a tap is logged as someone touching your device. If you’re also
-  using Guided Access, end that afterwards by triple-clicking the side button and entering your
-  Guided Access passcode.</p>
+  <h3>When do I press ✓?</h3>
+  <p>Usually never: the keypad submits as soon as you have typed your PIN. You will see ✓, and need
+  to press it, on your first entry after updating Malinois, and when you try again after a wrong
+  PIN.</p>
 
-  <h3>I’ve forgotten my PIN.</h3>
-  <p>There’s no way to recover the PIN itself — it’s never stored, only a hash of it. If the app
-  can’t read its stored PIN it will offer re-setup behind your device passcode or Face ID.
-  Otherwise, deleting and reinstalling the app lets you start fresh, but it also deletes the
-  evidence stored on the device.</p>
+  <h3>I typed the wrong PIN too many times.</h3>
+  <p>After five wrong tries the keypad locks for 30 seconds, and each further wrong try doubles the
+  wait, up to an hour. The right PIN resets it. On the armed screen, every wrong PIN is recorded in
+  the Event Log, and Malinois tries to take a photo.</p>
 
-  <h3>Why does it ask me to turn on Guided Access?</h3>
-  <p>Guided Access is an iOS feature that locks the device to one app. It’s what stops someone
-  swiping Malinois away or powering the device off before evidence uploads — and it also sends
-  incoming calls to voicemail and disables Siri. Malinois works without it, but it’s much harder
-  to defeat with it on. The arming screen walks you through the setup.</p>
+  <h3>I have forgotten my PIN.</h3>
+  <p>Malinois never stores your PIN, only a scrambled check of it, so nobody can look it up. To
+  choose a new one:</p>
+  <ol>
+    <li>If Malinois is armed, end Guided Access first: triple-click the side button and enter its
+    passcode.</li>
+    <li>Delete Malinois and install it again from the App Store.</li>
+    <li>Malinois says <strong>Your Malinois PIN was kept</strong>. Tap <strong>Forgot PIN?</strong>,
+    verify with Face ID, Touch ID or your iPhone passcode, and choose a new PIN.</li>
+  </ol>
+  <p>Deleting Malinois deletes the evidence kept on this iPhone. With Pro, your iCloud copies come
+  back after you tap <strong>Verify iCloud access</strong> in <strong>Settings → iCloud</strong>.</p>
 
-  <h3>Guided Access says it’s unavailable.</h3>
-  <p>An iOS 26 bug, not Malinois: after ending a Guided Access session, iOS can refuse to
-  start a new one for a few minutes (“Guided Access is unavailable”). Wait 3–5 minutes or
-  restart the phone. Reports suggest it happens more often when Face ID or Touch ID is
-  enabled as a way to end Guided Access.</p>
+  <h2 id="guided-access">Guided Access</h2>
 
-  <h3>The alarm isn’t loud enough.</h3>
-  <p>iOS gives no app control over the hardware volume buttons, so the alarm plays at whatever
-  your media volume is set to. Two things help: turn the volume up before you arm, and in
-  <strong>Guided Access → Options</strong> turn <strong>Volume Buttons</strong> off so it can’t
-  be turned down while armed. By default the alarm also starts quiet and rises over about 20
-  seconds, so you can disarm your own device without a jolt — you can switch that off under
-  <em>Settings → Tripwire Response</em>.</p>
+  <h3>Why does Malinois need Guided Access?</h3>
+  <p>Guided Access is an iOS feature that locks the iPhone to one app. While Malinois is armed under
+  it, nobody can go to the Home Screen, switch apps or close Malinois without your Guided Access
+  passcode.</p>
+  <p>Without it, the armed iPhone is unlocked behind a dark screen: anyone who picks it up can leave
+  Malinois and use it. Malinois records the touch and tries to take a photo, but it cannot stop them.
+  That is why Malinois requires Guided Access to arm. For a quick test you can skip it for one arm
+  on the arming screen (the very first arm on a new install skips it by itself), and Malinois warns
+  you to stay nearby. To turn the requirement off for good, use
+  <strong>Settings → Security → Require Guided Access</strong>.</p>
 
-  <h3>Does my evidence go to you?</h3>
-  <p>No. There is no server. Evidence stays on your device and, if you’re signed into iCloud, in
-  <em>your own</em> private iCloud storage, which I cannot access. See the
+  <h3 id="guided-access-setup">How do I set it up?</h3>
+  <ol>
+    <li>In iOS Settings, go to <strong>Accessibility → Guided Access</strong> and turn it on.</li>
+    <li>Under <strong>Passcode Settings</strong>, set a Guided Access passcode that is different from
+    your iPhone passcode, so someone who knows your unlock code still cannot leave Malinois.</li>
+    <li>In Malinois, triple-click the side button (or the Home button). Before you tap
+    <strong>Start</strong>, tap <strong>Options</strong> and turn off <strong>Side Button</strong>
+    (one press would otherwise lock the screen and pause the watch) and <strong>Volume
+    Buttons</strong> (so nobody can turn the alarm down).</li>
+    <li>If you use Voice Control, turn it off before you arm: it keeps working under Guided Access
+    and can close apps.</li>
+  </ol>
+
+  <h3>Guided Access says it is unavailable.</h3>
+  <p>This is an iOS 26 bug, not Malinois: after a Guided Access session ends, iOS can refuse to start
+  a new one for a few minutes (“Guided Access is unavailable”). Wait 3 to 5 minutes, or restart the
+  iPhone. It seems to happen more often when Face ID or Touch ID is set as a way to end Guided
+  Access.</p>
+
+  <h2 id="alerts">Alerts and Apple Watch</h2>
+
+  <h3>How do alerts reach my other devices?</h3>
+  <p>With Pro on the armed device and <strong>Cross-device alerts</strong> on
+  (<strong>Settings → iCloud</strong>), a tamper or a disarm alerts your other iPhone, iPad and Apple
+  Watch signed in to the same Apple Account. They come through iCloud, usually within seconds when
+  both devices are online. Tamper alerts are Time Sensitive, so they get through Focus and Sleep;
+  disarm alerts do not.</p>
+  <p>An alert that arrives late (for example because the armed iPhone was offline) shows when it
+  arrived, not when it happened. The Event Log shows the real time.</p>
+
+  <h3>Alerts do not arrive on my other device.</h3>
+  <ol>
+    <li>On the armed device, open <strong>Settings → iCloud</strong>. <strong>Cross-device
+    alerts</strong> should be on, and iCloud access verified (tap <strong>Verify iCloud
+    access</strong> if it is shown).</li>
+    <li>On the other device, open Malinois once and allow notifications. Its
+    <strong>Settings → iCloud</strong> shows whether <strong>Notifications on this device</strong>
+    are on.</li>
+    <li>Check that both devices use the same Apple Account and are online.</li>
+    <li>Check that iCloud is on for Malinois in iOS Settings, under your name → iCloud.</li>
+    <li>A Focus can hold a disarm alert. Tamper alerts get through unless Time Sensitive
+    notifications are turned off for Malinois.</li>
+  </ol>
+
+  <h3>Apple Watch</h3>
+  <p>Malinois on Apple Watch shows tamper and disarm alerts on your wrist, including those from the
+  iPhone it is paired with (Pro, with Cross-device alerts on). Open Malinois on the watch once: it
+  signs up, asks to show alerts, and its screen says whether alerts will arrive.</p>
+  <p>When the watch is near its iPhone, the iPhone sends its own alerts straight to the watch.
+  watchOS decides when to wake the watch app for them, so they can take a little while; one that
+  arrives more than a minute late says when it happened. When the watch is away from its iPhone,
+  alerts come through iCloud, usually within seconds. The watch shows only the alert text, never
+  photos or details.</p>
+
+  <h2 id="evidence">Evidence, iCloud and privacy</h2>
+
+  <h3>Where does my evidence go? Can you see it?</h3>
+  <p>There is no Malinois server, and I cannot see any of it. Evidence stays on your iPhone. With
+  Pro, once you have verified iCloud access, it is also saved to your own private iCloud, so what
+  has uploaded is still there if the iPhone is switched off or taken. See the
   <a href="../privacy-policy/">privacy policy</a>.</p>
-  <p>You don’t have to take my word for it: the app’s source code is public, so anyone can check
-  that there is no server to send anything to —
-  <a href="https://github.com/john-comptonemail-com/malinois">read the source</a>.</p>
+  <p>You do not have to take my word for it: the app’s source code is public, so anyone can check
+  that there is no server to send anything to.
+  <a href="https://github.com/john-comptonemail-com/malinois">Read the source</a>.</p>
 
-  <h3>It triggered when nothing happened.</h3>
-  <p>Lower the sensitivity for the sensor that fired (<em>Settings → Sensitivity</em>), or turn
-  that tripwire off. Vibration-prone surfaces are the usual cause for Device motion, and the Sound
-  tripwire is the most false-positive-prone, which is why it’s off by default. <em>Test
-  sensors</em> on the main screen — behind your PIN, like the rest of the app’s settings — lets
-  you see each sensor react in real time without recording anything.</p>
+  <h3>What is “Verify iCloud access”?</h3>
+  <p>Before a newly installed copy of Malinois uploads anything, you confirm with Face ID, Touch ID
+  or your iPhone passcode that it is your iPhone (<strong>Settings → iCloud → Verify iCloud
+  access</strong>). This stops someone who reinstalls Malinois on your iPhone from reaching your
+  iCloud evidence. Until you verify, detection and capture work as usual and evidence stays on the
+  iPhone.</p>
+
+  <h3>How do I stop uploads to iCloud?</h3>
+  <p>Turning off <strong>Cross-device alerts</strong> stops the alerts, not the uploads. To stop
+  uploads, turn Malinois off in iOS Settings under your name → iCloud, among the apps that use
+  iCloud. Events recorded meanwhile stay on the iPhone and upload once it is back on.</p>
+
+  <h3>Can evidence be deleted?</h3>
+  <p>Not one entry at a time: the Event Log has no way to delete a single entry, not even with your
+  PIN. It keeps your recent events and retires the oldest automatically. Deleting Malinois deletes
+  everything stored on the iPhone. Copies in your iCloud are yours to manage in iOS Settings, under
+  your name → iCloud → Manage Account Storage.</p>
+
+  <h3>How do I share a photo or clip?</h3>
+  <p>Open the event in the Event Log and tap the share button at the top right.</p>
+
+  <h2 id="troubleshooting">Troubleshooting</h2>
+
+  <h3>It went off when nothing happened.</h3>
+  <p>Lower the sensitivity for the tripwire that fired (<strong>Settings → Sensitivity</strong>), or
+  turn it off (<strong>Settings → Tripwires</strong>). A surface that vibrates is the usual cause for
+  Device motion. Sound is the most likely to go off by mistake, which is why it is off by default.
+  <strong>Test sensors</strong> on the main screen (behind your PIN) shows each tripwire reacting
+  live, without recording anything.</p>
+
+  <h3>The alarm is not loud enough.</h3>
+  <p>No app can control the volume buttons, so the alarm plays at your media volume. Turn the volume
+  up before you arm, and in Guided Access <strong>Options</strong> turn off <strong>Volume
+  Buttons</strong> so nobody can turn it down. By default the alarm starts quiet for 10 seconds and
+  then rises over the next 10, so you can disarm your own iPhone without a blast. To switch that
+  off, turn off <strong>Start quiet, then ramp up</strong> under <strong>Settings → Tripwire
+  Response</strong>.</p>
+
+  <h3>Why is the Vision tripwire off on battery?</h3>
+  <p>Vision watches the camera’s view for movement, so it needs the camera running, which costs
+  battery. Malinois keeps the camera running only while charging (Battery mode Auto) or always
+  (Instant). On battery with Auto, Vision is off and the arming screen says so; your other tripwires
+  work as normal.</p>
+
+  <h3>Which camera does Malinois use?</h3>
+  <p>The front camera by default, for an iPhone lying face up. With the Vision tripwire on (Pro), you
+  can choose <strong>Rear</strong>, or <strong>Auto</strong> (rear when the iPhone is face down), for
+  an iPhone lying face down and watching the room. <strong>Both</strong> (Pro) records the front and
+  rear cameras at once; clips from Both have no sound. Choose under <strong>Settings → Capture →
+  Camera</strong>.</p>
+
+  <h2 id="pro">Malinois Pro</h2>
 
   <h3>What does Pro include?</h3>
-  <p>A one-time purchase that adds iCloud backup of evidence, alerts to your other Apple devices,
-  both cameras at once, longer clips, the Sound tripwire and the Vision tripwire. Everything
-  else — detection, capture, the local log, the alarm — is free and stays free. New installs get
-  a 30-day trial of everything.</p>
+  <p>iCloud backup of your evidence, alerts to your other devices and Apple Watch, both cameras at
+  once, longer clips, and the Sound and Vision tripwires. Detection, capture, the Event Log and the
+  alarm are free, and always will be.</p>
+  <p><strong>Early Access:</strong> while it lasts, Pro is free and permanent for every install. If
+  Pro becomes a paid unlock later, that will apply to new installs only, which will get a 30-day
+  trial. You can still buy Pro now to support the project; it adds nothing you do not already
+  have.</p>
 
-  <h3>Why is the Vision tripwire off when I’m on battery?</h3>
-  <p>The Vision tripwire watches the camera’s view for movement, so it needs the camera to be
-  running — and a camera that is running costs battery and makes iOS show its recording
-  indicator. Malinois only holds the camera ready when the power question is already settled:
-  while you are plugged in (<em>Battery mode → Auto</em>) or if you have chosen <em>Instant</em>.
-  On battery the camera is cold, so this tripwire is simply off, and the arming screen says so
-  before you commit. Your other tripwires carry on as normal.</p>
-
-  <h3>Why is the camera set to “Auto”?</h3>
-  <p>Auto uses whichever camera can actually see: the rear one when the phone is face down, the
-  front one otherwise. A phone placed face down with the front camera selected is pointing its
-  lens at the table, which is worth avoiding by default. You can still pick Front, Rear, or —
-  with Pro — Both.</p>
-
-  <h3>I bought Pro but it’s not showing.</h3>
-  <p>Open the app, go to <em>Settings</em>, and tap the Pro row, then <strong>Restore
-  Purchases</strong>. Make sure you’re signed into the same Apple Account you bought it with.</p>
+  <h3>I bought Pro but it is not showing.</h3>
+  <p>In Malinois, open <strong>Settings</strong>, tap the Pro row, then tap
+  <strong>Restore</strong>. Make sure you are signed in to the same Apple Account you bought it
+  with.</p>
 
   <h2>A note on responsible use</h2>
-  <p>Malinois is for protecting <strong>your own device</strong>. Because it records whoever
-  handles it, please use it lawfully where you live — it isn’t a tool for monitoring other
-  people.</p>
+  <p>Malinois is for protecting <strong>your own device</strong>. Because it records whoever handles
+  it, please use it lawfully where you live. It is not a tool for monitoring other people.</p>
 
   <h2>Privacy</h2>
   <p>Full details in the <a href="../privacy-policy/">privacy policy</a>.</p>
