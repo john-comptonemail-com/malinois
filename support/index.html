@@ -149,7 +149,9 @@
   <h3>Why does Malinois need Guided Access?</h3>
   <p>Guided Access is an iOS feature that locks the iPhone to one app. While Malinois is armed under
   it, nobody can go to the Home Screen, switch apps or close Malinois without your Guided Access
-  passcode.</p>
+  passcode, as long as Voice Control is off. Holding the buttons to force a restart still ends
+  Guided Access and the watch; Malinois normally records the handling first and, on Pro with iCloud
+  backup on and a connection, sends it.</p>
   <p>Without it, the armed iPhone is unlocked behind a dark screen: anyone who picks it up can leave
   Malinois and use it. Malinois records the touch and tries to take a photo, but it cannot stop them.
   That is why Malinois requires Guided Access to arm. For a quick test you can skip it for one arm
@@ -161,7 +163,8 @@
   <ol>
     <li>In iOS Settings, go to <strong>Accessibility → Guided Access</strong> and turn it on.</li>
     <li>Under <strong>Passcode Settings</strong>, set a Guided Access passcode that is different from
-    your iPhone passcode, so someone who knows your unlock code still cannot leave Malinois.</li>
+    your iPhone passcode, so someone who knows your unlock code cannot end Guided Access. They could
+    still force a restart, which ends the watch, and then unlock the phone with that code.</li>
     <li>In Malinois, triple-click the side button (or the Home button). Before you tap
     <strong>Start</strong>, tap <strong>Options</strong> and turn off <strong>Side Button</strong>
     (one press would otherwise lock the screen and pause the watch) and <strong>Volume
@@ -230,9 +233,15 @@
   iPhone.</p>
 
   <h3>How do I stop uploads to iCloud?</h3>
-  <p>Turning off <strong>Cross-device alerts</strong> stops the alerts, not the uploads. To stop
-  uploads, turn Malinois off in iOS Settings under your name → iCloud, among the apps that use
-  iCloud. Events recorded meanwhile stay on the iPhone and upload once it is back on.</p>
+  <p>Turn off <strong>iCloud backup</strong> in Settings → iCloud; it asks for Face ID, Touch ID or
+  your passcode. Nothing new uploads (a file already being sent finishes), and events recorded
+  while it is off stay on the iPhone for good, even after you turn it back on. Your log shows
+  when it was turned off, and that entry is also sent to iCloud, so your other devices running
+  Malinois 1.7 or later show it too. While it is off, your other devices get no alerts from this
+  iPhone through iCloud; your paired Apple Watch still gets them directly.
+  Turning off <strong>Cross-device alerts</strong> stops the alerts, not the uploads. Turning
+  Malinois off in iOS Settings, under your name → iCloud, also stops uploads, but events recorded
+  meanwhile upload once it is back on.</p>
 
   <h3>Can evidence be deleted?</h3>
   <p>Not one entry at a time: the Event Log has no way to delete a single entry, not even with your
