@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<!--
+	  The watch app shows the owner's tamper alerts and keeps, on the watch, the last alert's
+	  time and source and which relayed alerts it has shown. The developer collects nothing, so
+	  this is empty, as in the iPhone app's manifest.
+	-->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<!-- Required-reason APIs the watch app uses (item 120, F17). -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!--
+				  CA92.1: access info stored in defaults, accessible only to this app.
+				  WatchAppDelegate keeps the last alert's time and source and the relayed alerts
+				  it has already shown.
+				-->
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

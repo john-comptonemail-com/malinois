@@ -110,6 +110,20 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// evidentiary loss, and a later meta-only retry must not read as "everything made it".
     var mediaDiscarded: Bool?
 
+    /// Recorded while iCloud backup was off (item 115): it never uploads, even once backup is back
+    /// on (the owner's ruling). Set by the store when the event is added; nil otherwise.
+    var keptLocal: Bool?
+
+    /// Whether this record could be a missed upload if the event limit removed it: a first-hand
+    /// incident not fully backed up and not kept on this device by choice. Status entries,
+    /// interruption and flood records, other devices' copies and synced events never count. Whether
+    /// its account lets it upload is the engine's question (item 114's marker; the store keeps only
+    /// these for it, item 116's Q1).
+    var mayBeAMissedUpload: Bool {
+        !isMirrored && !isStateChange && interrupted != true && sustainedCount == nil
+            && cloudSyncState != .synced && keptLocal != true
+    }
+
     /// Why this event has no capture — or why its first capture failed before the one
     /// bounded retry attached a photo (item 54): a `CaptureFailureReason` raw value,
     /// allow-listed on the way in from the cloud. `nil` when the capture worked, or the
@@ -306,9 +320,13 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "thermalCritical":   return "Phone overheating while armed: iOS may shut it down"
         case "soundUnavailable":  return "Sound tripwire unavailable while armed: the microphone could not be restarted"   // item 105, F-09
         case "soundRestored":     return "Sound tripwire working again"
+        case "unsyncedRemoved":   return "Events not fully backed up to iCloud were removed to make room (log full)"   // items 114, 116
+        case "backupOff":         return "iCloud backup turned off: events recorded while it is off stay on this iPhone"   // item 115
+        case "backupOn":          return "iCloud backup turned on"
         default:         break
         }
         if let kind = stateChange, let words = Self.protectionChangeSummary(kind: kind) { return words }
+        if let kind = stateChange, let words = Self.clockChangeSummary(kind: kind) { return words }   // item 113
         // A status entry this build does not know (a newer build's kind, or a damaged log) is
         // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
         // kinds; this covers the local log (item 105, F-09).
@@ -336,6 +354,44 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         if let n = sustainedCount, n > 1 { return "\(base), sustained ×\(n)" }
         return base
     }
+
+    // MARK: - Clock changes (item 113)
+
+    /// The status kind for a clock jump seen during a watch (item 113): "clockChanged.8040" for a
+    /// clock moved forward 2 h 14 min, "clockChanged.-180" for one moved back 3 min. The jump rides
+    /// in the kind, so the cloud record needs no new field.
+    static func clockChangeKind(seconds: Int) -> String { "clockChanged." + String(seconds) }
+
+    /// The jump a clock-change kind records; nil for any other kind, a malformed one, no jump, or
+    /// one beyond a century. The bound uses the magnitude, which cannot trap: `abs` of the
+    /// smallest Int does, and a damaged record from iCloud or the log can hold it (item 116, R10).
+    static func clockChangeSeconds(kind: String) -> Int? {
+        let prefix = "clockChanged."
+        guard kind.hasPrefix(prefix), let seconds = Int(kind.dropFirst(prefix.count)),
+              seconds != 0, seconds.magnitude <= 100 * 365 * 86_400 else { return nil }
+        return seconds
+    }
+
+    /// "Device clock moved forward 2 h 14 min while armed"; nil unless `kind` is a clock change.
+    static func clockChangeSummary(kind: String) -> String? {
+        guard let seconds = clockChangeSeconds(kind: kind) else { return nil }
+        return "Device clock moved \(seconds > 0 ? "forward" : "back") \(clockJumpWords(abs(seconds))) while armed"
+    }
+
+    /// A jump in at most two units: "3 min", "2 h 14 min", "1 d 1 h".
+    static func clockJumpWords(_ seconds: Int) -> String {
+        let days = seconds / 86_400, hours = seconds % 86_400 / 3_600, minutes = seconds % 3_600 / 60
+        if days > 0 { return hours > 0 ? "\(days) d \(hours) h" : "\(days) d" }
+        if hours > 0 { return minutes > 0 ? "\(hours) h \(minutes) min" : "\(hours) h" }
+        return "\(max(minutes, 1)) min"
+    }
+
+    // MARK: - iCloud backup (item 115)
+
+    /// The status entry written just before backup turns off; the one record that still uploads.
+    static let backupOffKind = "backupOff"
+    /// The status entry written when backup turns back on.
+    static let backupOnKind = "backupOn"
 
     // MARK: - Protection settings changes (item 91)
 
@@ -480,10 +536,13 @@ enum DeviceInfo {
     /// 2026-08-30): iOS reports a generic "iPhone" to apps, so an unlabeled device's mirrors
     /// were anonymous; the model name is clearer, and two same-model devices in one log is
     /// less confusing than two called "iPhone". Pure (unit-tested). Unknown identifiers pass
-    /// through unchanged — "iPhone19,2" is honest where a guessed name would be wrong — and
+    /// through unchanged — "iPhone20,1" is honest where a guessed name would be wrong — and
     /// an empty identifier falls back to plain "iPhone". The table is generated from the
     /// SDK's own device-type registry (`xcrun simctl list devicetypes`), not memory; extend
-    /// it per new hardware generation.
+    /// it per new hardware generation, with every identifier a model answers to (Xcode lists a
+    /// second one for some, such as the 18 Pro Max's iPhone19,7). `Item82FoldableTests` reads that
+    /// registry and fails, naming each one, when an iPhone in it is missing here (item 82: the
+    /// iPhone Duo was).
     static func marketingName(forIdentifier id: String) -> String {
         guard !id.isEmpty else { return "iPhone" }
         return modelNames[id] ?? id
@@ -508,6 +567,8 @@ enum DeviceInfo {
         "iPhone17,5": "iPhone 16e",
         "iPhone18,1": "iPhone 17 Pro",    "iPhone18,2": "iPhone 17 Pro Max",
         "iPhone18,3": "iPhone 17",        "iPhone18,4": "iPhone Air",
-        "iPhone18,5": "iPhone 17e"
+        "iPhone18,5": "iPhone 17e",
+        "iPhone19,2": "iPhone 18 Pro",    "iPhone19,3": "iPhone 18 Pro Max",
+        "iPhone19,4": "iPhone Duo",       "iPhone19,7": "iPhone 18 Pro Max"
     ]
 }

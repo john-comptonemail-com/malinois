@@ -229,6 +229,11 @@ final class AppSettings: ObservableObject, Codable {
     /// account the moment a tamper event is recorded (via a CloudKit subscription).
     @Published var notifyOtherDevices: Bool
 
+    /// Upload this phone's events, photos, clips, status entries and heartbeats to the owner's
+    /// private iCloud (item 115). On by default. Off needs device authentication (Settings); an
+    /// event recorded while it is off stays on this phone for good (`Event.keptLocal`).
+    @Published var cloudBackup: Bool
+
     /// Retention policy for full-resolution media in iCloud (32.R2). Defaults to
     /// auto-delete after 12 months — the least destructive automatic value.
     @Published var cloudRetention: CloudRetention
@@ -332,6 +337,7 @@ final class AppSettings: ObservableObject, Codable {
         illumination = .auto
         clipAudio = false   // video only until the owner adds sound (item 69)
         notifyOtherDevices = true
+        cloudBackup = true   // item 115
         cloudRetention = .months12
         jammingResponse = true
         responseMode = .alert
@@ -374,7 +380,7 @@ final class AppSettings: ObservableObject, Codable {
         case enabledSensors, sensitivities, triggerMode
         case gracePeriodSeconds, captureMode, cameraPosition, cameraReadiness
         case deviceLabel
-        case illumination, notifyOtherDevices, cloudRetention, jammingResponse, clipAudio
+        case illumination, notifyOtherDevices, cloudRetention, jammingResponse, clipAudio, cloudBackup
         case responseMode, alertMessage, scramblePINPad, requireGuidedAccess, sirenRampUp
         case biometricUnlock, guidedAccessDefaultMigration
     }
@@ -408,6 +414,7 @@ final class AppSettings: ObservableObject, Codable {
             stored: try c.decodeIfPresent(Bool.self, forKey: .clipAudio),
             micGranted: AVAudioApplication.shared.recordPermission == .granted)
         notifyOtherDevices = try c.decodeIfPresent(Bool.self, forKey: .notifyOtherDevices) ?? true
+        cloudBackup = try c.decodeIfPresent(Bool.self, forKey: .cloudBackup) ?? true   // item 115; older settings keep uploading
         // `try?`, like triggerMode: a future build retiring a case must not reset every setting.
         cloudRetention = (try? c.decodeIfPresent(CloudRetention.self, forKey: .cloudRetention)) ?? .months12
         jammingResponse = try c.decodeIfPresent(Bool.self, forKey: .jammingResponse) ?? true
@@ -436,6 +443,7 @@ final class AppSettings: ObservableObject, Codable {
         try c.encode(illumination, forKey: .illumination)
         try c.encode(clipAudio, forKey: .clipAudio)
         try c.encode(notifyOtherDevices, forKey: .notifyOtherDevices)
+        try c.encode(cloudBackup, forKey: .cloudBackup)
         try c.encode(cloudRetention, forKey: .cloudRetention)
         try c.encode(jammingResponse, forKey: .jammingResponse)
         try c.encode(responseMode, forKey: .responseMode)
@@ -488,9 +496,9 @@ final class AppSettings: ObservableObject, Codable {
     }
 
     /// Seventh-review #6: every corrupt load writes a preservation stash, and nothing ever
-    /// reaped them — an unbounded, invisible accumulation. Same time-bounding as the
-    /// event-log tombstones: the newest three survive a month; the rule is EventStore's,
-    /// shared, so both artifact families age identically.
+    /// reaped them — an unbounded, invisible accumulation. The newest three survive a month
+    /// (EventStore's rule). A set-aside event log no longer ages out: it holds evidence, and it
+    /// and its media are kept (item 120, F5).
     private static func reapStaleCorruptStashes(now: Date = Date()) {
         let defaults = UserDefaults.standard
         let prefix = storeKey + ".corrupt-"

@@ -57,6 +57,12 @@ final class CloudExfiltrator: ObservableObject {
     @Published private(set) var enrollmentRequired = true
 
     let enrollment: CloudEnrollment
+    /// The engine's live iCloud-backup rule for one record (item 115; ADR 0047), wired at the
+    /// engine's init and read before every upload step and every save attempt (item 116, R2).
+    /// Allows everything until wired.
+    var backupPermits: (Event) -> Bool = { _ in true }
+    /// Whether iCloud backup is on (item 115), read before a heartbeat is sent: it carries no event.
+    var backupOn: () -> Bool = { true }
     private var identityGeneration = UUID()
     private var resolvedAccount: String?
     // NotificationCenter's token is only registered/removed here; it has no actor-bound state.
@@ -109,6 +115,13 @@ final class CloudExfiltrator: ObservableObject {
         return enrollment.isCurrent(lease)
     }
 
+    /// Ownership (ADR 0039) and the iCloud backup switch (ADR 0047), checked together before every
+    /// upload step, after each wait (item 116, R2): turning backup off stops anything new from
+    /// starting, even in an upload already under way. What CloudKit already accepted stays.
+    private func mayUpload(_ event: Event, lease: CloudEnrollment.Lease) -> Bool {
+        enrollment.authorizeUpload(event: event, lease: lease) && backupPermits(event)
+    }
+
     private func requireCurrent(_ lease: CloudEnrollment.Lease) throws {
         guard enrollment.isCurrent(lease), !Task.isCancelled else { throw CKError(.notAuthenticated) }
     }
@@ -139,6 +152,9 @@ final class CloudExfiltrator: ObservableObject {
     #if DEBUG
     /// Replaces only account identity discovery; it grants no database permission.
     var accountIdentityForTesting: (@MainActor () async -> String?)?
+    /// Replaces one save attempt's CloudKit operation (item 116): everything before it runs as
+    /// shipped, and a thrown error takes the shipped retry path. The Simulator has no container.
+    var saveAttemptForTesting: (@MainActor ([CKRecord]) async throws -> Void)?
     #endif
 
     // MARK: - Record types
@@ -470,10 +486,10 @@ final class CloudExfiltrator: ObservableObject {
     /// `.synced` can reopen it for the sweep when it did not (item 65, finding 3).
     @discardableResult
     func pushFact(_ event: Event) async -> Bool {
-        guard let lease = await acquireCloudLease(), enrollment.authorizeUpload(event: event, lease: lease) else { return false }
+        guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return false }
         return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
             // Ownership and enrollment are checked again after the per-event queue wait.
-            guard enrollment.isCurrent(lease), enrollment.authorizeUpload(event: event, lease: lease) else { return false }
+            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
             let bgTask = beginBackgroundTask()
             defer { endBackgroundTask(bgTask) }
             return await pushMetaRecord(event, lease: lease) == nil
@@ -486,7 +502,7 @@ final class CloudExfiltrator: ObservableObject {
     /// `secondaryMediaURL` is the second capture from the "Both" camera option.
     func exfiltrate(_ event: Event, fullMediaURL: URL?, secondaryMediaURL: URL? = nil) async -> ExfilOutcome {
         let declined = ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: nil)
-        guard let lease = await acquireCloudLease(), enrollment.authorizeUpload(event: event, lease: lease) else { return declined }
+        guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return declined }
         return await enqueueAuthorized(event.id, lease: lease, declined: declined) { [self] in
             await exfiltrateNow(event, fullMediaURL: fullMediaURL, secondaryMediaURL: secondaryMediaURL, lease: lease)
         }
@@ -494,7 +510,7 @@ final class CloudExfiltrator: ObservableObject {
 
     private func exfiltrateNow(_ event: Event, fullMediaURL: URL?, secondaryMediaURL: URL?,
                                lease: CloudEnrollment.Lease) async -> ExfilOutcome {
-        guard enrollment.isCurrent(lease), enrollment.authorizeUpload(event: event, lease: lease) else {
+        guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else {
             // Authorization held the record locally; no server refusal or interference occurred.
             return ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: nil)
         }
@@ -747,7 +763,7 @@ final class CloudExfiltrator: ObservableObject {
     /// Returns nil when the record landed (or a richer one already stands — the stale-skip),
     /// else the terminal error, so the caller can classify it (32.R1).
     private func pushMetaRecord(_ event: Event, lease: CloudEnrollment.Lease) async -> Error? {
-        guard enrollment.isCurrent(lease), enrollment.authorizeUpload(event: event, lease: lease) else {
+        guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else {
             return CKError(.notAuthenticated)
         }
         // Inline the few-KB thumbnail as an asset. The temp file backing the
@@ -771,7 +787,7 @@ final class CloudExfiltrator: ObservableObject {
                                          deviceName: DeviceInfo.name,
                                          thumbnailURL: tempAssetURL)
         do {
-            try await save([record], lease: lease)
+            try await save([record], lease: lease, permitted: { backupPermits(event) })
             submittedMetaRevisions[event.id] = max(submittedMetaRevisions[event.id] ?? 0, revision)
             return nil
         } catch {
@@ -783,12 +799,12 @@ final class CloudExfiltrator: ObservableObject {
 
     private func pushPhotoRecord(_ event: Event, mediaURL: URL, suffix: String,
                                  lease: CloudEnrollment.Lease) async -> Bool {
-        guard enrollment.isCurrent(lease), enrollment.authorizeUpload(event: event, lease: lease) else { return false }
+        guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
         guard FileManager.default.fileExists(atPath: mediaURL.path) else { return false }
         let record = Self.makePhotoRecord(event, mediaURL: mediaURL, suffix: suffix)
 
         do {
-            try await save([record], lease: lease)
+            try await save([record], lease: lease, permitted: { backupPermits(event) })
             return true
         } catch {
             Log.cloud.error("Photo push failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
@@ -808,15 +824,15 @@ final class CloudExfiltrator: ObservableObject {
     @discardableResult
     func pushStateChange(_ event: Event, disarmSignal: Bool = true) async -> Bool {
         guard let kind = event.stateChange, let lease = await acquireCloudLease(),
-              enrollment.authorizeUpload(event: event, lease: lease) else { return false }
+              mayUpload(event, lease: lease) else { return false }
         return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
             // A queued state change must retain the account that owned it at creation.
-            guard enrollment.isCurrent(lease), enrollment.authorizeUpload(event: event, lease: lease) else { return false }
+            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
             let bgTask = beginBackgroundTask()
             defer { endBackgroundTask(bgTask) }
             let record = Self.makeStateRecord(event, kind: kind, deviceName: DeviceInfo.name)
             do {
-                try await save([record], lease: lease)
+                try await save([record], lease: lease, permitted: { backupPermits(event) })
             } catch {
                 Log.cloud.error("State push failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 if Self.indicatesEncryptedDataReset(error) { encryptedDataResetDetected = true }
@@ -831,7 +847,7 @@ final class CloudExfiltrator: ObservableObject {
             if disarmSignal, Self.disarmSignalWanted(kind: kind) {
                 let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
                 do {
-                    try await save([signal], lease: lease)
+                    try await save([signal], lease: lease, permitted: { backupPermits(event) })
                 } catch {
                     Log.cloud.error("Disarm signal push failed (the audit record landed): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 }
@@ -1076,8 +1092,11 @@ final class CloudExfiltrator: ObservableObject {
               // through `sensorSummary` and display as "Signal loss", which asserts an attack.
               ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted",
                "thermalSerious", "thermalCritical",   // item 38
-               "soundUnavailable", "soundRestored"].contains(kind)   // item 105, F-09
+               "soundUnavailable", "soundRestored",   // item 105, F-09
+               "unsyncedRemoved",   // item 114
+               Event.backupOffKind, Event.backupOnKind].contains(kind)   // item 115
                 || Event.protectionChangeKinds.contains(kind)   // item 91
+                || Event.clockChangeSeconds(kind: kind) != nil   // item 113
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,
@@ -1356,6 +1375,7 @@ final class CloudExfiltrator: ObservableObject {
     func pushBeat(_ beat: HeartbeatBeat) async -> Bool {
         guard let lease = await acquireCloudLease(),
               enrollment.authorizeSession(session: beat.session, lease: lease), let database else { return false }
+        guard backupOn() else { return false }   // the switch, after the account wait (item 116, R2)
         let records = Self.makeBeatRecords(beat)
         let operation = CKModifyRecordsOperation(recordsToSave: records)
         operation.savePolicy = .allKeys
@@ -2076,16 +2096,25 @@ final class CloudExfiltrator: ObservableObject {
     ///
     /// Success requires EVERY record's own per-record confirmation, not the
     /// operation-level result — see `saveError` for the incident that made this rule.
-    private func save(_ records: [CKRecord], lease: CloudEnrollment.Lease) async throws {
+    private func save(_ records: [CKRecord], lease: CloudEnrollment.Lease, permitted: () -> Bool) async throws {
         try requireCurrent(lease)
-        guard let database else { throw CKError(.notAuthenticated) }
         let expected = records.map(\.recordID)
         let maxAttempts = 3
         var attempt = 0
         while true {
             try requireCurrent(lease)
+            // The backup switch, before every attempt: a retry after it went off never goes out (item 116, R2).
+            guard permitted() else { throw CKError(.notAuthenticated) }
             attempt += 1
             do {
+                #if DEBUG
+                if let saveAttemptForTesting {
+                    try await saveAttemptForTesting(records)
+                    try requireCurrent(lease)
+                    return
+                }
+                #endif
+                guard let database else { throw CKError(.notAuthenticated) }
                 let op = CKModifyRecordsOperation(recordsToSave: records)
                 op.qualityOfService = .userInitiated   // jump the queue
                 op.savePolicy = .allKeys

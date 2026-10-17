@@ -26,6 +26,8 @@ final class CloudEnrollment: ObservableObject {
     /// Presentation only; never grants cloud permission or changes an event's account binding.
     enum UploadHoldReason: String, CaseIterable {
         case unknownAccount, differentAccount, verificationRequired, unavailable
+        /// Recorded while iCloud backup was off (item 115): it stays on this device for good.
+        case backupOff
 
         var explanation: String {
             switch self {
@@ -37,6 +39,8 @@ final class CloudEnrollment: ObservableObject {
                 return "Verify iCloud access in Settings before uploading these events."
             case .unavailable:
                 return "Cloud verification information is unavailable. Unlock this device and check Settings → iCloud."
+            case .backupOff:
+                return "These events were recorded while iCloud backup was off. They stay on this device for good, even after backup is turned back on. Use Share on an event to save a copy elsewhere."
             }
         }
     }
@@ -44,6 +48,7 @@ final class CloudEnrollment: ObservableObject {
     /// Explains a local upload hold using already-known state, without prompting or resolving iCloud.
     func uploadHoldReason(for event: Event) -> UploadHoldReason? {
         guard !event.isMirrored, event.cloudSyncState != .synced else { return nil }
+        if event.keptLocal == true { return .backupOff }   // item 115: kept on this device by choice
         guard let state else { return .unavailable }
         guard let owner = state.owners[event.id.uuidString], !owner.isEmpty else { return .unknownAccount }
         guard let account = resolvedAccount ?? state.observedDifferentAccount ?? state.account else {
@@ -168,6 +173,12 @@ final class CloudEnrollment: ObservableObject {
         return lease
     }
 
+    /// Whether an event recorded now is recorded while iCloud backup is off (item 115); the engine
+    /// supplies it. Such an event is registered to no account (item 116, R3): the hold every
+    /// version since 1.5.1 keeps, so an older version installed over this one, which ignores
+    /// `Event.keptLocal`, still never uploads it.
+    var holdsNewEventsLocal: () -> Bool = { false }
+
     /// Registers ownership at capture time, never opportunistically when an upload is attempted.
     func registerLocalEvent(_ event: Event) {
         guard !event.isMirrored else { return }
@@ -183,7 +194,9 @@ final class CloudEnrollment: ObservableObject {
         // Offline captures retain their verified owner unless a different account was positively
         // observed. That hold survives relaunch and later identity failures; only new verification
         // or positively resolving the original account permits binding future captures again.
-        next.owners[id.uuidString] = captureHeld || next.observedDifferentAccount != nil ? "" : (next.account ?? "")
+        // Recorded while iCloud backup is off: held the same way, for good (item 116, R3).
+        let held = captureHeld || next.observedDifferentAccount != nil || holdsNewEventsLocal()
+        next.owners[id.uuidString] = held ? "" : (next.account ?? "")
         _ = commit(next)
     }
 

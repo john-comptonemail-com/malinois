@@ -297,7 +297,11 @@ struct EventRow: View {
         case "thermalCritical":   return "thermometer.high"
         case "soundUnavailable":  return "mic.slash"   // item 105, F-09
         case "soundRestored":     return "mic"
+        case "unsyncedRemoved":   return "tray.full"   // item 114
+        case "backupOff":         return "icloud.slash"   // item 115
+        case "backupOn":          return "icloud"
         case let kind? where Event.protectionChangeKinds.contains(kind): return "slider.horizontal.3"   // item 91
+        case let kind? where Event.clockChangeSeconds(kind: kind) != nil: return "clock.badge.exclamationmark"   // item 113
         default:         return "camera.metering.none"
         }
     }

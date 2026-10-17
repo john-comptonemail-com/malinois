@@ -425,7 +425,7 @@ final class MonitoringEngine: ObservableObject {
 
     /// iOS's thermal state (item 38): `ProcessInfo`'s, injected so a test does not read the
     /// host's (a hot Mac could flake the sentinel's tests: the 2026-09-28 review, item 89 D1).
-    private let thermalState: @MainActor () -> ProcessInfo.ThermalState
+    let thermalState: @MainActor () -> ProcessInfo.ThermalState   // internal for MonitoringEngine+Thermal.swift
 
     init(settings: AppSettings,
          eventStore: EventStore,
@@ -473,6 +473,7 @@ final class MonitoringEngine: ObservableObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshBrightness() }
+        watchBackupSetting()    // item 115
         recoverInterruptedSessionIfNeeded()
         UserDefaults.standard.removeObject(forKey: Self.retiredGuidedAccessAtDisarmKey)   // item 70
         // The launch-order hole (fifth review, round 3): this init runs inside the app's
@@ -602,6 +603,9 @@ final class MonitoringEngine: ObservableObject {
     /// runs either way — it is what pushes an interruption record logged at init, and it
     /// no-ops off Pro.
     private func handleEntitlementResolved() {
+        // Item 114's marker is Pro only: hear the event limit's removals from now on, the trims
+        // made while the log loaded at launch included, which the store kept (item 116, R6).
+        watchCountEvictions()
         // While the launch recovery still waits, the owed re-arm is its to run (item 88): run
         // here first, the recovery would read this countdown's own marker as a killed countdown
         // and record a false interruption. It re-arms when it runs, and the entitlement has
@@ -862,74 +866,14 @@ final class MonitoringEngine: ObservableObject {
         return event
     }
 
-    // MARK: - Thermal sentinel (item 38)
+    // MARK: - Thermal sentinel (item 38): the records and the listener are in
+    // MonitoringEngine+Thermal.swift; the state a watch keeps stays here.
 
-    // Heat alone can make iOS shut the phone down, with no tripwire touched: the one power-off
-    // an attacker can cause from across the room. While a watch is live, iOS's thermal state
-    // reaching "serious", and then "critical", each leaves one audit record, so the log shows
-    // the heat before the silence and, on Pro, the cloud copy lands while the phone still runs.
-    // Never a siren or a cross-device alert (ADR 0001: ambient heat looks like induced heat),
-    // which is why these ride the silent audit type, like `gaLifted`.
-
-    private var thermalObserver: NSObjectProtocol?
+    var thermalObserver: NSObjectProtocol?
+    /// Times each watch against a clock no setting can move (item 113; MonitoringEngine+ClockWatch.swift).
+    let clockWatch = ClockWatch()
     /// The thermal record kinds this watch has written: each is written once a session.
-    private var thermalKindsLogged: Set<String> = []
-
-    /// Pure (unit-tested; item 38): the record, if any, that a thermal state reached during a
-    /// live watch earns. One at the first `.serious` and one at the first `.critical`, so a
-    /// phone that flaps between fair and serious writes nothing more, and cooling from
-    /// critical to serious is not a new record.
-    nonisolated static func thermalRecordKind(for thermalState: ProcessInfo.ThermalState,
-                                              alreadyLogged: Set<String>) -> String? {
-        switch thermalState {
-        case .serious:
-            return alreadyLogged.isDisjoint(with: ["thermalSerious", "thermalCritical"]) ? "thermalSerious" : nil
-        case .critical:
-            return alreadyLogged.contains("thermalCritical") ? nil : "thermalCritical"
-        default:
-            return nil
-        }
-    }
-
-    /// Pure (unit-tested): how a record spells iOS's thermal state (item 38, choice 3); nil for a
-    /// state a later iOS adds.
-    nonisolated static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String? {
-        switch state {
-        case .nominal:  return "nominal"
-        case .fair:     return "fair"
-        case .serious:  return "serious"
-        case .critical: return "critical"
-        @unknown default: return nil
-        }
-    }
-
-    /// iOS reported a new thermal state (item 38). Recorded only while a watch is live.
-    func handleThermalStateChange(_ thermalState: ProcessInfo.ThermalState) {
-        guard armedSince != nil,
-              let kind = Self.thermalRecordKind(for: thermalState, alreadyLogged: thermalKindsLogged) else { return }
-        thermalKindsLogged.insert(kind)
-        logStateChange(kind)
-    }
-
-    /// Starts listening at go-live, and records a phone already hot at that moment.
-    private func startThermalSentinel() {
-        guard thermalObserver == nil else { return }
-        thermalObserver = NotificationCenter.default.addObserver(
-            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.handleThermalStateChange(self.thermalState())
-                }
-        }
-        handleThermalStateChange(thermalState())
-    }
-
-    /// Stops listening at the disarm; the next watch records afresh.
-    private func stopThermalSentinel() {
-        if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
-        thermalObserver = nil
-        thermalKindsLogged.removeAll()
-    }
+    var thermalKindsLogged: Set<String> = []
 
     /// The protection settings as the log last recorded them (item 91), kept on this device.
     private static let recordedProtectionKey = "com.malinois.protection.recorded"
@@ -1288,7 +1232,7 @@ final class MonitoringEngine: ObservableObject {
     private var cloudAllowed: Bool { armedPro || entitlements.proActive }
 
     private func pushFactIfCloud(_ event: Event) {
-        guard cloudAllowed else { return }
+        guard cloudAllowed, backupAllows(event) else { return }   // item 115
         Task {
             await cloud.pushFact(event)   // enqueue awaits the chained work, so this returns post-attempt
             handleEncryptedDataResetIfNeeded()   // R3-2: fact pushes consume the reset flag too
@@ -1827,6 +1771,7 @@ final class MonitoringEngine: ObservableObject {
             OnboardingState.hasArmedOnce = true   // the first-arm Guided Access auto-lift is now spent (68)
         }
         startThermalSentinel()           // item 38; idempotent within a watch
+        startClockWatch()                // item 113
         // Reconcile the camera to the readiness policy at go-live: charging may have
         // changed during the grace/calibration since beginArming's pre-warm decision.
         isCharging = Self.isChargingState(UIDevice.current.batteryState)
@@ -2182,7 +2127,7 @@ final class MonitoringEngine: ObservableObject {
     /// One beat. Numbered whether or not it goes out, so a beat dropped offline is a gap in the
     /// trail, not a backlog sent late (the owner's choice 3a).
     private func beat() {
-        guard let session = heartbeatSession, armedSince != nil else { return }
+        guard let session = heartbeatSession, armedSince != nil, settings.cloudBackup else { return }   // item 115
         heartbeatSequence += 1
         guard Heartbeat.beatAllowed(sessionPro: armedPro, online: connectivity.observedOnline) else { return }
         let beat = HeartbeatBeat(session: session, sequence: heartbeatSequence, deviceName: DeviceInfo.name,
@@ -3479,12 +3424,18 @@ final class MonitoringEngine: ObservableObject {
     /// receives the completion's sync state and failure UI; newer evidence keeps its own state.
     private func exfiltrate(_ event: Event, cloudAllowedOverride: Bool? = nil, disarmSignal: Bool = true) async {
         let allowed = cloudAllowedOverride ?? cloudAllowed
+        guard backupAllows(event) else {   // item 115: backup is off, or was when this was recorded
+            eventStore.setSyncState(.localOnly, for: event.id)
+            return
+        }
         // State changes use their own record type: a routine arm must not raise a tamper alert.
         if event.isStateChange {
             guard allowed else {
                 eventStore.setSyncState(.localOnly, for: event.id)
                 return
             }
+            eventStore.beginUpload(event.id)   // the log limit leaves an uploading status entry alone too (item 116, R5)
+            defer { eventStore.endUpload(event.id) }
             let pushed = await cloud.pushStateChange(event, disarmSignal: disarmSignal)
             applyUploadCompletion(Self.stateChangeSyncState(pushed: pushed), snapshot: event)
             // R3-2: a reset first seen on a STATE push must be acted on, not just detected —
@@ -3499,6 +3450,9 @@ final class MonitoringEngine: ObservableObject {
             eventStore.setSyncState(.localOnly, for: event.id)
             return
         }
+        // Retention leaves this event and its media alone until the upload ends (item 114, F5).
+        eventStore.beginUpload(event.id)
+        defer { eventStore.endUpload(event.id) }
         let mediaURL = event.mediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
         let secondaryURL = event.secondaryMediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
         let outcome: CloudExfiltrator.ExfilOutcome
@@ -3583,7 +3537,7 @@ final class MonitoringEngine: ObservableObject {
     /// holds, the price of a rare failure path staying simple).
     private func reExfiltrateOwnerAttributed(_ ids: Set<UUID>) {
         guard cloudAllowed else { return }
-        let updated = eventStore.events.filter { ids.contains($0.id) }
+        let updated = eventStore.events.filter { ids.contains($0.id) && backupAllows($0) }   // item 115
         for ev in updated {
             Task {
                 let landed = await cloud.pushFact(ev)
@@ -3874,6 +3828,8 @@ final class MonitoringEngine: ObservableObject {
     /// running one; an event added mid-sweep is caught by the next trigger's own push or
     /// the next sweep.
     private var retryingSync = false
+    /// A sweep requested while one ran, owed when it ends (item 116, N1; `sweepAfterTheRunningOne`).
+    var sweepRerunOwed = false
 
     /// True for the whole life of a pending sweep, whoever started it — the foreground, a
     /// reconnect, the launch, or the Event Log (item 79). The log's banner used to show its
@@ -4014,6 +3970,9 @@ final class MonitoringEngine: ObservableObject {
     private func endPendingSweep() {
         retryingSync = false
         pendingSweepActive = false
+        guard sweepRerunOwed else { return }   // asked for while this one ran (item 116, N1)
+        sweepRerunOwed = false
+        Task { await retryPendingSync() }
     }
 
     /// One pass over what is pending right now; then the sweep either ends or schedules its
@@ -4024,7 +3983,7 @@ final class MonitoringEngine: ObservableObject {
         // few retries, would take tens of seconds run strictly serially (and hang
         // pull-to-refresh). Run a few at a time so badges clear quickly without
         // flooding CloudKit.
-        var pending = eventStore.events.filter { $0.cloudSyncState != .synced }
+        var pending = eventStore.events.filter { $0.cloudSyncState != .synced && backupAllows($0) }   // item 115
         #if DEBUG
         let needsLease = sweepUploadForTesting == nil || requiresCloudLeaseForTesting
         #else
@@ -4156,6 +4115,7 @@ final class MonitoringEngine: ObservableObject {
         showingCalibrationReview = false
         for (_, m) in monitors { m.stop() }
         stopThermalSentinel()   // item 38
+        clockWatch.stop()       // item 113
         camera.shutDown()
         if let armedSince {
             let end = Date()

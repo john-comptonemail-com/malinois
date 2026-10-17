@@ -11,23 +11,22 @@
 import Foundation
 
 extension MonitoringEngine {
-    /// How long late evidence waits for a running sweep to end before asking for its own. Asking
-    /// sooner would be turned away by the single-flight guard; a sweep still running after this
-    /// is making follow-up passes, and each pass reads what is pending afresh, so it takes the
-    /// evidence itself.
-    nonisolated static let lateEvidenceSweepWait: TimeInterval = 600
-
     /// Uploads camera evidence the pipeline stored after the response's own upload had run
-    /// (`CapturePipelineHost`). A sweep already running chose its records before this one was
-    /// pending and may end without another pass, so this waits for it to end, then starts one.
-    /// Free users have no cloud upload: `retryPendingSync` returns at once for them.
-    func captureEvidenceStoredLate() {
-        let deadline = Date().addingTimeInterval(Self.lateEvidenceSweepWait)
-        Task { @MainActor [weak self] in
-            while self?.pendingSweepActive == true, Date() < deadline {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            await self?.retryPendingSync()
+    /// (`CapturePipelineHost`). Free users have no cloud upload: `retryPendingSync` returns at
+    /// once for them.
+    func captureEvidenceStoredLate() { sweepAfterTheRunningOne() }
+
+    /// Asks for a pending sweep that must not be lost. With none running, one starts now. With one
+    /// running, which chose its records before the caller's became pending and may end without
+    /// another pass, another is owed, and `endPendingSweep` starts it when that sweep ends, however
+    /// long it runs and whatever the clock does (item 116, N1: a ten-minute wait used to give up and
+    /// ask anyway, and the single-flight guard turned it away). Used for late evidence (item 108,
+    /// CE-01) and for iCloud backup turned back on (item 116, R4).
+    func sweepAfterTheRunningOne() {
+        if pendingSweepActive {
+            sweepRerunOwed = true
+        } else {
+            Task { await retryPendingSync() }   // a sweep that starts first reads what is pending afresh
         }
     }
 }

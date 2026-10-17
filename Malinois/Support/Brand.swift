@@ -10,7 +10,6 @@
 //
 
 import SwiftUI
-import UIKit
 
 enum Brand {
     /// Cobalt signal blue — the same value as the AccentColor asset.
@@ -46,25 +45,23 @@ struct CollarIcon: View {
 }
 
 /// The MALINOIS wordmark (silver "MALINOIS" + tagline on its dark banner), shown as
-/// the Home hero. The wide artwork fills most of the screen horizontally; the width
-/// scales with the device (a fraction of the screen's shorter side, so a Pro Max
-/// shows it bigger than a mini) as a *ceiling* — `scaledToFit` lets it compress if
-/// the layout is tight, so it never overflows. The banner keeps its own dark ground
-/// so the silver lettering reads on any app theme.
+/// the Home hero. It fills the width its container gives it, up to `largestWidth`;
+/// `scaledToFit` keeps its proportions and lets it compress if the layout is tight, so
+/// it never overflows. Item 82, fix 4: the width no longer comes from the screen
+/// (`UIScreen.main`), which on the iPhone Duo's large inner display would have made it
+/// oversized. On iPhones it is the size it was, or up to 2.4 points wider on those 402 to
+/// 430 points wide. The banner keeps its own dark ground so the silver lettering reads on
+/// any app theme.
 struct MalinoisLockup: View {
-    /// Fraction of the screen's shorter side the wordmark may grow to.
-    var widthFraction: CGFloat = 0.92
-
-    private var maxWidth: CGFloat {
-        let screen = UIScreen.main.bounds.size
-        return min(screen.width, screen.height) * widthFraction
-    }
+    /// The width it had on the largest iPhone when it was sized from the screen: 92% of the
+    /// Pro Max's 440 points.
+    static let largestWidth: CGFloat = 440 * 0.92
 
     var body: some View {
         Image("MalinoisWordmark")
             .resizable()
             .scaledToFit()
-            .frame(maxWidth: maxWidth)
+            .frame(maxWidth: Self.largestWidth)
             .accessibilityLabel("Malinois, Device Anti-Tampering")
     }
 }

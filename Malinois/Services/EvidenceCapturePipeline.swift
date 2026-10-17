@@ -380,6 +380,9 @@ final class EvidenceCapturePipeline {
     private var endedByDisarm: Bool { sessionIsOver }
     private var mayAffectSession: Bool { attempt?.cleaned != true }
 
+    /// Home's notice while the store that holds clips until the log takes them is full (item 112).
+    static let clipStorageFullNotice = "Clip storage is full - new clips can't be recorded. See the event for details."
+
     func capture(from position: CameraChoice, mode: CaptureMode,
                  illumination: IlluminationMode, preservation: Preservation? = nil) async -> Outcome {
         let value = await run(mode: mode, preservation: preservation) {
@@ -399,6 +402,17 @@ final class EvidenceCapturePipeline {
         // session the warm-up below restarted would otherwise stay up on a disarmed phone —
         // green dot on, no badge on Home — until the next arm.
         defer { if endedByDisarm && mayAffectSession { camera.shutDown() } }
+
+        // A clip needs room in the store that holds clips until the log takes them (item 112).
+        // Asked before the camera starts: refused later, the clip lit the screen flash, took the
+        // microphone from Sound and waited out its whole length recording nothing.
+        if mode.isClip {
+            guard camera.hasRoomForClips(outputs: 1) else {
+                host?.report(cameraNotice: Self.clipStorageFullNotice)
+                return .failed(.storageFull)
+            }
+            host?.clearCaptureNotice(matching: Self.clipStorageFullNotice)
+        }
 
         // Sound must yield before a microphone-bearing session starts. A camera that was
         // kept warm alongside its recorder must restart to reacquire audio cleanly.
@@ -510,6 +524,13 @@ final class EvidenceCapturePipeline {
         host?.suppressVision(for: 4)
         camera.beginCaptureAttempt()   // item 65, finding 5
         defer { if endedByDisarm && mayAffectSession { camera.shutDown() } }   // review 3, R3.1 — see capture(from:)
+        if mode.isClip {   // two clips' room, before the multi-cam session starts (item 112)
+            guard camera.hasRoomForClips(outputs: 2) else {
+                host?.report(cameraNotice: Self.clipStorageFullNotice)
+                return BothOutcome(front: nil, rear: nil, failure: .storageFull)
+            }
+            host?.clearCaptureNotice(matching: Self.clipStorageFullNotice)
+        }
         do {
             let coldStarted = try await camera.warmUpMultiCam(forClips: mode.isClip)
             attempt?.warming = false

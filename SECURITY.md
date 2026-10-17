@@ -2,7 +2,7 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.6 (67)**. Start with the practical guide below.
+This document describes **Malinois 1.7 (70)**. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
 
@@ -111,7 +111,7 @@ others.
 | **Malinois PIN** | Disarming, opening Settings and protected app screens, and ordinary PIN changes. |
 | **Guided Access passcode** | Ending Apple's restriction that keeps the phone inside Malinois. |
 | **Face ID or Touch ID for viewing** | Optional access to the Event Log and Test Sensors. Settings and ordinary disarm remain PIN-only. |
-| **iOS device-owner authentication** | Explicit PIN recovery, iCloud verification, and turning off account-wide cross-device alerts. This may use Face ID, Touch ID or the device passcode. |
+| **iOS device-owner authentication** | Explicit PIN recovery, iCloud verification, turning off account-wide cross-device alerts, and turning off iCloud backup. This may use Face ID, Touch ID or the device passcode. |
 | **Apple Account / iCloud access** | The account in which CloudKit stores the cloud copies. Malinois also requires its own installation verification. |
 
 Repeated incorrect Malinois PIN entries cause increasing delays. The failure count
@@ -153,6 +153,25 @@ app deletion removes its local container.
 photos or videos can be downloaded from an event's detail screen, subject to account
 verification and availability. Cloud copies have a separate retention policy from
 the local log.
+
+**Stopping uploads (1.7):** Settings → iCloud → **iCloud backup**, on by default, changeable
+only while disarmed. Turning it off needs iOS device-owner authentication. A "backup turned
+off" status entry is recorded first and queued for upload: it is the one record that still
+uploads while backup is off, retried like any other, so the cloud log shows when once it
+reaches iCloud (a phone offline at the time sends it later, and devices running a version
+before 1.7 do not show it). While off, this phone starts no other upload: events, media,
+status entries and heartbeats stay on it. The switch is checked before every step of an
+upload and every retry, so an upload under way when it is turned off stops at its next step;
+a file CloudKit has already accepted stays there. While off, this phone's events raise no
+iCloud alerts on other devices, while theirs still arrive; a paired Apple Watch still gets
+this phone's alerts directly from it, without iCloud. An event recorded while backup was off
+stays on this phone for good, even after backup is turned back on: it is marked, and also
+registered to no iCloud account, which keeps it on the phone even if an older version of
+Malinois is installed over this one. Events recorded before it was turned off upload when it
+is back on. Existing iCloud copies are not deleted. Turning Malinois off for iCloud in iOS
+Settings also stops uploads, but what was recorded meanwhile uploads when it is back on.
+While backup is off, Home shows it in orange in place of its iCloud row, and the Guided Access
+step and the countdown say it before each arm (1.7 (70)). ADR 0047.
 
 The cloud storage setting can keep full media indefinitely, clean it up manually,
 or remove it automatically after the selected age. App cleanup preserves event
@@ -279,7 +298,11 @@ trying to power it off before the evidence escapes.
   a Guided Access passcode holder can close the app; on a later launch Malinois attempts
   an interruption record and, when authorized, a cross-device notification. With the
   device in hand and unlocked, that passcode holder can wholesale-delete the cloud copy
-  from iOS Settings. Access to the iCloud account can also enable wholesale deletion.
+  from iOS Settings. An iPhone passcode holder can force-restart the armed phone, which
+  ends Guided Access and the watch, unlock it, and after reinstalling Malinois set a new
+  Malinois PIN and verify iCloud with that passcode alone; the handling before the
+  restart is normally recorded and, online with iCloud backup on, sent, but the reset
+  raises no alert on the owner's other devices. Access to the iCloud account can also enable wholesale deletion.
   The local log is not removed by that cloud deletion. This ordinary storage control
   is not an individual-record editor; it does not make the cloud records immutable.
   There is no immediate deletion alert. On a later launch, missing-record checks can
@@ -316,7 +339,10 @@ trying to power it off before the evidence escapes.
    owner when the relevant detection, storage and presentation paths succeed. A Sound
    tripwire whose microphone worked and then stays down for 30 seconds of a watch leaves a
    quiet status entry, and another when it works again (1.6; at most three outages a
-   watch). This does not cover every failure: other sensor restarts and persistent
+   watch). A device clock moved by a minute or more during a watch leaves a quiet status
+   entry naming the jump (1.7): event times and the log's order come from the device clock,
+   and the entry explains a change without correcting them. The clock is compared while the
+   app runs, so a change made while iOS had ended the app is not recorded. This does not cover every failure: other sensor restarts and persistent
    sensor-health failures have no event record or owner notice. Recording attempts,
    durable storage and delivered notifications are separate outcomes.
 
@@ -374,8 +400,12 @@ something specific and leaves something behind (details in
   if not recorded then, at the next arm. The first launch remembers the existing configuration
   before Settings can edit it, without inventing an audit row; later launches preserve that
   baseline so an unreported change is still caught (ADR 0019). On Pro the audit records follow
-  the usual verified, account-bound iCloud upload path. A PIN-holder can still weaken
-  the configuration; these audit attempts help make changes visible but can fail.
+  the usual verified, account-bound iCloud upload path. Only those settings leave a record (the
+  tripwires, the Guided Access requirement, cross-device alerts, the jamming response; iCloud backup
+  has its own entries). Sensitivity, the response mode, illumination, the battery mode, the grace
+  period, Face ID unlock and the cloud storage setting change with no record, so a PIN-holder can
+  make the next session less sensitive or silent without a trace in the log. A PIN-holder can still
+  weaken the configuration; these audit attempts help make changes visible but can fail.
 - **Guided Access passcode:** can close the app. On the next eligible launch, the app
   attempts a "Monitoring interrupted — the app was closed or crashed while armed"
   record and an authorized Pro notification. These need successful storage and delivery. Evidence already pushed has already escaped. It also
@@ -386,6 +416,18 @@ something specific and leaves something behind (details in
   it removes the app's cloud data rather than editing an individual event. It does not cause an immediate alert; a later eligible launch
   may detect missing records and report recovery. It does not reach the
   other devices' local copies of what they had already mirrored, nor this device's own log.
+- **iPhone passcode:** a forced restart, which nothing can block (*Non-goals*), ends Guided
+  Access and the watch, and the passcode then unlocks the phone. With it, someone can delete
+  and reinstall Malinois, which removes the local log with the app, then choose a new
+  Malinois PIN with **Forgot PIN?** and verify iCloud access: both accept the passcode as
+  device authentication (ADR 0040, ADR 0039). That opens the iCloud copy of the evidence, the
+  cross-device alerts and iCloud backup switches, and iOS's **Delete Data from iCloud** for
+  the app. What happened before the restart is normally recorded and, on Pro with iCloud
+  backup on and a connection, uploaded with its alert; the PIN reset and the new installation's verification
+  raise no alert on the other devices, and the heartbeat's silence raises none either (ADR
+  0020). A Guided Access passcode different from the device passcode stops this person from
+  ending Guided Access on the screen, not from forcing a restart. Without the passcode, a
+  forced restart leaves the phone locked.
 - **iCloud credentials and authorized clients:** ordinary iCloud.com and iOS storage
   controls do not provide an individual-record editor for Malinois. Account access
   can enable wholesale deletion, including an encrypted-data reset; on an unlocked
@@ -563,8 +605,9 @@ Two consequences matter for the threat model:
      drops the attacker at the **device-passcode prompt**, not at the Malinois PIN pad. After
      a restart iOS demands the device passcode before first unlock — biometrics don't apply,
      and `WhenUnlockedThisDeviceOnly` keeps the counter and the hash unreadable until then.
-     The in-scope attacker doesn't have that passcode, so the cleared wait is unreachable by
-     exactly the attacker it would benefit. The failure *count* survives regardless, so even
+     A Tier 1 attacker doesn't have that passcode, so the cleared wait is unreachable by
+     exactly the attacker it would benefit; one who has it (Tier 2) needs no guesses at all,
+     since after a reinstall the passcode alone sets a new PIN. The failure *count* survives regardless, so even
      an attacker who could get back in faces a longer next lockout, never a shorter one.
   2. A wall-clock floor would be strictly **weaker**, not stronger: a wall deadline is skipped
      by moving the device clock forward, which is the F-09 attack the uptime clock was chosen
@@ -721,7 +764,15 @@ Two consequences matter for the threat model:
   first-hand evidence. Incidents then discard coalesced flood records, synced
   evidence and finally pending evidence, oldest first within each class. Status
   entries discard the oldest first-hand entries after copies. The **newest first-hand
-  row in each budget stays**, including an in-flight flood anchor. On upgrade a
+  row in each budget stays**, including an in-flight flood anchor. An event or status entry
+  whose upload is running is left alone by both limits (an event's media too), and no newer
+  row or media goes in its place; the limits apply again when the upload ends, by when it is
+  usually synced (1.7). On Pro, when the incident limit removes events this phone was meant to
+  upload and had not fully uploaded (pending, or waiting for iCloud verification), the log
+  keeps a status entry saying so, once per watch or once a day while disarmed (kept across
+  relaunches); it does not say how many. A trim made while the log loads at launch is reported
+  too, once the Pro check has answered (normally within seconds); if the app ends before then,
+  that report is lost. On upgrade a
   readable legacy log adopts these limits; old status history beyond 100 is removed
   locally even if unsynced. Count trimming does not delete records from iCloud. The
   cloud-cleanup minimum age of 30 days does not apply to these local storage limits.
@@ -731,7 +782,10 @@ Two consequences matter for the threat model:
   **marked on its event** so the loss is visible. A launch-time
   sweep also reclaims media files no event references (true leaks); it deletes nothing
   while a corrupt-log backup exists — after a corruption, an unreferenced file may be
-  evidence whose metadata was lost — and never touches referenced or recent files.
+  evidence whose metadata was lost — and never touches referenced or recent files. Since
+  1.7 (70) no backup is deleted automatically, and no limit deletes a file a backup refers
+  to, so its photos and clips stay with it (and, while one exists, so do true leaks). Until then a launch deleted a backup 30 days old, or
+  all but the newest three, and the sweep then deleted the media only that backup referred to.
 
 </details>
 
@@ -761,9 +815,12 @@ Two consequences matter for the threat model:
   outside temporary-file cleanup; termination before finalization still does not
   guarantee playable footage or automatic attachment after relaunch. Nothing attaches a
   clip still there later, so one 30 days old is removed at launch. A separate pending
-  allowance of 1,200 files / 2 GB limits admission, and the torch lights only once a
-  recording has been admitted; unreadable or linked entries refuse new
-  recordings without deleting retained evidence. Both lenses share one reservation
+  allowance of 1,200 files / 2 GB limits admission. A clip is checked against it before
+  its capture starts the camera, so when it is full (or holds an unreadable entry) that
+  capture starts no camera and lights nothing: the event records that clip storage is full,
+  Home says so, and photos are unaffected. A camera the watch already keeps ready, and the
+  Vision tripwire, run apart from this check. The torch lights only once a recording has been admitted; unreadable or
+  linked entries refuse new recordings without deleting retained evidence. Both lenses share one reservation
   snapshot, and each movie output receives its share as a maximum file size. The limit
   is admission plus AVFoundation's stopping policy, not an exact disk reservation.
 - **No arming gap after go-live.** The sensors start watching the moment calibration
@@ -1180,8 +1237,9 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   keeps anyone inside Malinois, and the Malinois PIN still guards the Event Log, Settings and
   the sensor test. With Guided Access off, auto-lock is never held while disarmed.
 - **Covertness has a hard, deliberate bound: the recording indicator.** Whenever any
-  capture session is live, the app shows a non-disableable `REC` badge and floors screen
-  brightness at 0.33; iOS draws its own camera indicator in the Dynamic Island or the top
+  capture session is live, the app shows a non-disableable `REC` badge (on the armed screen,
+  in Test Sensors, and since 1.7 (70) on the arming screens, where the camera can start at the
+  ARM tap) and, while armed, floors screen brightness at 0.33; iOS draws its own camera indicator in the Dynamic Island or the top
   corner whatever the app does with the status bar, which stays hidden. It is derived from `AVCaptureSession` lifecycle
   notifications, so no code path can run the camera without it (App Store guideline 2.5.14).
   iOS's indicator appears the moment the camera starts; the badge follows a moment later, once
@@ -1365,7 +1423,10 @@ These are out of scope by design — Malinois does not claim to defend against t
 
 - **The event log is never silently overwritten.** If `events.json` is genuinely
   corrupt at launch, it's preserved as a timestamped backup rather than clobbered by
-  the next write. A file that's merely *unreadable because the device hasn't been
+  the next write. Home says so until the next launch that reads a log cleanly. Since 1.7 (70)
+  the backup and the photos and clips it refers to are kept until the app is deleted; nothing
+  reads the backup again, and it cannot be exported yet. One record that does not decode (for
+  example a value an older build does not know) sets aside the whole log. A file that's merely *unreadable because the device hasn't been
   unlocked since boot* (Data Protection) is treated differently: a silent CloudKit push
   can background-launch the app before first unlock, and the healthy-but-encrypted log
   must not be mistaken for corruption and renamed away. The two are told apart by what

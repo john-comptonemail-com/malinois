@@ -118,6 +118,10 @@ final class EventStore: ObservableObject {
     var attachmentPublishedForTesting: ((UUID, String) -> Void)?
     /// Drains queued disk writes before a test removes a crash-snapshot directory.
     func drainIOForTesting() { ioQueue.sync {} }
+    /// A smaller media budget than the shipped 2 GB, for one store (item 116).
+    var mediaBudgetForTesting: Int64?
+    /// Awaited after the clean-up has measured the files, before it decides (item 116).
+    var mediaMeasuredForTesting: (@MainActor () async -> Void)?
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -167,7 +171,9 @@ final class EventStore: ObservableObject {
 
     // MARK: - Mutations
 
-    func add(_ event: Event) {
+    func add(_ incoming: Event) {
+        var event = incoming
+        if keepsNewEventsLocal() { event.keptLocal = true }   // item 115: recorded while iCloud backup is off
         appendToJournal(event)        // durable FIRST — the record exists before anything else (ADR 0005)
         events.insert(event, at: 0)   // newest first
         let removedMedia = pruneToCountCap()   // cheap, in-memory — safe on the trigger path
@@ -451,16 +457,35 @@ final class EventStore: ObservableObject {
                                              isFlood: $0.sustainedCount != nil,
                                              isSynced: $0.cloudSyncState == .synced,
                                              isAudit: $0.isStateChange || $0.interrupted == true,
-                                             isMirrored: $0.isMirrored) },
+                                             isMirrored: $0.isMirrored,
+                                             inFlight: uploadsInFlight[$0.id] != nil) },
             incidentCap: Self.maxIncidentEvents, auditCap: Self.maxAuditEvents))
+        // Item 114: a budget still over after this pass waited for an upload; check again when it ends.
+        defer { if !uploadsInFlight.isEmpty, overACountBudget { limitsWaitForUploads = true } }
         guard !victims.isEmpty else { return [] }
         var removedNames: [String] = []
+        var removed: [Event] = []
         events.removeAll { e in
             guard victims.contains(e.id) else { return false }
             removedNames.append(contentsOf: [e.mediaFilename, e.secondaryMediaFilename].compactMap { $0 })
+            removed.append(e)
             return true
         }
+        let watch = evictionWatch()
+        if let report = onCountEviction {
+            Task { @MainActor in report(removed, watch) }   // item 114's marker, outside this mutation
+        } else {
+            // Kept for the marker only: what it could count, without a thumbnail, none dropped (item 116, Q1).
+            let candidates = removed.filter(\.mayBeAMissedUpload).map(Self.lightCopy)
+            if !candidates.isEmpty { unreportedEvictions.append((candidates, watch)) }
+        }
         return removedNames
+    }
+
+    /// Whether either count budget is still over, which only an upload in flight leaves it (item 114).
+    private var overACountBudget: Bool {
+        let status = events.filter { $0.isStateChange || $0.interrupted == true }.count
+        return events.count - status > Self.maxIncidentEvents || status > Self.maxAuditEvents
     }
 
     /// Migrates a readable legacy log without waiting for another incident. A sealed or
@@ -485,6 +510,9 @@ final class EventStore: ObservableObject {
         var isSynced = false
         var isAudit = false
         var isMirrored = false
+        /// Its upload is running (item 114; status entries too, item 116): never taken, and
+        /// counted as already going.
+        var inFlight = false
     }
 
     /// Pure retention policy, with newest-first input. Each pool first discards mirrored
@@ -494,18 +522,21 @@ final class EventStore: ObservableObject {
     /// The newest first-hand row in EACH pool is protected from eviction, including an
     /// in-flight flood anchor. A first-hand pool therefore retains at least one row even
     /// if a caller supplies a zero cap; production budgets are 500 incidents / 100 status.
+    /// A row whose upload is running is never taken and no newer row is taken in its place: it
+    /// counts as already going, and the store applies the limit again when the upload ends, by
+    /// when the row is usually synced and goes without loss (item 114, from item 108's F5).
     nonisolated static func countEvictionOrder(events: [EvictionRow], incidentCap: Int,
                                                auditCap: Int) -> [UUID] {
         func evict(_ rows: [EvictionRow], cap: Int, incidents: Bool) -> [UUID] {
-            var overflow = rows.count - max(0, cap)
-            guard overflow > 0 else { return [] }
             let protected = rows.first { !$0.isMirrored }?.id
+            var overflow = rows.count - max(0, cap) - rows.filter { $0.inFlight && $0.id != protected }.count
+            guard overflow > 0 else { return [] }
             var result: [UUID] = []
             var taken = Set<UUID>()
             func pass(_ matches: (EvictionRow) -> Bool) {
                 for row in rows.reversed() {
                     guard overflow > 0 else { return }
-                    guard row.id != protected, !taken.contains(row.id), matches(row) else { continue }
+                    guard row.id != protected, !row.inFlight, !taken.contains(row.id), matches(row) else { continue }
                     result.append(row.id)
                     taken.insert(row.id)
                     overflow -= 1
@@ -522,6 +553,75 @@ final class EventStore: ObservableObject {
         return evict(events.filter { !$0.isAudit }, cap: incidentCap, incidents: true)
             + evict(events.filter(\.isAudit), cap: auditCap, incidents: false)
     }
+
+    // MARK: - Uploads in flight (item 114, from item 108's F5)
+
+    /// Events whose upload is running now (an incident's evidence or a status entry's record),
+    /// counted because a retry can overlap the response's own upload. The event limit and the
+    /// storage cap leave them alone until the last upload ends.
+    private var uploadsInFlight: [UUID: Int] = [:]
+    /// A limit left something for an upload to finish: apply both again when the uploads end.
+    private var limitsWaitForUploads = false
+
+    /// The event limit's removals, for the engine's marker (item 114), with the watch each was made
+    /// in. Called after the removal is saved, on a later turn of the main actor, so a marker the
+    /// engine adds cannot re-enter it. Removals made before it is set (the trims while the log
+    /// loads at launch, item 116's R6) are kept and handed over when it is.
+    var onCountEviction: (([Event], Date?) -> Void)? {
+        didSet {
+            guard let report = onCountEviction, !unreportedEvictions.isEmpty else { return }
+            let held = unreportedEvictions
+            unreportedEvictions = []
+            Task { @MainActor in
+                for batch in held { report(batch.events, batch.watch) }
+            }
+        }
+    }
+
+    /// The watch a removal is made in (the engine's `armedSince`), read when it is made: the report
+    /// runs a turn later, and a disarm in between must not move it out of its watch (item 116, N2).
+    var evictionWatch: () -> Date? = { nil }
+
+    /// Removals no one has heard yet that the marker could count (`Event.mayBeAMissedUpload`), with
+    /// their watch, without their thumbnails. Nothing else is kept, and nothing of this is dropped:
+    /// bounding it lost the one loss the marker exists to report, first a large launch trim whole
+    /// (item 116, P1), then an incident crowded out by status entries (Q1). It holds only events
+    /// this store held a moment before, and only until the engine listens, when the Pro check first
+    /// answers: normally seconds after launch, though nothing forces StoreKit to answer.
+    private var unreportedEvictions: [(events: [Event], watch: Date?)] = []
+
+    /// A lighter copy for the marker's rule, which reads none of the evidence: the thumbnail and the
+    /// Vision trace go; the motion and sound traces cannot be cleared and stay (at most 60 and 30
+    /// samples as the monitors record them; a log written otherwise is not checked).
+    nonisolated private static func lightCopy(_ event: Event) -> Event {
+        var lite = event
+        lite.thumbnailData = nil
+        lite.visionTrace = nil
+        return lite
+    }
+
+    /// Whether an event added now is recorded while iCloud backup is off (item 115); the engine
+    /// supplies it. Such an event is marked `keptLocal` and never uploads.
+    var keepsNewEventsLocal: () -> Bool = { false }
+
+    /// Marks an event's upload as running: an incident's evidence, or a status entry's record
+    /// (item 116, R5).
+    func beginUpload(_ id: UUID) { uploadsInFlight[id, default: 0] += 1 }
+
+    /// Ends one upload of the event. Once none are left, limits that waited for one apply again.
+    func endUpload(_ id: UUID) {
+        guard let running = uploadsInFlight[id] else { return }
+        uploadsInFlight[id] = running > 1 ? running - 1 : nil
+        guard uploadsInFlight.isEmpty, limitsWaitForUploads else { return }
+        limitsWaitForUploads = false
+        let removedMedia = pruneToCountCap()
+        persist()
+        deleteMediaNames(removedMedia)   // after the checkpoint (34.H4), as in add()
+        scheduleByteCapPrune()
+    }
+
+    /// Whether an upload of the event is running.
+    func isUploading(_ id: UUID) -> Bool { uploadsInFlight[id] != nil }
 
     private var byteCapPruneRunning = false
     private var byteCapPruneRepeat = false
@@ -552,23 +652,38 @@ final class EventStore: ObservableObject {
                                      isFlood: $0.sustainedCount != nil,
                                      isSynced: $0.cloudSyncState == .synced,
                                      media: [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 }) }
-        let budget = Self.maxMediaBytes
-        let (evict, discarded) = await Task.detached { () -> (Set<UUID>, Set<UUID>) in
+        var budget = Self.maxMediaBytes
+        #if DEBUG
+        if let mediaBudgetForTesting { budget = mediaBudgetForTesting }
+        #endif
+        let inFlight = Set(uploadsInFlight.keys)   // item 114: an upload's media waits for it to end
+        let (evict, discarded, waited) = await Task.detached { () -> (Set<UUID>, Set<UUID>, Bool) in
             func size(_ name: String) -> Int64 {
                 let attrs = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path)
                 return (attrs?[.size] as? Int64) ?? 0
             }
             let sizes = snapshot.map { (id: $0.id, isFlood: $0.isFlood, isSynced: $0.isSynced,
                                         bytes: $0.media.reduce(Int64(0)) { $0 + size($1) }) }
-            let order = EventStore.mediaEvictionOrder(sizes: sizes, budget: budget)
-            return (order.evict, order.discardedBeforeUpload)
+            let order = EventStore.mediaEvictionOrder(sizes: sizes, budget: budget, inFlight: inFlight)
+            let waited = !inFlight.isEmpty && sizes.reduce(Int64(0)) { $0 + $1.bytes } > budget
+            return (order.evict, order.discardedBeforeUpload, waited)
         }.value
+        #if DEBUG
+        if let mediaMeasuredForTesting { await mediaMeasuredForTesting() }
+        #endif
+        if waited {
+            // Over budget only with an upload's media: check again when it ends. If it ended while
+            // the files were measured, nothing is left to call back: look again now (item 116, R7).
+            if uploadsInFlight.isEmpty { byteCapPruneRepeat = true } else { limitsWaitForUploads = true }
+        }
         guard !evict.isEmpty else { return }
         if !discarded.isEmpty {
             Log.store.warning("Storage emergency: discarded \(discarded.count, privacy: .public) event(s)' media before it ever uploaded")
         }
         var names: [String] = []
         for idx in events.indices where evict.contains(events[idx].id) {
+            // An upload that began while the files were measured keeps its media (item 114).
+            guard uploadsInFlight[events[idx].id] == nil else { limitsWaitForUploads = true; continue }
             if let n = events[idx].mediaFilename { names.append(n) }
             if let n = events[idx].secondaryMediaFilename { names.append(n) }
             events[idx].mediaFilename = nil
@@ -589,10 +704,13 @@ final class EventStore: ObservableObject {
     /// Order of loss: coalesced flood media first (synthetic noise), then synced media
     /// oldest-first (locally it is a cache — the cloud holds it and it can be re-downloaded),
     /// and only in a genuine storage emergency the oldest still-pending media.
+    /// Media whose upload is running is neither counted nor taken, so no newer pending media goes
+    /// in its place; the store prunes again when the upload ends (item 114, from item 108's F5).
     nonisolated static func mediaEvictionOrder(
-        sizes: [(id: UUID, isFlood: Bool, isSynced: Bool, bytes: Int64)],
-        budget: Int64
+        sizes allSizes: [(id: UUID, isFlood: Bool, isSynced: Bool, bytes: Int64)],
+        budget: Int64, inFlight: Set<UUID> = []
     ) -> (evict: Set<UUID>, discardedBeforeUpload: Set<UUID>) {
+        let sizes = allSizes.filter { !inFlight.contains($0.id) }
         var total = sizes.reduce(Int64(0)) { $0 + $1.bytes }
         guard total > budget else { return ([], []) }
         var evict: Set<UUID> = []
@@ -620,15 +738,38 @@ final class EventStore: ObservableObject {
     }
 
     /// Deletes media files on the ioQueue — off the main actor, consistent with the
-    /// rest of the store's file I/O.
+    /// rest of the store's file I/O. Every limit and eviction deletes through here, and a file a
+    /// set-aside log may refer to is kept (item 120, Codex's V1; ADR 0048): the journal and an
+    /// attachment intent can bring an event back, with its photo, after its log was set aside,
+    /// and the limits would then delete evidence the set-aside log keeps.
     private func deleteMediaNames(_ names: [String]) {
         guard !names.isEmpty else { return }
         ioQueue.async { [root] in
             let dir = Self.mediaDirectoryURL(in: root)
-            for name in names {
+            let kept = Self.mediaNamesSetAsideLogsMayReference(names, in: Self.ensured(root))
+            if !kept.isEmpty {
+                Log.store.info("Kept \(kept.count, privacy: .public) media file(s) a set-aside log refers to")
+            }
+            for name in names where !kept.contains(name) {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
             }
         }
+    }
+
+    /// Which of `names` a set-aside event log (`events.corrupt-*`) may refer to: each name whose
+    /// bytes appear in one, and all of them when the folder or a set-aside log cannot be read. A
+    /// set-aside log does not decode, so its bytes are searched; the names are UUIDs (item 120, V1).
+    nonisolated static func mediaNamesSetAsideLogsMayReference(_ names: [String], in root: URL) -> Set<String> {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: root.path) else { return Set(names) }
+        var kept: Set<String> = []
+        for entry in entries where entry.hasPrefix("events.corrupt-") {
+            guard let data = try? Data(contentsOf: root.appendingPathComponent(entry)) else { return Set(names) }
+            for name in names where !kept.contains(name) && data.range(of: Data(name.utf8)) != nil {
+                kept.insert(name)
+            }
+        }
+        return kept
     }
 
     /// Launch-time reconciliation of the Media directory against the log (39.R1.6 + 31.F14):
@@ -641,9 +782,10 @@ final class EventStore: ObservableObject {
     /// Refusals, because deleting evidence by mistake is the one unforgivable failure here:
     /// runs only when this launch decoded the log (`loadedCleanly` — an empty or partial
     /// in-memory log must never be treated as the truth about the disk), refuses wholesale
-    /// while any `events.corrupt-*.json` backup exists (after a corruption, unreferenced
-    /// media may be real evidence whose metadata was lost — the F-11 backup is the tombstone
-    /// that says so), touches only files this store named (UUID basenames, the tmp sweeper's
+    /// while any `events.corrupt-*.json` backup exists or the folder cannot be listed (after a
+    /// corruption, unreferenced media may be real evidence whose metadata was lost — the F-11
+    /// backup is the tombstone that says so, and since item 120 it is never deleted
+    /// automatically, so true leaks stay too), touches only files this store named (UUID basenames, the tmp sweeper's
     /// P3 lesson), and only past an age floor — a capture is stored moments before its event
     /// update lands, and the sweep must never race that window. Unresolved attachment
     /// intents additionally suspend sweeping until recovery/checkpoint or bounded aging. The rule itself is pure
@@ -669,21 +811,14 @@ final class EventStore: ObservableObject {
             }
             let fm = FileManager.default
             let root = Self.ensured(storeRoot)
-            let rootNames = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
-            // Reap aged corruption tombstones FIRST (seventh review, #6): one backup used to
-            // disable this sweep FOREVER. The refusal below stays deliberate — but time-bounded:
-            // the owner keeps the newest three for a month, then the tombstones age out and
-            // the sweep resumes. Names without a parseable stamp are never touched.
-            let backupStamps: [(name: String, date: Date)] = rootNames
-                .filter { $0.hasPrefix("events.corrupt-") }
-                .compactMap { name in Self.corruptArtifactDate(name).map { (name, $0) } }
-            let reaped = Set(Self.reapableCorruptArtifacts(stamps: backupStamps, now: Date()))
-            for name in reaped { try? fm.removeItem(at: root.appendingPathComponent(name)) }
-            if !reaped.isEmpty {
-                Log.store.info("Reaped \(reaped.count, privacy: .public) aged corrupt-log backup(s)")
-            }
-            let corruptBackupPresent = rootNames
-                .contains { $0.hasPrefix("events.corrupt-") && !reaped.contains($0) }
+            // A folder that cannot be listed might hold a set-aside log: sweep nothing.
+            guard let rootNames = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+            // A set-aside log is never deleted automatically (item 120, F5; build 70's stopgap).
+            // Since the seventh review (#6) a launch deleted one 30 days old, or once three newer
+            // ones existed, and this sweep then deleted every photo and clip only it referred to.
+            // Now each is kept with its media, and while one exists the sweep deletes nothing.
+            // Reading one record by record and sharing it are item 122 (1.8).
+            let corruptBackupPresent = rootNames.contains { $0.hasPrefix("events.corrupt-") }
             let dir = Self.mediaDirectoryURL(in: storeRoot)
             let onDisk: [(name: String, modified: Date)] = ((try? fm.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
@@ -703,11 +838,11 @@ final class EventStore: ObservableObject {
     }
 
     /// Pure (unit-tested): which corrupt-artifact names may be reaped — anything older than
-    /// `maxAge`, plus anything beyond the `keepNewest` most recent regardless of age. One
-    /// corruption's tombstone used to stand forever, disabling the orphan sweep permanently
-    /// and (for settings stashes) accumulating without bound (seventh review, #6). The
-    /// deliberate safety refusals stay — bounded to a month instead of eternity. A
-    /// future-dated stamp reads as young: kept, same clock-weirdness rule as the sweep's.
+    /// `maxAge`, plus anything beyond the `keepNewest` most recent regardless of age. Used for
+    /// the settings stashes (`AppSettings`), which otherwise accumulated without bound (seventh
+    /// review, #6). Set-aside event logs no longer use it: they and their media are kept
+    /// (item 120, F5). A future-dated stamp reads as young: kept, same clock-weirdness rule as
+    /// the sweep's.
     nonisolated static func reapableCorruptArtifacts(stamps: [(name: String, date: Date)],
                                                      now: Date,
                                                      keepNewest: Int = 3,
@@ -976,10 +1111,13 @@ final class EventStore: ObservableObject {
     /// (owner attribution at disarm, a sync state advanced by a completed push) was silently
     /// erased when the stale copy was written back (sixth-review F2). Attribution is
     /// monotonic at `true`; sync state reuses the exact `setSyncState` rule this write-back
-    /// used to bypass.
+    /// used to bypass. So is `keptLocal` (item 116, R1): `add` marks the stored copy of an
+    /// event recorded while iCloud backup is off, and the response's own copy, written back
+    /// when its capture ends, never had the mark.
     nonisolated static func preservingMonotonicFields(current: Event, incoming: Event) -> Event {
         var out = incoming
         if current.ownerAttributed == true { out.ownerAttributed = true }
+        if current.keptLocal == true { out.keptLocal = true }
         if !mayTransitionSyncState(from: current.cloudSyncState, to: incoming.cloudSyncState) {
             out.cloudSyncState = current.cloudSyncState
         }
@@ -1537,7 +1675,7 @@ final class EventStore: ObservableObject {
             Log.store.fault("events.json unreadable and un-backupable; persistence disabled to avoid data loss")
         } else {
             Log.store.error("events.json unreadable or corrupt; preserved as \(backup.lastPathComponent, privacy: .public)")
-            logWasQuarantined = true   // Home says so; the backup is reaped after 30 days (item 73, review 2 R2.2)
+            logWasQuarantined = true   // Home says so (item 73, review 2 R2.2); the backup is kept (item 120, F5)
         }
     }
 

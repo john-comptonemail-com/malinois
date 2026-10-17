@@ -207,6 +207,9 @@ struct PINSetupView: View {
             }
         }
         .padding()
+        // Item 82: scrolls when taller than the screen (the iPhone Duo's outer display, an iPhone SE,
+        // large text) instead of cutting the explanation short; laid out as before where it fits.
+        .scrollingIfNeeded()
         // Match PINEntryView's dark treatment so setup and disarm-entry look like one flow.
         // (Entry must stay black — it doubles as the disarm pad on the covert armed screen.)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

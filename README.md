@@ -104,6 +104,24 @@ Apple Watch alerts, a PIN pad that submits itself, and clearer records.
 - Images are checked before they're opened, so a damaged or oversized file can't overload the app.
 - The Face ID permission text now lists every use of Face ID in Malinois.
 
+**Shipped in 1.7**
+
+A switch for iCloud backup, a record of clock changes, and screens that fit small displays and large text.
+
+- New iCloud backup switch in Settings → iCloud, for when you want evidence kept only on this iPhone. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log. Events recorded while it is off stay on this iPhone, even after you turn it back on. Your paired Apple Watch still gets this iPhone's alerts directly; your other devices don't while it is off. (Pro)
+- When the clip storage is full, a clip now fails at once with its own reason and a notice on Home, instead of starting the camera and recording nothing.
+- A change of the device clock by a minute or more while armed is now recorded in the Event Log.
+- The Event Log's size limit never removes an event while it is uploading, and the log says so if events not fully backed up to iCloud had to be removed to make room. (Pro)
+- Home and PIN setup now scroll on small screens, such as the outer display of iPhone Duo, and with large text, instead of cutting text off.
+- The newest iPhones, including iPhone Duo and iPhone 18 Pro, show their names as the default device label.
+- The Face ID permission text now mentions turning off iCloud backup.
+- With iCloud backup off, Home and the arming screens now say so. (Pro)
+- Warnings found when you tap ARM, such as a camera that could not start or clips that will have no sound, now show on the arming screens before you walk away, not only on Home afterwards.
+- On a charger or in Instant mode, where the camera starts when you tap ARM, the REC badge now shows on the arming screens too.
+- Taps on the armed screen are recorded even after iOS interrupts a touch, for example during the Guided Access triple-click.
+- Saving a photo or clip from Share now asks once for permission to add it to your photo library.
+- If the event log can't be read, the copy set aside is now kept with its photos and clips, instead of being deleted after 30 days.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.

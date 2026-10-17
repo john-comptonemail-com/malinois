@@ -31,6 +31,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var clipAudio = false
     var visionTapActive: Bool?
     var micUnavailableForClips = false
+    /// Item 112: the store that holds clips until the log takes them has no room.
+    var clipStorageFull = false
     /// What every low-light probe answers — front, rear, or the active camera alike.
     var lowLight = false
     /// Thrown by every warm-up while set: a camera that cannot come up.
@@ -88,6 +90,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     private var _micDrops = 0
     private var _visionTapRequests: [Bool] = []
     private var _attemptBegins = 0
+    private var _roomChecks: [Int] = []
     private var _holdStills = false
     private var stillWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -97,6 +100,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var clips: [Bool] { lock.withLock { _clips } }
     var bothStills: Int { lock.withLock { _bothStills } }
     var bothClips: Int { lock.withLock { _bothClips } }
+    /// How many clips' room each storage check asked for (item 116).
+    var roomChecks: [Int] { lock.withLock { _roomChecks } }
     var clipEnds: Int { lock.withLock { _clipEnds } }
     /// Item 65, finding 5: how many attempts announced themselves before touching the lens.
     var attemptBegins: Int { lock.withLock { _attemptBegins } }
@@ -144,6 +149,10 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         return true
     }
 
+    func hasRoomForClips(outputs: Int) -> Bool {
+        lock.withLock { _roomChecks.append(outputs) }
+        return !clipStorageFull
+    }
     func shutDown() { lock.withLock { _shutDowns += 1 } }
     func warmUpForAudioHandoff(camera: CameraChoice, deadline: Date) async throws -> Bool {
         if shutDownDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(shutDownDelay * 1_000_000_000)) }
@@ -275,7 +284,8 @@ enum TestIsolation {
     nonisolated static let recoveryFlagPrefixes = ["com.malinois.armedSession.", "com.malinois.armed.",
                                                    "com.malinois.arming.", "com.malinois.recovery.",
                                                    "com.malinois.protection.",   // item 91's recorded settings
-                                                   "com.malinois.beats."]
+                                                   "com.malinois.beats.",
+                                                   "com.malinois.retention."]   // item 116's marker limit
 
     @MainActor private static var engines: [MonitoringEngine] = []
 

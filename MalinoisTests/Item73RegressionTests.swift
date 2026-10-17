@@ -424,8 +424,8 @@ final class Item73RegressionTests: XCTestCase {
     // MARK: - Review 2, R2.2: a quarantined log is surfaced
 
     /// A log that fails to decode is preserved as a timestamped backup and a fresh log starts —
-    /// silently, until now: the owner saw an empty log, and the backup is reaped after 30 days.
-    /// The store says so, and the next clean load clears it.
+    /// silently, until now: the owner saw an empty log (the backup was then deleted after 30 days,
+    /// until item 120, F5). The store says so, and the next clean load clears it.
     func testAQuarantinedLogIsSurfacedUntilTheNextCleanLoad() throws {
         let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

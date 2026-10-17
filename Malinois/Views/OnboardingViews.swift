@@ -259,7 +259,7 @@ struct GuidedAccessPromptView: View {
                     Text("Set it up once - about a minute")
                         .font(.subheadline.weight(.bold))
                     step(1, "Settings → Accessibility → Guided Access → turn it on.")
-                    step(2, "Guided Access → Passcode Settings → set a passcode. Make it **different** from your device passcode, so someone who knows your unlock code still can't exit.")
+                    step(2, "Guided Access → Passcode Settings → set a passcode. Make it **different** from your device passcode, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch.")
                     step(3, "Then whenever you arm Malinois: tap ARM first, and on the arming screen triple-click the side button and tap Start.")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -301,5 +301,6 @@ struct GuidedAccessPromptView: View {
                 .background(Circle().fill(Brand.blue.opacity(0.25)))
             Text(.init(text)).font(.caption)
         }
+        .reportedOnScreen(text)
     }
 }

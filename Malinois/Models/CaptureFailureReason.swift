@@ -36,6 +36,9 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
     case interrupted
     /// The media could not be written to the store.
     case storageFailed
+    /// The store that holds clips until the log takes them had no room, so the clip never
+    /// started (item 112, from item 108's F8). Checked before the camera starts.
+    case storageFull
     /// The owner disarmed while the shot or clip was in flight; the disarm stopped the
     /// camera, so there is nothing to report as a fault (item 63 leg 6 on 1.3 (39)).
     case disarmed
@@ -47,7 +50,7 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
         case .interruptedInBackground, .interruptedByAnotherApp, .interruptedByAudioClient,
              .interruptedBySystemPressure, .interrupted:
             return true
-        case .unauthorized, .cameraUnavailable, .warmUpTimedOut, .captureFailed, .storageFailed,
+        case .unauthorized, .cameraUnavailable, .warmUpTimedOut, .captureFailed, .storageFailed, .storageFull,
              .captureTimedOut, .cameraBusy, .clipPartial, .clipUnverified,
              .disarmed:
             return false
@@ -71,6 +74,7 @@ enum CaptureFailureReason: String, Sendable, CaseIterable {
         case .interruptedBySystemPressure: return "iOS shed the camera under system pressure (heat or load)"
         case .interrupted:                 return "the camera session was interrupted"
         case .storageFailed:               return "the capture could not be written to storage"
+        case .storageFull:                 return "there was no room left to record the clip (clip storage is full)"
         case .disarmed:                    return "monitoring was disarmed during the capture"
         }
     }

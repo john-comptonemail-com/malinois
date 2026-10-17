@@ -484,6 +484,21 @@ struct SettingsView: View {
                 Text("Names this device in evidence. Leave blank to use the model name shown.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if entitlements.proActive {   // item 115
+                Toggle(isOn: Binding(
+                    get: { settings.cloudBackup },
+                    set: { applyCloudBackup($0) })) {
+                    VStack(alignment: .leading) {
+                        HStack { Text("iCloud backup"); proMark }
+                        Text("Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off stay on this iPhone, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(backupControlBusy || engine.state != .disarmed)
+                if let backupNote {
+                    Text(backupNote).font(.caption).foregroundStyle(.orange)
+                }
+            }
             Toggle(isOn: Binding(
                 get: { settings.notifyOtherDevices },
                 set: { applyCrossDeviceAlerts($0) })) {
@@ -562,8 +577,31 @@ struct SettingsView: View {
     }
 
     @State private var subscriptionNote: String?
+    @State private var backupControlBusy = false
+    @State private var backupNote: String?
     @State private var cloudControlBusy = false
     @State private var enrollmentBusy = false
+
+    /// iCloud backup (item 115): off needs fresh device authentication, then the engine records it
+    /// before uploads stop; on needs nothing. The engine changes it only while disarmed, checked
+    /// again after Face ID (item 116).
+    private func applyCloudBackup(_ enabled: Bool) {
+        guard !backupControlBusy, enabled != settings.cloudBackup else { return }
+        backupNote = nil
+        guard !enabled else {
+            if !engine.setCloudBackup(true) { backupNote = "iCloud backup is still off: it can be changed only while disarmed." }
+            return
+        }
+        backupControlBusy = true
+        Task {
+            defer { backupControlBusy = false }
+            guard await CloudEnrollment.deviceAuthentication("Turn off iCloud backup for Malinois") else {
+                backupNote = "iCloud backup is still on: turning it off needs Face ID, Touch ID or your passcode, with Guided Access ended."
+                return
+            }
+            if !engine.setCloudBackup(false) { backupNote = "iCloud backup is still on: it can be changed only while disarmed." }
+        }
+    }
 
     /// The switch controls account subscriptions. OFF requires fresh device authentication;
     /// save the local preference only after the server confirms, so cancellation changes nothing.

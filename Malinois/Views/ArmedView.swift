@@ -17,6 +17,7 @@
 //       to end Guided Access.
 //
 
+import Combine
 import SwiftUI
 
 struct ArmedView: View {
@@ -27,8 +28,11 @@ struct ArmedView: View {
     // The PIN pad follows the engine's disarm-entry flag (not local state), so the
     // engine's inactivity timeout can dismiss it and return to covert.
 
-    /// True while a finger is down, so the touch trip is logged once per press.
-    @State private var pressActive = false
+    /// True while a finger is down, so the touch trip is logged once per press. A `GestureState`
+    /// (item 120, F6): SwiftUI resets it when the touch ends AND when iOS cancels it (the Guided
+    /// Access triple-click, leaving the app). The `@State` flag before it was cleared only when a
+    /// touch ended, so after a cancelled touch every later tap was ignored until a full hold.
+    @GestureState private var fingerDown = false
 
     private let holdSeconds: Double = 5
 
@@ -65,22 +69,18 @@ struct ArmedView: View {
                     .gesture(
                         LongPressGesture(minimumDuration: holdSeconds,
                                          maximumDistance: .greatestFiniteMagnitude)
-                            .onEnded { _ in
-                                withAnimation { engine.beginDisarmEntry() }
-                                pressActive = false
-                            }
+                            .onEnded { _ in withAnimation { engine.beginDisarmEntry() } }
                     )
-                    // Runs alongside purely to observe the press itself — log the touch trip
-                    // on press-DOWN and close the attribution window on release. Neither can
-                    // reveal the pad, so if a release event is ever missed the worst outcome
-                    // is a stale attribution window that expires on its own.
+                    // Runs alongside purely to observe the press itself: `fingerDown` turns on at
+                    // press-DOWN and off at release or cancellation, and the change below logs the
+                    // touch trip and closes the attribution window. Neither can reveal the pad.
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 0)
-                            .onChanged { _ in notePressDown() }
-                            .onEnded { _ in notePressUp() }
+                            .updating($fingerDown) { _, down, _ in down = true }
                     )
             }
         }
+        .onChange(of: fingerDown) { _, down in down ? notePressDown() : notePressUp() }
         .overlay {
             // Tamper warning (alert / siren modes). Non-interactive so the
             // press-and-hold to disarm still works underneath it. An escalation
@@ -135,11 +135,9 @@ struct ArmedView: View {
         .persistentSystemOverlays(.hidden)
     }
 
-    /// Press-down, once per press. Reveals nothing on its own — that's the long-press
-    /// gesture's job — it only records the interaction.
+    /// Press-down, once per press (`fingerDown` turning on). Reveals nothing on its own — that's
+    /// the long-press gesture's job — it only records the interaction.
     private func notePressDown() {
-        guard !pressActive else { return }
-        pressActive = true
         // Open the owner-attribution window at press-down, BEFORE reporting the touch, so
         // the touch that starts a legitimate disarm hold is a candidate for attribution
         // rather than an un-attributed self-tamper (R-02). Confirmed by a correct PIN;
@@ -152,10 +150,9 @@ struct ArmedView: View {
         engine.reportTouch()
     }
 
-    /// Release. If the pad didn't open, this was a tap rather than a disarm, so close the
-    /// attribution window and let that touch stand as evidence.
+    /// Release or cancellation (`fingerDown` turning off). If the pad didn't open, this was a tap
+    /// rather than a disarm, so close the attribution window and let that touch stand as evidence.
     private func notePressUp() {
-        pressActive = false
         if !engine.disarmEntryActive { engine.cancelDisarmCandidate() }
     }
 
@@ -172,6 +169,37 @@ struct ArmedView: View {
             // instead of a hardcoded top inset.
             .safeAreaPadding(.top, 24)
         }
+    }
+}
+
+extension View {
+    /// The REC badge at the top trailing corner while `live` says a camera session runs, in a row of
+    /// its own above the screen's content so it never covers text, at any text size (item 120: the
+    /// arming screens and the recovery PIN, F4, V3, V4). The armed screen and Test Sensors, which
+    /// have no text beneath it, overlay theirs.
+    func recordingBadge(whileLive live: AnyPublisher<Bool, Never>) -> some View {
+        modifier(RecordingBadgeRow(live: live))
+    }
+}
+
+private struct RecordingBadgeRow: ViewModifier {
+    let live: AnyPublisher<Bool, Never>
+    @State private var running = false
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
+                ZStack {
+                    if running {
+                        RecordingIndicator()
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 4)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: running)
+            }
+            .onReceive(live) { running = $0 }
     }
 }
 
@@ -197,6 +225,7 @@ struct RecordingIndicator: View {
         .overlay(Capsule().strokeBorder(Color.red.opacity(0.9), lineWidth: 1.5))
         .onAppear { pulsing = true }
         .accessibilityLabel("Recording in progress")
+        .reportedOnScreen("REC")
     }
 }
 

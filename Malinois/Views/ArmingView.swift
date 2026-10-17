@@ -18,33 +18,24 @@ struct ArmingView: View {
         VStack(spacing: 28) {
             switch engine.state {
             case .guidedAccessCheck: guidedAccessStep
-            case .arming:            scrollingIfNeeded(graceStep)
-            case .calibrating:       calibrationStep
+            case .arming:            graceStep.scrollingIfNeeded()
+            case .calibrating:       calibrationStep.scrollingIfNeeded()
             default:                 EmptyView()
             }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Item 120, F4: on a charger (Auto) or in Instant mode the camera starts at the ARM tap, so
+        // the REC badge shows on these screens too, as on the armed screen and in Test Sensors
+        // (guideline 2.5.14: whenever a camera session is live), in room of its own (V4).
+        .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
         .onAppear { engine.refreshGuidedAccess() }
         // An unused lift must not linger past the arming screen (M2): leaving without
         // arming expires it, so a later arm re-asserts the owner's requirement.
         .onDisappear { engine.clearGuidedAccessLift() }
         // A crash-recovery re-arm can only be stopped with the PIN (R-04).
         .fullScreenCover(isPresented: $showCancelPIN) {
-            PINEntryView(title: "Enter PIN to stop re-arming") {
-                showCancelPIN = false
-                engine.disarm()
-            } onCancel: { showCancelPIN = false }
-        }
-    }
-
-    /// `content` as laid out, or scrolling when it is taller than the screen: the countdown's lines
-    /// outgrow an iPhone SE once a warning joins them (item 108's Guided Access warning cut the
-    /// last line of the battery note short there). A screen it fits looks exactly as before.
-    private func scrollingIfNeeded<Content: View>(_ content: Content) -> some View {
-        ViewThatFits(in: .vertical) {
-            content
-            ScrollView { content }
+            RecoveryCancelPINView { showCancelPIN = false }
         }
     }
 
@@ -164,6 +155,7 @@ struct ArmingView: View {
                         .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
                 }
                 if engine.cameraAskBlockedByGuidedAccess { cameraAskBlockedNotice }
+                armTimeNotices(centered: false)
 
                 guidedAccessRecommendation
             }
@@ -234,7 +226,7 @@ struct ArmingView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 instruction(1, "Open Settings → Accessibility → Guided Access and turn it on (one-time setup).")
-                instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, so someone who knows your unlock code still can't exit.")
+                instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch, and that code then unlocks the phone.")
                 instruction(3, "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.")
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
                 instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
@@ -351,6 +343,7 @@ struct ArmingView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            armTimeNotices(centered: true)
             Label(batteryGuidance, systemImage: "battery.100")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -360,6 +353,35 @@ struct ArmingView: View {
                 .buttonStyle(.bordered)
                 .padding(.top)
         }
+    }
+
+    // MARK: - Arm-time notices (item 120)
+
+    /// What the ARM tap found, said before the owner walks away: iCloud backup is off (F1), and the
+    /// camera and microphone notices the arm raises, such as a denied or failed camera or clips that
+    /// will have no sound (F3). Only Home showed them, after the disarm. The Guided Access step
+    /// leaves out the camera notice while its own box says the camera could not be asked.
+    @ViewBuilder
+    private func armTimeNotices(centered: Bool) -> some View {
+        if entitlements.proActive && !settings.cloudBackup {
+            armTimeNotice(MonitoringEngine.backupOffNotice, systemImage: "icloud.slash", centered: centered)
+        }
+        if let notice = engine.cameraNotice, centered || !engine.cameraAskBlockedByGuidedAccess {
+            armTimeNotice(notice, systemImage: "video.slash", centered: centered)
+        }
+        if let notice = engine.audioNotice {
+            armTimeNotice(notice, systemImage: "mic.slash", centered: centered)
+        }
+    }
+
+    private func armTimeNotice(_ text: String, systemImage: String, centered: Bool) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .multilineTextAlignment(centered ? .center : .leading)
+            .fixedSize(horizontal: false, vertical: true)   // never cut short on a small screen
+            .padding(.horizontal, centered ? 16 : 0)
+            .reportedOnScreen(text)
     }
 
     // MARK: - Calibration
@@ -388,6 +410,9 @@ struct ArmingView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
+            // Codex's V2: a camera can fail after a short countdown (its warm-up has longer), and
+            // going live warms it again, so calibration and the Calibrated card show the notices too.
+            armTimeNotices(centered: true)
         }
     }
 
@@ -408,5 +433,33 @@ struct ArmingView: View {
                 .background(Circle().fill(Color.accentColor.opacity(0.2)))
             Text(text).font(.subheadline)
         }
+        .reportedOnScreen(text)
+    }
+}
+
+/// The PIN that stops a crash-recovery re-arm (R-04), shown over the countdown. Its own view so a
+/// test can lay it out (item 120, V3).
+struct RecoveryCancelPINView: View {
+    @EnvironmentObject private var engine: MonitoringEngine
+    var onDone: () -> Void
+
+    var body: some View {
+        // The pad covers the countdown while the camera the re-arm warmed keeps running, so it shows the
+        // REC badge (V3) in a row of its own (V4). Below that row the pad scrolls when it is taller than
+        // the room, as at the largest text sizes on a small screen: the badge and Cancel stay reachable
+        // instead of being pushed off the top and bottom (Codex's W1). One pad throughout, so the digits
+        // typed and the lockout survive the camera starting.
+        GeometryReader { room in
+            ScrollView {
+                PINEntryView(title: "Enter PIN to stop re-arming") {
+                    onDone()
+                    engine.disarm()
+                } onCancel: { onDone() }
+                .frame(minHeight: room.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
     }
 }

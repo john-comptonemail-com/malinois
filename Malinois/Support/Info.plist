@@ -41,9 +41,16 @@
 	  this key the biometric leg is skipped and recovery silently degrades to passcode-only.
 	-->
 	<key>NSFaceIDUsageDescription</key>
-	<string>Face ID can open your evidence log and run sensor tests. It also confirms it's you before re-setting a forgotten PIN, verifying iCloud access, or turning off alerts to your other devices. Settings and disarming always require your Malinois PIN.</string>
+	<string>Face ID can open your evidence log and run sensor tests. It also confirms it's you before re-setting a forgotten PIN, verifying iCloud access, turning off alerts to your other devices, or turning off iCloud backup. Settings and disarming always require your Malinois PIN.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Malinois listens for sudden sounds nearby as a tamper tripwire, and records sound in evidence clips if you turn that on.</string>
+	<!--
+	  An event's Share button hands its photo or clip to the iOS share sheet, which offers Save
+	  Image and Save Video; iOS ends an app that adds to the photo library without this key
+	  (item 120, F7). Malinois itself never reads the photo library. The owner's text, 2026-10-15.
+	-->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Malinois saves the photos and clips you choose to keep to your photo library.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

@@ -55,48 +55,52 @@ struct HomeView: View {
             VStack(spacing: 18) {
                 wordmark
 
-                Spacer(minLength: 8)
+                // Item 82: scrolls when taller than the room between the wordmark and the buttons
+                // (the iPhone Duo's outer display, an iPhone SE, large text) instead of squeezing
+                // the notices to one line each. Where it fits, the frame centres it between them,
+                // where the two spacers kept it; scrolling, it adds no height of its own.
+                VStack(spacing: 18) {
+                    statusBadge
 
-                statusBadge
-
-                Button(action: armTapped) {
-                    VStack(spacing: 6) {
-                        Image("MalinoisEmblem")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(height: 118)
-                        Text("ARM")
-                            .font(.largeTitle.weight(.bold))
-                            .tracking(4)
-                            .foregroundStyle(Brand.blueDeep)   // matches the logo blue on the dark ground
+                    Button(action: armTapped) {
+                        VStack(spacing: 6) {
+                            Image("MalinoisEmblem")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: 118)
+                            Text("ARM")
+                                .font(.largeTitle.weight(.bold))
+                                .tracking(4)
+                                .foregroundStyle(Brand.blueDeep)   // matches the logo blue on the dark ground
+                        }
+                        .frame(width: 220, height: 220)
+                        .background(
+                            Circle().fill(Brand.emblemGround)
+                                .overlay(Circle().strokeBorder(Brand.blue, lineWidth: 3))
+                        )
                     }
-                    .frame(width: 220, height: 220)
-                    .background(
-                        Circle().fill(Brand.emblemGround)
-                            .overlay(Circle().strokeBorder(Brand.blue, lineWidth: 3))
-                    )
-                }
-                .buttonStyle(.plain)
-                // Arming is held until the entitlement check completes, so a session can't be
-                // snapshotted as free-tier while StoreKit is still answering. The wait is a
-                // local cache read, and the status row above says "Checking Pro status…"
-                // throughout — a visible pause rather than a silently degraded watch.
-                .disabled(engine.armingBlockedByEntitlementCheck)
-                .opacity(engine.armingBlockedByEntitlementCheck ? 0.5 : 1)
+                    .buttonStyle(.plain)
+                    // Arming is held until the entitlement check completes, so a session can't be
+                    // snapshotted as free-tier while StoreKit is still answering. The wait is a
+                    // local cache read, and the status row above says "Checking Pro status…"
+                    // throughout — a visible pause rather than a silently degraded watch.
+                    .disabled(engine.armingBlockedByEntitlementCheck)
+                    .opacity(engine.armingBlockedByEntitlementCheck ? 0.5 : 1)
 
-                // PIN-gated like the log and Settings: the test view lists exactly which
-                // tripwires are enabled and shows their live thresholds, which is the same
-                // reconnaissance the Settings gate exists to deny.
-                Button {
-                    pinGate = .test
-                } label: {
-                    Label("Test sensors", systemImage: "dot.radiowaves.left.and.right")
-                        .font(.subheadline)
+                    // PIN-gated like the log and Settings: the test view lists exactly which
+                    // tripwires are enabled and shows their live thresholds, which is the same
+                    // reconnaissance the Settings gate exists to deny.
+                    Button {
+                        pinGate = .test
+                    } label: {
+                        Label("Test sensors", systemImage: "dot.radiowaves.left.and.right")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Spacer()
+                .frame(maxHeight: .infinity)
+                .scrollingIfNeeded()
 
                 HStack(spacing: 16) {
                     Button {
@@ -253,6 +257,15 @@ struct HomeView: View {
                 // Same discipline as the iCloud row's own "Checking iCloud…": say we don't
                 // know yet rather than guessing a tier and correcting it a moment later.
                 statusRow(ready: false, text: "Checking Pro status…")
+            } else if entitlements.proActive, !settings.cloudBackup {
+                // Item 120, F1: with iCloud backup off nothing new leaves this phone, and the
+                // green "iCloud ready" said the opposite. The arming screens say it too.
+                Label(MonitoringEngine.backupOffNotice, systemImage: "icloud.slash")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .reportedOnScreen(MonitoringEngine.backupOffNotice)
             } else if entitlements.proActive {
                 statusRow(ready: cloud.accountState.isReady && enrollment.verified,
                           text: cloud.accountState.isReady && !enrollment.verified
@@ -393,7 +406,7 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if eventStore.logWasQuarantined {
-                Label("The event log couldn't be read and was set aside as a backup - new events go to a fresh log. The backup is kept for 30 days.",
+                Label("The event log couldn't be read and was set aside as a backup - new events go to a fresh log.",
                       systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.red)
@@ -488,6 +501,7 @@ struct HomeView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .reportedOnScreen(text)
     }
 
 }

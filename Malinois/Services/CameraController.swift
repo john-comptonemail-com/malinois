@@ -55,6 +55,9 @@ protocol EvidenceCamera: AnyObject, Sendable {
     func setVisionTapEnabled(_ enabled: Bool)
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool
     func warmUpMultiCam(forClips: Bool) async throws -> Bool
+    /// Whether the store that holds clips until the log takes them has room for `outputs` new
+    /// clips (item 112): the same budget a clip reserves from when it starts.
+    func hasRoomForClips(outputs: Int) -> Bool
     func shutDown()
     /// Restart and warm on the camera queue after Sound yields its microphone. The deadline
     /// prevents delayed queued work from starting a capture after the caller has given up.
@@ -1062,6 +1065,12 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             self.movieExpectedURLs[.single] = url
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
         }
+    }
+
+    /// The pending store's admission budget, read without reserving anything (item 112), so the
+    /// pipeline can refuse a clip before the camera starts or any light comes on.
+    nonisolated func hasRoomForClips(outputs: Int) -> Bool {
+        Self.pendingMovieDestinations(outputs: outputs) != nil
     }
 
     /// Stops the single-camera clip and returns its file URL.

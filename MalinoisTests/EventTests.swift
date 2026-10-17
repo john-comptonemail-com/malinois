@@ -1661,9 +1661,9 @@ final class EventTests: XCTestCase {
 
     // MARK: - Corruption tombstones age out (seventh-review #6)
 
-    /// One corrupt-log backup used to disable the orphan sweep FOREVER. The refusal is now
-    /// time-bounded: newest three kept within a month, everything else reaped - and a
-    /// future-dated stamp reads as young (the sweep's own clock-weirdness rule).
+    /// The settings stashes' rule (seventh review, #6): newest three kept within a month,
+    /// everything else reaped - and a future-dated stamp reads as young (the sweep's own
+    /// clock-weirdness rule). Set-aside event logs used it too until item 120 (F5): they are kept.
     func testReapableCorruptArtifactsKeepsNewestThreeForAMonth() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let day = 86_400.0
