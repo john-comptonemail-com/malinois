@@ -910,12 +910,20 @@ final class EventStore: ObservableObject {
     /// the trigger path about 4 ms (measured on an iPhone Air, 2026-09-02, BACKLOG 53) — the
     /// price of "the record exists first" being true on the medium, not just in memory. Its
     /// cost is logged per event so it can be re-read on a device (ADR 0005, as amended).
+    /// The line starts on a line of its own: after a torn last line (an append cut by a power
+    /// cut or a forced restart, or a partial write), it used to be written straight after the
+    /// fragment, so neither decoded, and the event rested on the async log write alone until a
+    /// checkpoint shed the fragment (item 129, F1).
     private func appendToJournal(_ event: Event) {
-        guard let line = Self.journalLine(for: event) else { return }
+        guard var line = Self.journalLine(for: event) else { return }
         let url = journalFile
         var appended = false
         var sync: (synced: Bool, errno: Int32, elapsed: Duration)?
-        if let handle = try? FileHandle(forWritingTo: url) {
+        if let handle = try? FileHandle(forUpdating: url) {
+            if let end = try? handle.seekToEnd(), end > 0, (try? handle.seek(toOffset: end - 1)) != nil,
+               let last = try? handle.read(upToCount: 1), last.first != 0x0A {
+                line.insert(0x0A, at: 0)
+            }
             appended = ((try? handle.seekToEnd()) != nil) && ((try? handle.write(contentsOf: line)) != nil)
             if appended { sync = Self.fullSync(handle) } else { try? handle.close() }
         } else {

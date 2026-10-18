@@ -2,7 +2,7 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.7 (70)**. Start with the practical guide below.
+This document describes **Malinois 1.7.1 (71)**. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
 
@@ -1491,7 +1491,8 @@ These are out of scope by design — Malinois does not claim to defend against t
   landed. A force-quit, Voice Control "Close application", or OOM kill in that window used
   to erase the record entirely on the free tier; now the journal line survives the process,
   a successful full write retires it, and a torn final line (the kill arriving mid-append)
-  is skipped without voiding the rest. A completed write survives the *process*, but it sits
+  is skipped without voiding the rest; since 1.7.1 the next append starts on a line of its
+  own, so the fragment cannot swallow it. A completed write survives the *process*, but it sits
   in OS caches until the kernel flushes — an undocumented interval that can be tens of
   seconds — so **every append is followed by a full disk sync before anything else
   proceeds** when storage succeeds. A line is retired only after the replacement

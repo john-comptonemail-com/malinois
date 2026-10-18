@@ -228,6 +228,8 @@ final class MonitoringEngine: ObservableObject {
     private var graceTimer: Timer?
     private var graceEndsAt: Date?
     private var calibrationTimer: Timer?
+    /// Counts calibration runs, so a tick acts only for its own (item 129, F2).
+    private var calibrationRun = 0
     private var refractoryTimer: Timer?
     private var dryRunTimer: Timer?
     private var blackoutTimer: Timer?
@@ -1681,12 +1683,17 @@ final class MonitoringEngine: ObservableObject {
 
         let start = Date()
         calibrationTimer?.invalidate()
+        calibrationRun &+= 1
+        let run = calibrationRun
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                // A tick's work can wait behind a disarm, or behind another tick past the end: it
+                // acts only for its own run, still calibrating, and finishes it once (item 129, F2).
+                guard let self, self.calibrationRun == run, self.state == .calibrating else { return }
                 let elapsed = Date().timeIntervalSince(start)
                 self.calibrationProgress = min(1, elapsed / self.calibrationDuration)
                 if elapsed >= self.calibrationDuration {
+                    self.calibrationRun &+= 1
                     self.calibrationTimer?.invalidate(); self.calibrationTimer = nil
                     self.finishCalibrationAndArm()
                 }

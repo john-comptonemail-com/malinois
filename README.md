@@ -122,6 +122,14 @@ A switch for iCloud backup, a record of clock changes, and screens that fit smal
 - Saving a photo or clip from Share now asks once for permission to add it to your photo library.
 - If the event log can't be read, the copy set aside is now kept with its photos and clips, instead of being deleted after 30 days.
 
+**Shipped in 1.7.1**
+
+Fixes for two rare timing problems found in a review.
+
+- If Malinois was interrupted while saving an event, for example by a forced restart, the next event it recorded could be lost if the phone was interrupted again a moment later. It is now kept.
+
+- Entering your PIN to stop an automatic re-arm at the very moment calibration ended could leave the sensors, and with some settings the camera, running, and make Malinois re-arm itself the next time it opened. It now stops cleanly.
+
 **Exploring**
 
 - **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.
