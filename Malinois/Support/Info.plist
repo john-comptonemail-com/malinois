@@ -34,7 +34,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Malinois captures a photo or short clip as evidence when your unattended device is tampered with.</string>
+	<string>Malinois captures a photo or short clip as evidence when your unattended device is tampered with. If you turn on the optional Vision tripwire, it also watches the camera's view for movement, in memory only.</string>
 	<!--
 	  PINViews calls LAContext.evaluatePolicy(.deviceOwnerAuthentication) for lost-PIN
 	  recovery, which attempts Face ID before falling back to the device passcode. Without

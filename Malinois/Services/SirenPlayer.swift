@@ -20,8 +20,37 @@ import Foundation
 import OSLog
 import AVFoundation
 
+/// One place the siren's sound would go, as iOS names it (Fable's fable-2 on 1.8 (75)): the kind of output and its
+/// name, such as "John's AirPods Pro".
+struct SirenOutput: Equatable {
+    let port: AVAudioSession.Port
+    let name: String
+}
+
 @MainActor
 final class SirenPlayer {
+
+    /// The countdown's warning while the siren would play away from this iPhone: in headphones, a Bluetooth or AirPlay
+    /// device, a car (Fable's fable-2 on 1.8 (75); on the owner's iPhone, with AirPods connected the siren played only in
+    /// them, and moved to the iPhone as soon as they went in their case). Nil while it plays from the iPhone's own
+    /// speaker or earpiece, or when iOS names no output. Pure (unit-tested).
+    nonisolated static func awayWarning(outputs: [SirenOutput]) -> String? {
+        let onThisIPhone: [AVAudioSession.Port] = [.builtInSpeaker, .builtInReceiver]
+        guard let away = outputs.first(where: { !onThisIPhone.contains($0.port) }) else { return nil }
+        let name = away.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let place = name.isEmpty ? "headphones or another device" : name
+        return "Audio is going to \(place) - disconnect it now so the siren plays out loud from this iPhone."
+    }
+
+    /// Where the siren would play now: the route iOS gives the siren's own audio setting. The app's session keeps the
+    /// setting its last user chose, and the Sound tripwire's (recording) leaves Bluetooth headphones out, so the siren's
+    /// is put first, without activating the session: nothing plays, and no other app's sound is touched. Called in Siren
+    /// mode before the tripwires start; a Siren-mode camera holds no microphone.
+    nonisolated static func currentOutputs() -> [SirenOutput] {
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback { try? session.setCategory(.playback, options: [.duckOthers]) }
+        return session.currentRoute.outputs.map { SirenOutput(port: $0.portType, name: $0.portName) }
+    }
 
     private var player: AVAudioPlayer?
     private let fileURL: URL

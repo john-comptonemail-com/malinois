@@ -28,12 +28,15 @@ final class Item57WatchAlertsTests: XCTestCase {
     }
 
     /// The watch app is its own target, embedded in the iPhone app's Watch folder, with the
-    /// iPhone app as its companion.
+    /// iPhone app as its companion; since 1.8 (75) it embeds its own alert extension (ADR 0052).
     func testTheWatchAppIsEmbeddedWithTheIPhoneAppsIdentity() throws {
         let project = try text("Malinois.xcodeproj/project.pbxproj")
         XCTAssertEqual(count("PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;", in: project), 2)
+        XCTAssertEqual(count("PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;",
+                             in: project), 2)
         XCTAssertEqual(count("INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.johncompton.Malinois;", in: project), 2)
-        XCTAssertEqual(count("SDKROOT = watchos;", in: project), 2)
+        XCTAssertEqual(count("SDKROOT = watchos;", in: project), 4, "the watch app and its alert extension")
+        XCTAssertTrue(project.contains("/* MalinoisWatchNotificationService.appex in Embed Foundation Extensions */,"))
         XCTAssertTrue(project.contains("dstPath = \"$(CONTENTS_FOLDER_PATH)/Watch\";"), "embedded in the iPhone app")
         XCTAssertTrue(project.contains("/* MalinoisWatch.app in Embed Watch Content */,"))
     }
@@ -51,10 +54,10 @@ final class Item57WatchAlertsTests: XCTestCase {
                 }
         }
         let marketing = values("MARKETING_VERSION")
-        XCTAssertEqual(marketing.count, 8, "app, extension, watch and tests, Debug and Release")
+        XCTAssertEqual(marketing.count, 10, "app, extension, watch, watch extension and tests, Debug and Release")
         XCTAssertEqual(Set(marketing).count, 1, "one marketing version: \(marketing)")
         let builds = values("CURRENT_PROJECT_VERSION").filter { $0 != "1" }
-        XCTAssertEqual(builds.count, 6, "app, extension and watch, Debug and Release")
+        XCTAssertEqual(builds.count, 8, "app, extension, watch and watch extension, Debug and Release")
         XCTAssertEqual(Set(builds).count, 1, "one build number: \(builds)")
     }
 
@@ -79,19 +82,23 @@ final class Item57WatchAlertsTests: XCTestCase {
         XCTAssertTrue(project.contains("CODE_SIGN_ENTITLEMENTS = \"MalinoisWatch/MalinoisWatch-Release.entitlements\";"))
     }
 
-    /// Alerts only: the watch compiles none of the iPhone app's cloud code and calls no CloudKit
-    /// record API, so it reads and writes no event records (ADR 0042); listing the account's
-    /// subscriptions is its one server call.
+    /// Alerts only: the watch and its alert extension compile none of the iPhone app's cloud code and
+    /// call no CloudKit record API, so they read and write no event records (ADR 0042); listing the
+    /// account's subscriptions is the watch's one server call. Reading a push's own fields, the
+    /// record's name included (`CKQueryNotification`, ADR 0052), reads no record.
     func testTheWatchReadsNoCloudRecords() throws {
         let project = try text("Malinois.xcodeproj/project.pbxproj")
         XCTAssertEqual(count("/* CloudExfiltrator.swift in Sources */", in: project), 2, "the iPhone app's target only")
-        let folder = Self.root.appendingPathComponent("MalinoisWatch")
-        let sources = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-        XCTAssertFalse(sources.isEmpty)
+        let sources = try ["MalinoisWatch", "MalinoisWatchNotificationService"].flatMap { name in
+            try FileManager.default.contentsOfDirectory(at: Self.root.appendingPathComponent(name),
+                                                        includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "swift" }
+        }
+        XCTAssertTrue(sources.contains { $0.lastPathComponent == "WatchNotificationService.swift" })
         for url in sources {
             let code = try String(contentsOf: url, encoding: .utf8)
-            for api in ["CKQuery", "CKFetch", "CKModify", "record(for", "records(matching", "fetch(withRecordID", ".save("] {
+            for api in ["CKQuery(", "CKQueryOperation", "CKFetch", "CKModify", "record(for", "records(matching",
+                        "fetch(withRecordID", ".save("] {
                 XCTAssertFalse(code.contains(api), "\(url.lastPathComponent) uses \(api)")
             }
         }
@@ -164,18 +171,21 @@ final class Item57WatchAlertsTests: XCTestCase {
         XCTAssertTrue(last.hasPrefix("Last alert: ") && last != "Last alert: none yet", last)
     }
 
-    /// iCloud never sends the watch a change made by its own iPhone (TestFlight 1.6 (59)), so the
-    /// armed iPhone also sends its alerts straight to the watch (ADR 0043). The watch activates its end
-    /// of the link at launch, handles messages that wake it in the background, and shows each as a
-    /// local alert.
+    /// iCloud sent the watch no change made by its own iPhone (TestFlight 1.6 (59)), so the armed
+    /// iPhone also sends its alerts straight to the watch (ADR 0043); since TestFlight 1.8 (74) iCloud
+    /// does as well, and the watch pairs the two copies (ADR 0052). The watch activates its end of the
+    /// link at launch, handles messages that wake it in the background, and shows each as a local
+    /// alert (since 1.8 (73) through `WatchRelayInbox`, ADR 0051).
     func testTheWatchReceivesAlertsStraightFromItsIPhone() throws {
         let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
         XCTAssertTrue(delegate.contains("WCSession.default.activate()"))
         XCTAssertTrue(delegate.contains("WKWatchConnectivityRefreshBackgroundTask"))
         XCTAssertTrue(delegate.contains("didReceiveUserInfo"))
-        XCTAssertTrue(delegate.contains("UNNotificationRequest"))
+        XCTAssertTrue(delegate.contains("relayInbox.receive(message)"))
+        XCTAssertTrue(try text("MalinoisWatch/WatchRelayInbox.swift").contains("UNNotificationRequest("))
         let project = try text("Malinois.xcodeproj/project.pbxproj")
-        XCTAssertEqual(count("/* WatchAlertMessage.swift in Sources */", in: project), 4, "the iPhone app and the watch app")
+        XCTAssertEqual(count("/* WatchAlertMessage.swift in Sources */", in: project), 6,
+                       "the iPhone app, the watch app and its alert extension")
     }
 
     /// The watch looks for the iPhone app's own tamper subscription.

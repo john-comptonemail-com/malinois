@@ -10,6 +10,15 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    /// The iCloud backup switch's caption (item 115). It also names the iPhone's own backups, which it does not
+    /// control (Fable's fable-1 on 1.8 (75)).
+    static let backupCaption = "Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off stay on this iPhone, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly. This switch does not change your iPhone's own backups (iCloud Backup, or a backup made with a computer), which include Malinois's evidence when they are on."
+    /// The iCloud section's footer on the free tier: Malinois uploads no evidence, but the iPhone's own backups can hold the
+    /// evidence (fable-1; it said the evidence was "on this device only").
+    static let freeTierNote = "iCloud backup and cross-device alerts are Pro. On the free tier, Malinois uploads no evidence; your iPhone's own backups (iCloud Backup, or a computer) can still include it."
+    /// The iCloud Photo & Video Storage caption: the setting acts on every device's photos and clips, so the shortest
+    /// one wins (fable-4).
+    static let retentionCaption = "Applies to full-resolution photos and clips in iCloud, from all your devices: if they are set differently, the shortest setting wins. Event facts, thumbnails, and arm/disarm records are always kept. Events newer than 30 days are protected. Cleanup may wait until iCloud provides a sufficiently recent timestamp."
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var cloud: CloudExfiltrator
     @EnvironmentObject private var entitlements: ProEntitlements
@@ -22,7 +31,8 @@ struct SettingsView: View {
     @State private var showPurgeDialog = false
     @State private var purgeNote: String?
     /// Guided Access blocks leaving the app, which is what the Help links do — tracked so the
-    /// section's footer can say so while it is on (same pattern as the PIN pad's caption).
+    /// section's footer can say so while it is on (same pattern as the PIN pad's caption). It also
+    /// greys out Verify iCloud access, whose Face ID / passcode sheet iOS holds until it ends (item 135).
     @State private var gaActive = UIAccessibility.isGuidedAccessEnabled
     /// The microphone permission, re-read after every prompt this screen raises (item 69).
     @State private var micPermission = CameraController.microphonePermission
@@ -459,8 +469,9 @@ struct SettingsView: View {
                                 enrollmentBusy = false
                             }
                         }
-                        .disabled(enrollmentBusy || engine.state != .disarmed)
-                        Text("Uses Face ID, Touch ID, or your device passcode. End Guided Access before verifying. Evidence already tied to another or unknown account stays local.")
+                        .disabled(!Self.verifyAvailable(guidedAccess: gaActive, busy: enrollmentBusy,
+                                                        disarmed: engine.state == .disarmed))
+                        Text(Self.verifyCaption(guidedAccess: gaActive))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -490,7 +501,7 @@ struct SettingsView: View {
                     set: { applyCloudBackup($0) })) {
                     VStack(alignment: .leading) {
                         HStack { Text("iCloud backup"); proMark }
-                        Text("Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off stay on this iPhone, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly.")
+                        Text(Self.backupCaption)
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -547,7 +558,7 @@ struct SettingsView: View {
             } label: {
                 HStack { Text("iCloud Photo & Video Storage"); proMark }
             }
-            Text("Applies to full-resolution photos and clips in iCloud. Event facts, thumbnails, and arm/disarm records are always kept. Events newer than 30 days are protected. Cleanup may wait until iCloud provides a sufficiently recent timestamp.")
+            Text(Self.retentionCaption)
                 .font(.caption).foregroundStyle(.secondary)
             if settings.cloudRetention == .manual {
                 Button("Free up iCloud space…") { showPurgeDialog = true }
@@ -571,7 +582,7 @@ struct SettingsView: View {
             HStack { Text("iCloud"); proMark }
         } footer: {
             if !entitlements.proActive {
-                Text("iCloud backup and cross-device alerts are Pro. On the free tier, evidence is kept on this device only.")
+                Text(Self.freeTierNote)
             }
         }
     }
@@ -581,6 +592,20 @@ struct SettingsView: View {
     @State private var backupNote: String?
     @State private var cloudControlBusy = false
     @State private var enrollmentBusy = false
+
+    /// Whether Verify iCloud access can be tapped (item 135): only while disarmed, not already verifying, and with
+    /// Guided Access off. Under Guided Access iOS holds the Face ID / passcode sheet until it ends (BACKLOG 44) and
+    /// `CloudEnrollment.deviceAuthentication` refuses at once, so a tap would do nothing visible.
+    nonisolated static func verifyAvailable(guidedAccess: Bool, busy: Bool, disarmed: Bool) -> Bool {
+        !busy && disarmed && !guidedAccess
+    }
+
+    /// The line under Verify iCloud access (item 135): while Guided Access is on, why the button is greyed out.
+    nonisolated static func verifyCaption(guidedAccess: Bool) -> String {
+        guidedAccess
+            ? "End Guided Access to verify: iOS holds Face ID and passcode prompts until it ends."
+            : "Uses Face ID, Touch ID, or your device passcode. End Guided Access before verifying. Evidence already tied to another or unknown account stays local."
+    }
 
     /// iCloud backup (item 115): off needs fresh device authentication, then the engine records it
     /// before uploads stop; on needs nothing. The engine changes it only while disarmed, checked

@@ -161,12 +161,16 @@ final class Item57WatchReviewTests: XCTestCase {
 
     /// The memory is kept on the watch across launches and consulted before an alert is shown.
     /// Since 1.6 (65) it lives in `WatchAlertStatus.RelayLedger`, which remembers an alert only once
-    /// posted (item 108, CE-03; its rule is tested in Item108ReviewTests).
+    /// posted (item 108, CE-03; its rule is tested in Item108ReviewTests). Since 1.8 (73) the watch's
+    /// `WatchRelayInbox` holds it (ADR 0051), and a relaunch is driven through the inbox in
+    /// Item134WatchSummaryTests.
     func testTheWatchKeepsThatMemoryAcrossLaunches() throws {
-        let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
-        XCTAssertTrue(delegate.contains("stringArray(forKey: WatchAppDelegate.shownRelayIDsKey)"), "read at launch")
-        XCTAssertTrue(delegate.contains("set(relayLedger.shown, forKey: Self.shownRelayIDsKey)"), "kept after a post")
-        XCTAssertTrue(delegate.contains("relayLedger.begin("), "consulted before an alert is shown")
+        let inbox = try text("MalinoisWatch/WatchRelayInbox.swift")
+        XCTAssertTrue(inbox.contains("stringArray(forKey: Self.shownRelayIDsKey)"), "read at launch")
+        XCTAssertTrue(inbox.contains("defaults.set(ledger.shown, forKey: Self.shownRelayIDsKey)"), "kept after a post")
+        XCTAssertTrue(inbox.contains("ledger.begin("), "consulted before an alert is shown")
+        XCTAssertTrue(try text("MalinoisWatch/WatchAppDelegate.swift").contains("relayInbox.receive(message)"),
+                      "the watch app hands each relayed alert to the inbox")
     }
 
     // MARK: - Finding 6: a held wake always ends

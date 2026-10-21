@@ -36,6 +36,11 @@ import UIKit
 protocol EvidenceCamera: AnyObject, Sendable {
     /// Whether this device can capture both cameras at once.
     var supportsMultiCam: Bool { get }
+    /// The camera permission as iOS reports it. The engine reads it here rather than from
+    /// AVFoundation, so a test's fake camera answers for itself whatever the simulator has been
+    /// granted (item 129, T1: on a fresh simulator, never asked, the engine skipped the warm-up
+    /// and seven tests failed).
+    var videoPermission: AVAuthorizationStatus { get }
     /// Whether a clip session attaches the microphone. The engine sets it at arm from the
     /// owner's "Record audio in clips" setting AND the microphone permission; the controller
     /// never attaches an unauthorized mic, so iOS never raises the permission prompt on its own.
@@ -111,6 +116,7 @@ extension EvidenceCamera {
 
 extension CameraController: EvidenceCamera {
     var supportsMultiCam: Bool { Self.supportsMultiCam }
+    var videoPermission: AVAuthorizationStatus { AVCaptureDevice.authorizationStatus(for: .video) }
     /// The mic is attached only when the owner asked for clip audio AND iOS has granted it.
     private var wantsMic: Bool { clipAudio && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
     var isRecordingActivePublisher: AnyPublisher<Bool, Never> { $isRecordingActive.eraseToAnyPublisher() }

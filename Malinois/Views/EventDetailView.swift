@@ -74,9 +74,7 @@ struct EventDetailView: View {
         // The formatted value already carries its own "at" ("Aug 3, 2026 at 2:15 PM"), so the
         // sentence takes "on" — otherwise it reads "tampering at … at …".
         let timestamp = current.startDate.formatted(date: .abbreviated, time: .shortened)
-        var text = "Malinois detected tampering on \(timestamp) - \(current.shareClause)."
-        if !current.durationSummary.isEmpty { text += " Recording: \(current.durationSummary)." }
-        var items: [Any] = [text]
+        var items: [Any] = [current.shareSentence(timestamp: timestamp)]
         // Share BOTH captures for a "Both" event — the secondary is often the face shot
         // you'd most want to hand to security, and dropping it silently is a footgun (V-08).
         for url in [eventStore.mediaURL(for: current), eventStore.secondaryMediaURL(for: current)] {
@@ -122,9 +120,11 @@ struct EventDetailView: View {
             // byte-pruned event has no local media, but its full capture may still be in
             // iCloud — reachable by deterministic record ID, so this needs no schema work.
             // An INCOMPLETE download (R3-3: some slots went unchecked) keeps the section
-            // up even after a capture landed, so the owner can retry for the rest.
+            // up even after a capture landed, so the owner can retry for the rest. Offered only
+            // where a copy can exist (item 118): never after a capture that never happened, or
+            // for this iPhone's events that never uploaded.
             if current.mediaFilename == nil || downloadIncomplete, !current.isStateChange,
-               entitlements.proActive, current.mediaDiscarded != true {
+               entitlements.proActive, current.mediaDiscarded != true, current.fullCaptureMayBeInICloud {
                 downloadSection
             }
         }
@@ -150,7 +150,8 @@ struct EventDetailView: View {
                         downloadIncomplete = !outcome.complete
                     }
                 } label: {
-                    Label("Download full evidence from iCloud", systemImage: "icloud.and.arrow.down")
+                    Label { Text("Download full evidence from iCloud").reportedOnScreen("Download full evidence from iCloud") }
+                          icon: { Image(systemName: "icloud.and.arrow.down") }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)

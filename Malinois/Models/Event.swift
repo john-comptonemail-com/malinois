@@ -191,6 +191,32 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// sensors. Only ever true for merged copies.
     var isMirrored: Bool { sourceDevice != nil }
 
+    /// Whether this event's full capture can be in iCloud, so that "Download full evidence from
+    /// iCloud" can find something (item 118): something was captured (a photo or clip, its thumbnail,
+    /// either camera it used, or another device's list of the media it uploaded), and it was uploaded,
+    /// by another device (a mirrored copy) or by this iPhone (synced). Not after a capture that never
+    /// happened (the camera could not start, the camera tripwire was off), and not for this iPhone's
+    /// events that never uploaded (no verified account, iCloud backup off), where a tap could only
+    /// end in "Nothing came back".
+    var fullCaptureMayBeInICloud: Bool {
+        let captured = mediaFilename != nil || secondaryMediaFilename != nil || thumbnailData != nil
+            || primaryCamera != nil || secondaryCamera != nil   // a Both capture's rear photo alone (Codex's V2)
+            || !(cloudMediaManifest ?? []).isEmpty
+        return captured && (isMirrored || cloudSyncState == .synced)
+    }
+
+    /// The sentence Share sends with this event (item 124's F15): a status entry or an interruption
+    /// record is a log entry, in the owner's words (2026-10-17); a tamper event says what triggered,
+    /// and how long its clip ran.
+    func shareSentence(timestamp: String) -> String {
+        if isStateChange || interrupted == true {
+            return "Malinois log entry on \(timestamp): \(sensorSummary)."
+        }
+        var text = "Malinois detected tampering on \(timestamp) - \(shareClause)."
+        if !durationSummary.isEmpty { text += " Recording: \(durationSummary)." }
+        return text
+    }
+
     /// The capture failure in the owner's words (item 54); nil when there was none, or the
     /// raw value is one this build does not know.
     var captureFailureSummary: String? {

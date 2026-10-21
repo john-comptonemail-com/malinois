@@ -89,13 +89,45 @@ final class Item107DisarmTipTests: XCTestCase {
 
     // MARK: - Wiring (source checks)
 
-    /// The armed screen hands the warning its tip and records the first disarm on a correct PIN;
-    /// the app writes the starting value at launch.
-    func testTheArmedScreenShowsTheTipAndRecordsTheFirstDisarm() throws {
+    /// The armed screen's warning shows the tip while it is due, and not after the first disarm, as
+    /// laid out (item 124's test housekeeping: this read the screen's source before).
+    @MainActor
+    func testTheArmedScreensWarningShowsTheTipUntilTheFirstDisarm() throws {
+        TestIsolation.setUp(folderPrefix: "Item107DisarmTipTests-armed")
+        let firstDisarm = OnboardingState.hasDisarmedOnce
+        defer {
+            OnboardingState.hasDisarmedOnce = firstDisarm
+            TestIsolation.tearDown()
+        }
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.alertDuration = 60
+        let settings = AppSettings()
+        settings.gracePeriodSeconds = 0
+        settings.requireGuidedAccess = false
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: EventStore(), cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: timing))
+        engine.beginArming()
+        engine.confirmGuidedAccessAndStartGrace()
+        let deadline = Date().addingTimeInterval(5)
+        while engine.state != .armed && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        engine.reportTouch()
+        let alertBy = Date().addingTimeInterval(5)
+        while !engine.alertActive && Date() < alertBy { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertTrue(engine.alertActive, "the warning is up")
+        let armed = ArmedView().environmentObject(engine).environmentObject(settings).environmentObject(CameraController())
+        let tip = try XCTUnwrap(DisarmTip.alertTip(hasDisarmedOnce: false))
+        OnboardingState.hasDisarmedOnce = false
+        XCTAssertTrue(try shownOnScreen(armed).shown.contains(tip), "the warning gets the tip while it is due")
+        OnboardingState.hasDisarmedOnce = true
+        XCTAssertFalse(try shownOnScreen(armed).shown.contains(tip), "and not after the first disarm")
+        engine.disarm()
+    }
+
+    /// A correct PIN on the black screen records the first disarm; the app writes the starting value
+    /// at launch. Read from the source: no unit test can type a PIN on the pad or launch the app.
+    func testTheArmedScreenRecordsTheFirstDisarm() throws {
         let armed = try text("Malinois/Views/ArmedView.swift")
-        XCTAssertTrue(armed.contains("disarmTip: DisarmTip.alertTip(hasDisarmedOnce: OnboardingState.hasDisarmedOnce)"),
-                      "the warning gets the tip while it is due")
-        XCTAssertTrue(armed.contains("if let disarmTip"), "the warning shows the tip it is given")
         let success = try XCTUnwrap(armed.range(of: "onSuccess: {"))
         let handler = armed[success.upperBound...].prefix(400)
         XCTAssertTrue(handler.contains("OnboardingState.hasDisarmedOnce = true"),
@@ -105,16 +137,29 @@ final class Item107DisarmTipTests: XCTestCase {
     }
 
     /// The arming screen's card leads with the hold, above Start countdown, and the countdown
-    /// repeats it.
+    /// repeats it: checked on the screens as laid out (item 124's test housekeeping: this read the
+    /// screens' source before).
+    @MainActor
     func testTheArmingScreenLeadsWithTheHoldAndTheCountdownRepeatsIt() throws {
-        let arming = try text("Malinois/Views/ArmingView.swift")
-        XCTAssertTrue(arming.contains("Text(DisarmTip.holdHeadline)"), "the card's headline is the hold")
-        XCTAssertTrue(arming.contains("DisarmTip.countdownReminder"), "the countdown repeats the hold")
-        let step = try XCTUnwrap(arming.range(of: "private var guidedAccessStep: some View {"))
-        let stepBody = arming[step.upperBound...]
-        let card = try XCTUnwrap(stepBody.range(of: "disarmInstructions"))
-        let start = try XCTUnwrap(stepBody.range(of: "Start countdown"))
-        XCTAssertLessThan(card.lowerBound, start.lowerBound, "the card comes before Start countdown")
+        TestIsolation.setUp(folderPrefix: "Item107DisarmTipTests-arming")
+        defer { TestIsolation.tearDown() }
+        let settings = AppSettings()
+        settings.gracePeriodSeconds = 60
+        settings.requireGuidedAccess = false
+        let entitlements = ProEntitlements(resolvedAs: .trial)
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: EventStore(), cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: entitlements,
+                                                          timing: EngineCharacterizationTests.fastTiming))
+        engine.beginArming()
+        let screen = ArmingView().environmentObject(engine).environmentObject(entitlements).environmentObject(settings)
+        let step = try shownOnScreen(screen)
+        let hold = try XCTUnwrap(step.frames[DisarmTip.holdHeadline], "the card's headline is the hold")
+        let start = try XCTUnwrap(step.frames["Start countdown"], "the Guided Access step's Start countdown")
+        XCTAssertLessThan(hold.minY, start.minY, "the card comes before Start countdown")
+        engine.confirmGuidedAccessAndStartGrace()
+        XCTAssertEqual(engine.state, .arming, "counting down")
+        XCTAssertTrue(try shownOnScreen(screen).shown.contains(DisarmTip.countdownReminder), "the countdown repeats the hold")
+        engine.cancelArming()
     }
 
     // MARK: - The owner's follow-up for 1.6 (65)

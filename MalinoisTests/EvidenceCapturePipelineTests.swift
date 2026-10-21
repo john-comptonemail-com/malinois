@@ -78,6 +78,15 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         return Rig(pipeline: pipeline, camera: camera, host: host)
     }
 
+    /// Waits, bounded, for what a test asserts next (item 129, T2): a fixed wait before the
+    /// assertion failed on a busy machine, while the condition itself was met a little later.
+    @discardableResult
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        return condition()
+    }
+
     // MARK: - Whole-attempt deadlines and measured movies
 
     /// A held post-warmup query cannot wedge the caller. The fake does not simulate AVFoundation.
@@ -219,7 +228,10 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let result = await pipeline.captureBoth(mode: .photo, illumination: .off,
                                                 preservation: .init(event: event, store: store))
         XCTAssertEqual(result.failure, .captureTimedOut)
-        try? await Task.sleep(for: .milliseconds(150))
+        await waitUntil {   // the sibling stays blocked meanwhile
+            let current = store.events.first { $0.id == event.id }
+            return (heldLens == .rear ? current?.mediaFilename : current?.secondaryMediaFilename) != nil
+        }
         let current = try XCTUnwrap(store.events.first { $0.id == event.id })
         XCTAssertNotNil(heldLens == .rear ? current.mediaFilename : current.secondaryMediaFilename,
                         "the finished lens must survive while its sibling callback remains blocked")
@@ -244,7 +256,7 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let result = await pipeline.capture(from: .front, mode: .photo, illumination: .off,
                                             preservation: .init(event: event, store: store))
         XCTAssertEqual(result.failure, .disarmed)
-        try? await Task.sleep(for: .milliseconds(150))
+        await waitUntil { store.events.first { $0.id == event.id }?.mediaFilename != nil }   // the shutdown stays blocked
         XCTAssertNotNil(store.events.first { $0.id == event.id }?.mediaFilename,
                         "the completed still must be retained even when shutdown confirmation stalls")
         await gate.release()
@@ -850,7 +862,7 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let result = await pipeline.captureBoth(mode: .photo, illumination: .off,
                                                 preservation: .init(event: event, store: store))
         XCTAssertEqual(result.failure, .captureTimedOut)
-        try? await Task.sleep(for: .milliseconds(150))
+        await waitUntil { store.events.first { $0.id == event.id }?.mediaFilename != nil && host.lateEvidenceStored > 0 }
         XCTAssertNotNil(store.events.first { $0.id == event.id }?.mediaFilename, "the finished lens was stored late")
         XCTAssertGreaterThan(host.lateEvidenceStored, 0, "and the host was asked to upload it")
         await gate.release()

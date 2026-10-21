@@ -28,6 +28,8 @@ enum OnboardingState {
     private static let armedOnceKey = "com.malinois.onboarding.hasArmedOnce"
     private static let disarmedOnceKey = "com.malinois.onboarding.hasDisarmedOnce"
     private static let notificationAskHiddenKey = "com.malinois.onboarding.notificationAskHidden"
+    private static let disarmBriefingKey = "com.malinois.onboarding.acknowledgedDisarmBriefing"
+    private static let guidedAccessBriefingKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
 
     static var hasSeenTrialWelcome: Bool {
         get { UserDefaults.standard.bool(forKey: welcomeKey) }
@@ -62,6 +64,29 @@ enum OnboardingState {
         set { UserDefaults.standard.set(newValue, forKey: disarmedOnceKey) }
     }
 
+    /// Whether the owner has acknowledged the first-arm screen's part on disarming (item 131). Cleared with the app,
+    /// so a reinstall shows it again; seeded at launch, so an install that armed before 1.8 never sees it.
+    static var acknowledgedDisarmBriefing: Bool {
+        get { UserDefaults.standard.bool(forKey: disarmBriefingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: disarmBriefingKey) }
+    }
+
+    /// The same for its part on ending Guided Access, due at the first arm under Guided Access (item 131).
+    static var acknowledgedGuidedAccessBriefing: Bool {
+        get { UserDefaults.standard.bool(forKey: guidedAccessBriefingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: guidedAccessBriefingKey) }
+    }
+
+    /// Writes both acknowledgments' starting values once, at launch, before anything can arm (item 131; the owner's
+    /// choice, new installs only: `FirstArmBriefing.initialAcknowledged`). Stored values are kept.
+    static func seedFirstArmBriefing() {
+        let defaults = UserDefaults.standard
+        for key in [disarmBriefingKey, guidedAccessBriefingKey] {
+            defaults.set(FirstArmBriefing.initialAcknowledged(stored: defaults.object(forKey: key) as? Bool,
+                                                              hasArmedOnce: hasArmedOnce), forKey: key)
+        }
+    }
+
     /// Writes `hasDisarmedOnce`'s starting value once, at launch, before anything can arm: a new
     /// install starts with the tip; an install that armed before this build starts without it
     /// (`DisarmTip.initialHasDisarmedOnce`). A stored value is kept.
@@ -91,6 +116,17 @@ enum OnboardingState {
 struct TrialWelcomeView: View {
     @EnvironmentObject private var entitlements: ProEntitlements
     var onDismiss: () -> Void
+
+    /// What Pro adds: icon, title, detail (item 140 pins its words).
+    static let proRows: [(String, String, String)] = [
+        ("icloud.and.arrow.up", "Evidence backed up to your private iCloud",
+         "Uploading starts as soon as a tamper fires, so evidence can outlast the phone being switched off or lost."),
+        ("iphone.radiowaves.left.and.right", "Alerts on your other Apple devices",
+         "Your other devices get a tamper alert when they can be reached."),
+        ("camera.on.rectangle", "Both cameras at once, longer clips", "More frames, and the face plus the room together."),
+        ("waveform", "The Sound tripwire", "Trips on a sudden sound nearby."),
+        ("eye", "The Vision tripwire", "While the camera is ready (on a charger by default), it watches its view for movement.")
+    ]
 
     private var daysLeft: Int { entitlements.trialDaysRemaining ?? ProEntitlements.trialDays }
 
@@ -155,13 +191,7 @@ struct TrialWelcomeView: View {
                 section(title: includedTitle,
                         tint: Brand.blue,
                         icon: "sparkles",
-                        rows: [
-                            ("icloud.and.arrow.up", "Evidence backed up to your private iCloud", "Survives the phone being switched off or taken."),
-                            ("iphone.radiowaves.left.and.right", "Alerts on your other Apple devices", "Know the moment it's touched, wherever you are."),
-                            ("camera.on.rectangle", "Both cameras at once, longer clips", "More frames, and the face plus the room together."),
-                            ("waveform", "The Sound tripwire", "Trips on a sudden sound nearby."),
-                            ("eye", "The Vision tripwire", "While charging, the camera watches its view for movement.")
-                        ])
+                        rows: Self.proRows)
 
                 section(title: "Free forever, for everyone",
                         tint: .green,
@@ -222,6 +252,11 @@ struct TrialWelcomeView: View {
 struct GuidedAccessPromptView: View {
     var onDismiss: () -> Void
 
+    /// What the screen says a session without Guided Access risked (item 140 pins its words).
+    static let sessionNotice = "That session ran **without Guided Access**. Malinois caught what happened - but anyone holding your phone could have swiped the app away or powered it off before the evidence uploaded."
+    /// What Guided Access does about calls and Siri (item 140 pins its words).
+    static let callsAndSiri = "Calls and Siri are restricted, and the siren comes back after a call"
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
@@ -236,7 +271,7 @@ struct GuidedAccessPromptView: View {
 
                 // The specific failure, not a vague exhortation. Someone who just watched the app
                 // work needs to know what it still can't stop.
-                Text("That session ran **without Guided Access**. Malinois caught what happened - but anyone holding your phone could have swiped the app away or powered it off before the evidence uploaded, and nothing would have reached your iCloud.")
+                Text(.init(Self.sessionNotice))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -247,7 +282,7 @@ struct GuidedAccessPromptView: View {
                         .foregroundStyle(Brand.blue)
                     bullet("It can't be swiped away or app-switched")
                     bullet("The power-off slider is blocked")
-                    bullet("Incoming calls go to voicemail and Siri is disabled, so neither can interrupt monitoring")
+                    bullet(Self.callsAndSiri)
                     bullet("With Volume Buttons turned off in its Options, the siren can't be turned down")
                     bullet("With Side Button turned off in its Options, one press can't lock the phone and pause monitoring")
                 }

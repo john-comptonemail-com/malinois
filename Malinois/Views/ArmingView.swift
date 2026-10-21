@@ -13,6 +13,8 @@ struct ArmingView: View {
     @EnvironmentObject private var entitlements: ProEntitlements
     @EnvironmentObject private var settings: AppSettings
     @State private var showCancelPIN = false
+    /// A finger down on the Calibrated card (item 124), so the Touch trip is reported once per press.
+    @GestureState private var reviewPress = false
 
     var body: some View {
         VStack(spacing: 28) {
@@ -29,6 +31,20 @@ struct ArmingView: View {
         // the REC badge shows on these screens too, as on the armed screen and in Test Sensors
         // (guideline 2.5.14: whenever a camera session is live), in room of its own (V4).
         .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
+        // Item 124 (F6's related gap): while the Calibrated card shows, the engine already treats a
+        // trip as live (it goes covert and records), so the card has the armed screen's Touch layer:
+        // a press anywhere on the screen is a Touch trip, reported once per press. Nothing on the
+        // card is a control, so the layer takes nothing from it.
+        .overlay {
+            if engine.state == .calibrating && engine.showingCalibrationReview {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .gesture(DragGesture(minimumDistance: 0).updating($reviewPress) { _, down, _ in down = true })
+                    .reportedOnScreen("Touch tripwire")
+            }
+        }
+        .onChange(of: reviewPress) { _, down in if down { engine.reportTouch() } }
         .onAppear { engine.refreshGuidedAccess() }
         // An unused lift must not linger past the arming screen (M2): leaving without
         // arming expires it, so a later arm re-asserts the owner's requirement.
@@ -112,6 +128,9 @@ struct ArmingView: View {
     /// first arm lifts the requirement by itself (item 68), and the owner can lift it for any arm.
     /// Armed, the phone is unlocked behind a black screen, and Malinois can record someone leaving
     /// it but cannot stop them.
+    /// The countdown's notice on the free tier: Malinois uploads no evidence, but the iPhone's own backups can hold the
+    /// evidence (Fable's fable-1 on 1.8 (75); it said the evidence "won't back up to iCloud").
+    static let freeTierNotice = "Local protection only - Malinois uploads no evidence, so it stays on this device (and in its own backups, if you use them), single camera, 3s clips."
     static let unconfinedWarning = "Guided Access is off for this arm: anyone who picks it up can leave Malinois and use your unlocked phone. Stay nearby."
 
     /// Pure (unit-tested). Whether to show `unconfinedWarning`: the requirement was lifted for this
@@ -137,9 +156,9 @@ struct ArmingView: View {
                         .buttonStyle(.bordered)
                     Spacer()
                     Button {
-                        engine.confirmGuidedAccessAndStartGrace()
+                        engine.startCountdownTapped()   // the one-time screen first, when it is due (item 131)
                     } label: {
-                        Text("Start countdown").frame(maxWidth: .infinity)
+                        Text("Start countdown").reportedOnScreen("Start countdown").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(engine.armingBlockedByGuidedAccess)
@@ -150,6 +169,7 @@ struct ArmingView: View {
                     Label(Self.unconfinedWarning, systemImage: "exclamationmark.triangle.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.orange)
+                        .reportedOnScreen(Self.unconfinedWarning)
                         .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
@@ -160,6 +180,14 @@ struct ArmingView: View {
                 guidedAccessRecommendation
             }
             .padding()
+        }
+        // Item 131: the one-time screen before the first arm, over this step once Start countdown asks for it; its
+        // button acknowledges it and starts the countdown. Here, not on the screen's root, which presents the
+        // recovery PIN.
+        .fullScreenCover(item: $engine.firstArmBriefing) { parts in
+            FirstArmBriefingView(parts: parts, recording: engine.camera.isRecordingActivePublisher) {
+                engine.acknowledgeFirstArmBriefing()
+            }
         }
     }
 
@@ -230,7 +258,7 @@ struct ArmingView: View {
                 instruction(3, "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.")
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
                 instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
-                instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise a thief can turn the siren down.")
+                instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise whoever picks up the phone can turn the siren down.")
                 instruction(7, "Also in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile. With it off, a press only shows the iOS banner that Guided Access is on, and the tripwires keep running.")
             }
             .padding()
@@ -258,6 +286,7 @@ struct ArmingView: View {
                 Text(DisarmTip.holdHeadline)
                     .font(.title3.weight(.bold))
                     .fixedSize(horizontal: false, vertical: true)
+                    .reportedOnScreen(DisarmTip.holdHeadline)
             }
             instruction(1, "Keep your finger down the whole time; a quick tap won't open it. A short vibration and a brighter screen mean the PIN pad is up.")
             instruction(2, "Enter your Malinois PIN to disarm. This works even while Guided Access is still on.")
@@ -311,6 +340,7 @@ struct ArmingView: View {
                 .foregroundStyle(.red)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+                .reportedOnScreen(DisarmTip.countdownReminder)
             if unconfined {
                 Label(Self.unconfinedWarning, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout.weight(.semibold))
@@ -318,6 +348,7 @@ struct ArmingView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)   // never cut short on a small screen
                     .padding(.horizontal)
+                    .reportedOnScreen(Self.unconfinedWarning)
             }
             if engine.armWasAutoRecovered {
                 Label("Re-arming after an interrupted session - PIN required to stop.",
@@ -335,13 +366,21 @@ struct ArmingView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            if !entitlements.proActive {
-                Label("Local protection only - evidence stays on this device (it won't back up to iCloud or survive a power-off), single camera, 3s clips.",
-                      systemImage: "icloud.slash")
+            if let routeWarning = engine.sirenRouteWarning {   // fable-2: the siren would play in headphones
+                Label(routeWarning, systemImage: "headphones")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .reportedOnScreen(routeWarning)
+            }
+            if !entitlements.proActive {
+                Label(Self.freeTierNotice, systemImage: "icloud.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .reportedOnScreen(Self.freeTierNotice)
             }
             armTimeNotices(centered: true)
             Label(batteryGuidance, systemImage: "battery.100")
@@ -447,18 +486,13 @@ struct RecoveryCancelPINView: View {
         // The pad covers the countdown while the camera the re-arm warmed keeps running, so it shows the
         // REC badge (V3) in a row of its own (V4). Below that row the pad scrolls when it is taller than
         // the room, as at the largest text sizes on a small screen: the badge and Cancel stay reachable
-        // instead of being pushed off the top and bottom (Codex's W1). One pad throughout, so the digits
-        // typed and the lockout survive the camera starting.
-        GeometryReader { room in
-            ScrollView {
-                PINEntryView(title: "Enter PIN to stop re-arming") {
-                    onDone()
-                    engine.disarm()
-                } onCancel: { onDone() }
-                .frame(minHeight: room.size.height)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-        }
+        // instead of being pushed off the top and bottom (Codex's W1). Every PIN pad scrolls so since
+        // 1.8 (item 126); one pad throughout, so the digits typed and the lockout survive the camera
+        // starting.
+        PINEntryView(title: "Enter PIN to stop re-arming") {
+            onDone()
+            engine.disarm()
+        } onCancel: { onDone() }
         .background(Color.black.ignoresSafeArea())
         .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
     }

@@ -148,6 +148,9 @@ final class ProEntitlements: ObservableObject {
         status = newStatus
         hasResolved = true
     }
+
+    /// Stands in for StoreKit's walk of the purchases in `refresh()` (item 124's F14 tests).
+    var purchaseCheckForTesting: (@Sendable () async -> Bool)?
     #endif
 
     deinit { updatesTask?.cancel() }
@@ -174,7 +177,18 @@ final class ProEntitlements: ObservableObject {
     /// question — `Transaction.currentEntitlements` is served from StoreKit's on-device cache —
     /// so resolution stays prompt and offline-safe.
     func refresh() async {
-        if await hasPurchasedEntitlement() {
+        // Early-Access first (item 124's F14, the review's D5): it needs no StoreKit, so while the
+        // program is open, or for a member, Pro settles here and arming is not held behind
+        // StoreKit's walk of the purchases below, which has no time limit. The walk still runs: a
+        // purchase it finds makes the status Pro. A status already Pro is left alone, so a refresh
+        // after a purchase does not flicker. A non-member with the program closed waits for the
+        // walk as before.
+        let memberAtStart = KeychainService.earlyAccessMember
+        if (memberAtStart || Self.earlyAccessProgramOpen) && status != .pro {
+            status = .earlyAccess
+            hasResolved = true
+        }
+        if await hasPurchased() {
             status = .pro
             hasResolved = true
             cancelTrialEndNotification()      // bought → no "trial ended" reminder
@@ -316,6 +330,14 @@ final class ProEntitlements: ObservableObject {
     }
 
     // MARK: - Entitlement lookup
+
+    /// StoreKit's answer, or in a test the stand-in's.
+    private func hasPurchased() async -> Bool {
+        #if DEBUG
+        if let check = purchaseCheckForTesting { return await check() }
+        #endif
+        return await hasPurchasedEntitlement()
+    }
 
     private func hasPurchasedEntitlement() async -> Bool {
         for await result in Transaction.currentEntitlements {

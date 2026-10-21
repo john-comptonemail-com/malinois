@@ -48,7 +48,12 @@ struct ArmedView: View {
                     engine.endDisarmEntry()   // back to covert black
                 }, onActivity: { engine.noteDisarmActivity() },
                 onFailure: { engine.noteWrongDisarmPIN() })   // a wrong PIN is on the record (item 49)
-                .overlay(alignment: .top) { armedDurationBadge }
+                // Item 126: the armed time and, while a camera runs, the REC badge sit in rows of their
+                // own above the pad, so at any text size neither lies over its title (both were laid
+                // over the top of the pad, which scrolls at the largest sizes). The screen's own REC
+                // badge below steps aside for the pad's while the pad is up.
+                .safeAreaInset(edge: .top, spacing: 0) { armedDurationBadge }
+                .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
                 .transition(.opacity)
             } else {
                 // Full-screen black layer: a quick tap logs a touch trip; a
@@ -58,6 +63,7 @@ struct ArmedView: View {
                 Color.black
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
+                    .reportedOnScreen("Touch tripwire")
                     // The reveal is a real 5-second press, enforced by SwiftUI's own gesture
                     // machinery: it fires ONLY if the finger stays down that long, and no
                     // event is needed to "cancel" it. The previous hand-rolled version
@@ -113,11 +119,16 @@ struct ArmedView: View {
             // whenever any capture session is live. Deliberately NOT gated on response
             // mode, disarm state, or any setting — it cannot be disabled, and the engine
             // raises the screen brightness while it shows so the screen is never blank
-            // during recording (see MonitoringEngine.brightnessLevel).
-            if camera.isRecordingActive {
+            // during recording (see MonitoringEngine.brightnessLevel). While the disarm pad
+            // is up, the pad shows the same badge in a row of its own above its title
+            // (item 126), so this one steps aside rather than lie over the title.
+            if camera.isRecordingActive && !engine.disarmEntryActive {
                 RecordingIndicator()
                     .safeAreaPadding(.top, 18)
                     .padding(.trailing, 18)
+                    // A tap on the badge's corner is a Touch trip like a tap anywhere else, and a hold
+                    // there opens the pad (item 124: the badge used to catch them).
+                    .allowsHitTesting(false)
                     .transition(.opacity)
             }
         }
@@ -164,6 +175,7 @@ struct ArmedView: View {
                 Text("Armed for \(context.date.timeIntervalSince(since).clockString)")
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
+                    .reportedOnScreen("Armed for")
             }
             // Safe-area-relative so it clears the Dynamic Island on all models,
             // instead of a hardcoded top inset.
@@ -175,8 +187,8 @@ struct ArmedView: View {
 extension View {
     /// The REC badge at the top trailing corner while `live` says a camera session runs, in a row of
     /// its own above the screen's content so it never covers text, at any text size (item 120: the
-    /// arming screens and the recovery PIN, F4, V3, V4). The armed screen and Test Sensors, which
-    /// have no text beneath it, overlay theirs.
+    /// arming screens and the recovery PIN, F4, V3, V4; item 126: the disarm pad). The covert armed
+    /// screen and Test Sensors, which have no text beneath it, overlay theirs.
     func recordingBadge(whileLive live: AnyPublisher<Bool, Never>) -> some View {
         modifier(RecordingBadgeRow(live: live))
     }
@@ -247,15 +259,19 @@ struct AlertMessageView: View {
                 .font(.title3.weight(.bold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+                .minimumScaleFactor(0.5)   // a long message of the owner's own still fits a small screen
+                .reportedOnScreen(message)
             if let disarmTip {
                 VStack(spacing: 8) {
                     Image(systemName: "hand.tap.fill")
                         .font(.title2)
                     Text(disarmTip)
                         .font(.callout.weight(.semibold))
+                        .reportedOnScreen(disarmTip)
                     Text(DisarmTip.alertTipFootnote)
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.6))
+                        .reportedOnScreen(DisarmTip.alertTipFootnote)
                 }
                 .foregroundStyle(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
@@ -266,10 +282,18 @@ struct AlertMessageView: View {
             }
         }
         .padding(36)
+        // The warning cannot scroll: touches must reach the armed screen beneath it (Touch, and the
+        // hold that opens the pad). So its text stops growing two steps above the standard size, where
+        // the message and the disarm tip fit a short screen whole with room to spare (at the larger
+        // sizes they were cut off, BACKLOG 128).
+        .dynamicTypeSize(...Self.largestTextSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .overlay(
             Rectangle().stroke(Color.red.opacity(0.85), lineWidth: 4).ignoresSafeArea()
         )
     }
+
+    /// The largest text size the warning uses, whatever the owner's setting.
+    static let largestTextSize = DynamicTypeSize.xxLarge
 }

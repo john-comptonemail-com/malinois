@@ -467,8 +467,8 @@ final class AppSettings: ObservableObject, Codable {
 
     /// Set when stored settings existed but could not be decoded, so the app is running on
     /// defaults the owner never chose. Surfaced rather than silently accepted: the defaults
-    /// include Guided Access enforcement **off**, PIN-pad scrambling **off** and the Sound and
-    /// Vision tripwires **off**, so a silent reset quietly reduces protection — the one thing
+    /// include PIN-pad scrambling **off** and the Sound and Vision tripwires **off** (Guided
+    /// Access enforcement is on by default since 1.3), so a silent reset can quietly reduce protection — the one thing
     /// this app's settings must never do without saying so. Written only by `load()` at
     /// launch, before any screen reads it (item 97: Swift 6 asks for the promise in words).
     nonisolated(unsafe) static private(set) var loadWasReset = false
@@ -488,11 +488,35 @@ final class AppSettings: ObservableObject, Codable {
             // next save lands on top.
             let stash = "\(storeKey).corrupt-\(Int(Date().timeIntervalSince1970))"
             UserDefaults.standard.set(data, forKey: stash)
-            UserDefaults.standard.removeObject(forKey: storeKey)
             loadWasReset = true
             Log.store.fault("Settings could not be decoded; preserved as \(stash, privacy: .public) and reset to defaults: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
-            return AppSettings()
+            // The owner's iCloud choices survive where the damaged settings still show them; where
+            // backup's cannot be read it is off, failing closed for privacy (item 124's F12, the
+            // owner's option B, ADR 0049). Home's backup-off notice says so.
+            let reset = AppSettings()
+            let kept = Self.readableICloudChoices(in: data)
+            reset.cloudBackup = kept.backup ?? false
+            if let alerts = kept.alerts { reset.notifyOtherDevices = alerts }
+            // Stored at once over the damaged settings (set aside above), not left to the 0.4-second autosave:
+            // the damaged settings used to be removed first, so a relaunch inside that window found none and
+            // started from the defaults, iCloud backup on (Codex's V1, BACKLOG 128).
+            reset.save()
+            return reset
         }
+    }
+
+    /// Pure (unit-tested; item 124's F12): the iCloud backup and cross-device alerts switches in
+    /// settings that failed to decode, each where it is still a JSON boolean, nil otherwise (the data
+    /// is not JSON, the key is missing, or the value is a number or text).
+    static func readableICloudChoices(in data: Data) -> (backup: Bool?, alerts: Bool?) {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (nil, nil) }
+        func boolean(_ key: CodingKeys) -> Bool? {
+            guard let value = object[key.rawValue] as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else {
+                return nil
+            }
+            return value.boolValue
+        }
+        return (boolean(.cloudBackup), boolean(.notifyOtherDevices))
     }
 
     /// Seventh-review #6: every corrupt load writes a preservation stash, and nothing ever

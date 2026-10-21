@@ -2,9 +2,9 @@
 //  CaptureFailureReason.swift
 //  Malinois
 //
-//  Why a capture produced no media (item 54). On its own, with nothing but Foundation, so the
-//  alert extension can compile `Event` and word an alert the way the Event Log words the record
-//  (item 76). The mappings from the camera's own errors stay in EvidenceCapturePipeline.swift.
+//  Why a capture produced no media (item 54). On its own, with nothing but Foundation (it once let
+//  the alert extension compile `Event`; since 1.8 the extension compiles only its own file). The
+//  mappings from the camera's own errors stay in EvidenceCapturePipeline.swift.
 //
 
 import Foundation

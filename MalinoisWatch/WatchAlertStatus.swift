@@ -70,15 +70,18 @@ struct WatchAlertStatus: Equatable {
             return true
         }
 
-        /// Ends the post `begin` allowed, remembering `id` only when it was posted.
+        /// Ends the post `begin` allowed, remembering `id` among the alerts shown only when `posted`
+        /// says so (an alert summed up is remembered in its summary instead; ADR 0051).
         mutating func finish(_ id: String, posted: Bool) {
             posting.remove(id)
             if posted { shown = WatchAlertStatus.remembering(id, in: shown) }
         }
     }
 
-    /// How many relayed alerts the watch remembers having shown (the 1.6 review's finding 5).
-    static let rememberedRelayLimit = 50
+    /// How many relayed alerts shown on their own the watch remembers (the 1.6 review's finding 5): 50
+    /// until 1.8 (73), then 500, so the late queued copies of many alerts shown live are still
+    /// recognized (Codex's X1 on build 73).
+    static let rememberedRelayLimit = 500
 
     /// Pure (unit-tested). The remembered alert identifiers with `id` added, newest last, the
     /// oldest giving way at `limit`; one already remembered changes nothing. Kept across launches,

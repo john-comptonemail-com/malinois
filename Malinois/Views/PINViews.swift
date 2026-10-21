@@ -280,6 +280,7 @@ final class PINResetPermission: ObservableObject {
 /// resumes access without a new device-auth policy for ordinary disarm. The explicit
 /// forgotten-PIN route instead requests device-owner authentication before replacement.
 struct PINContinuityView: View {
+    private static let keptExplanation = "Enter your existing PIN to resume. If you forgot it, verify with Face ID, Touch ID, or your device passcode to choose a new one."
     let kind: KeychainService.RecoveryKind
     var onDone: () -> Void
     @Environment(\.scenePhase) private var scenePhase
@@ -306,12 +307,17 @@ struct PINContinuityView: View {
                 VStack(spacing: 24) {
                     Image(systemName: "lock.shield").font(.system(size: 54))
                     Text("Your Malinois PIN was kept").font(.title2.weight(.semibold))
-                    Text("Enter your existing PIN to resume. If you forgot it, verify with Face ID, Touch ID, or your device passcode to choose a new one.")
+                        .reportedOnScreen("Your Malinois PIN was kept")
+                    Text(Self.keptExplanation)
                         .multilineTextAlignment(.center)
+                        .reportedOnScreen(Self.keptExplanation)
                     if let error { Text(error).foregroundStyle(.orange) }
-                    Button("Use existing PIN") { showPIN = true }.buttonStyle(.borderedProminent)
+                    Button { showPIN = true } label: { Text("Use existing PIN").reportedOnScreen("Use existing PIN") }
+                        .buttonStyle(.borderedProminent)
                     Button("Forgot PIN?") { requestedReset = true }
-                }.padding(32)
+                }
+                .padding(32)
+                .scrollingIfNeeded()   // its text was cut off at the largest text sizes (BACKLOG 128)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -481,6 +487,7 @@ struct PINEntryView: View {
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private var isLocked: Bool { lockoutRemaining > 0 }
+    private var lockoutMessage: String { "Too many attempts. Try again in \(Int(lockoutRemaining.rounded(.up)))s" }
     /// The offer was wanted in every respect except an active Guided Access session —
     /// the one case worth a caption, so the missing Face ID prompt reads as iOS policy,
     /// not a breakage (BACKLOG 44).
@@ -489,36 +496,49 @@ struct PINEntryView: View {
     }
 
     var body: some View {
-        VStack(spacing: 28) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
-            if isLocked {
-                Text("Too many attempts. Try again in \(Int(lockoutRemaining.rounded(.up)))s")
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-            } else if error {
-                Text("Incorrect PIN")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-            } else if biometricsVetoedByGuidedAccess {
-                Text(BiometricKind.current.guidedAccessCaption)
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
+        // Item 126: the pad scrolls when it is taller than the room, as at the largest text sizes on a
+        // short screen, instead of squeezing its title and lockout message to a line or two. Laid out
+        // at least as tall as the room, it sits centred as before wherever it fits, and does not move
+        // under a finger then. One pad throughout (the recovery PIN's fix from 1.7, W1, now every PIN
+        // screen's), so the digits typed and the lockout survive a change of size.
+        GeometryReader { room in
+            ScrollView {
+                VStack(spacing: 28) {
+                    Text(title)
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .reportedOnScreen(title)
+                    if isLocked {
+                        Text(lockoutMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                            .reportedOnScreen(lockoutMessage)
+                    } else if error {
+                        Text("Incorrect PIN")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    } else if biometricsVetoedByGuidedAccess {
+                        Text(BiometricKind.current.guidedAccessCaption)
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                    }
+                    PINPad(digits: $digits, maxLength: 6, conceal: true, scramble: settings.scramblePINPad,
+                           autoSubmitLength: autoSubmitLength, onActivity: onActivity, onComplete: check)
+                        .environment(\.colorScheme, .dark)
+                        .disabled(isLocked)
+                        .opacity(isLocked ? 0.35 : 1)
+                        .modifier(Shake(animatableData: shakes))
+                    Button("Cancel", action: onCancel)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .padding(40)
+                .frame(maxWidth: .infinity, minHeight: room.size.height)
             }
-            PINPad(digits: $digits, maxLength: 6, conceal: true, scramble: settings.scramblePINPad,
-                   autoSubmitLength: autoSubmitLength, onActivity: onActivity, onComplete: check)
-                .environment(\.colorScheme, .dark)
-                .disabled(isLocked)
-                .opacity(isLocked ? 0.35 : 1)
-                .modifier(Shake(animatableData: shakes))
-            Button("Cancel", action: onCancel)
-                .foregroundStyle(.white.opacity(0.7))
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .sensoryFeedback(.error, trigger: shakes)   // buzz on a wrong PIN
         .onChange(of: digits) { _, _ in error = false }

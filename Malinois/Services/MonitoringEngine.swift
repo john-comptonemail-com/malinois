@@ -122,6 +122,8 @@ final class MonitoringEngine: ObservableObject {
     /// iCloud's encrypted data was reset (34.H13): Apple purged the cloud copies, and this
     /// device is re-uploading what it still holds. Surfaced until the next arm.
     @Published private(set) var cloudResetNotice: String?
+    /// The records the launch check queued again, while its notice stands: its words follow the backup switch (codex-1 on 76).
+    private var cloudReuploadCount: Int?
     private var encryptedResetHandled = false
 
     /// iCloud REFUSED an evidence upload (quota, auth, schema, key reset) — the server
@@ -133,6 +135,8 @@ final class MonitoringEngine: ObservableObject {
     /// crash): we recovered the screen brightness and kicked off a re-sync. Shown
     /// on Home; cleared on the next arm.
     @Published private(set) var recoveredInterruptedSession = false
+    /// Set when the crash-loop guard declines an automatic re-arm (fable-3; item 132): Home says so. Cleared on the next arm.
+    @Published private(set) var reArmSkipped = false
     /// A launch-time pull from iCloud is running (owner, 2026-09-04): Home says so, so an
     /// empty log on a fresh install reads as "still loading", not "gone". `currentLaunchPull`
     /// says whether it is a restore or a routine check.
@@ -143,10 +147,16 @@ final class MonitoringEngine: ObservableObject {
     /// True while the CURRENT arming flow was started automatically after a crash/force-
     /// quit recovery (not by the owner). Cancelling it requires the PIN (R-04).
     @Published private(set) var armWasAutoRecovered = false
+    /// The parts of the one-time screen before the first arm while it shows (item 131); set only by
+    /// `startCountdownTapped` and `acknowledgeFirstArmBriefing`, and cleared when an arm begins.
+    @Published var firstArmBriefing: FirstArmBriefing.Parts?
     /// Set at arm when Siren response is selected but the device's media volume is low —
     /// the siren plays at system volume and can't override the hardware buttons, so warn
     /// the owner while they can still turn it up (F-13). Surfaced on the arming screen.
     @Published private(set) var sirenVolumeLow = false
+    /// The arming screen's warning while Siren is the response and its sound would play away from this iPhone, in
+    /// headphones or another device (fable-2). Set only by `refreshSirenRouteWarning`.
+    @Published var sirenRouteWarning: String?
 
     /// True while the on-screen tamper warning is showing (alert / siren modes).
     /// ArmedView renders the warning message when this is set.
@@ -314,7 +324,11 @@ final class MonitoringEngine: ObservableObject {
     /// grab-then-unplug whose cable pull landed inside the ~1–5 s capture window used to be
     /// recorded as "Device motion" only — the second step's trip was dropped with no record
     /// anywhere. Until-clear clips were the only mode that handled the window.
-    private var tripsDuringCapture: Set<SensorType> = []
+    /// By arm session since Codex's review of 1.7 (70) (item 129, F3), like
+    /// `wrongPINsDuringCapture`: one set for the whole engine let a response from an earlier
+    /// watch, still saving after a disarm and re-arm, fold the new watch's trips into its own
+    /// event and clear them from the new one. A disarm still drops the trips pending then.
+    private var tripsDuringCapture: [Int: Set<SensorType>] = [:]
     /// Wrong disarm PINs that landed while a capture was already running (item 49). Folded into
     /// the in-flight event alongside `tripsDuringCapture` (the typing is its Touch) and zeroed at
     /// every capture start. Unlike the trips, a disarm does NOT clear it: the capture's response
@@ -713,8 +727,8 @@ final class MonitoringEngine: ObservableObject {
         switch Self.cloudWipeResponse(storedAccount: stored, currentAccount: current) {
         case .reupload:
             let requeued = eventStore.requeueAllForReupload()   // this phone's own records; never a mirror
-            cloudResetNotice = "iCloud no longer held this phone's records, as happens when iCloud data is deleted "
-                + "in iOS Settings. This phone is uploading \(requeued) of them again."
+            cloudReuploadCount = requeued
+            refreshCloudReuploadNotice()
             Log.engine.warning("Cloud copies missing (\(missing, privacy: .public) of \(sample.count, privacy: .public)); requeued \(requeued, privacy: .public)")
             Task { await retryPendingSync() }
         case .differentAccount:
@@ -725,6 +739,13 @@ final class MonitoringEngine: ObservableObject {
             cloudResetNotice = "iCloud no longer holds this phone's records. They are safe on this phone."
             Log.engine.warning("Cloud copies missing; the account cannot be confirmed, so nothing uploaded")
         }
+    }
+
+    /// The launch check's notice in the words for the backup switch as it is now: turned back on, as it asks, it no
+    /// longer asks (Codex's codex-1 on 76). Nothing when the check queued nothing.
+    func refreshCloudReuploadNotice() {
+        guard let count = cloudReuploadCount else { return }
+        cloudResetNotice = Self.cloudReuploadNotice(requeued: count, backupOn: settings.cloudBackup)
     }
 
     private func cloudPresence(_ names: [String]) async -> Set<String>? {
@@ -763,7 +784,7 @@ final class MonitoringEngine: ObservableObject {
         let now = Date().timeIntervalSince1970
         let last = defaults.double(forKey: Self.recoveryTimeKey)
         defaults.set(now, forKey: Self.recoveryTimeKey)
-        guard !Self.isCrashLoop(lastAttempt: last, now: now) else { return }
+        guard !Self.isCrashLoop(lastAttempt: last, now: now) else { reArmSkipped = true; return }   // Home says so (fable-3)
         // Cover the countdown window (F1): from here until covert engages there is otherwise
         // no persistent marker, so a kill during grace/calibration would vanish silently.
         defaults.set(true, forKey: Self.recoveryInProgressKey)
@@ -966,6 +987,8 @@ final class MonitoringEngine: ObservableObject {
     /// it still holds (nil: no conclusive answer), and the signed-in account's user record name.
     var cloudPresenceForTesting: (([String]) async -> Set<String>?)?
     var cloudAccountForTesting: String?
+    /// Test-only (fable-2): where the siren would play, in place of iOS's route.
+    var sirenOutputsForTesting: [SirenOutput]?
 
     /// Test-only (item 89, C1): stands in for iCloud inside a pull from it. Given how many
     /// records the pull asks for, it returns the records and whether the fetch reached iCloud and
@@ -1252,6 +1275,7 @@ final class MonitoringEngine: ObservableObject {
         // `onDisappear` is what normally ends it — this makes the engine's own invariant
         // ("never armed while dry-running") hold without relying on UI modality.
         if dryRunActive { stopDryRun() }
+        firstArmBriefing = nil   // a screen left from an earlier arm never shows on this one (item 131)
         recordProtectionChanges()             // item 91: a change is on the record before the session starts
         armedPro = entitlements.proActive     // snapshot Pro for the whole session (trial began at launch)
         // The clip-audio decision must reach the camera on EVERY arm, not only when the
@@ -1260,9 +1284,11 @@ final class MonitoringEngine: ObservableObject {
         camera.clipAudio = Self.clipAudioAllowed(setting: settings.clipAudio,
                                                  micGranted: AVAudioApplication.shared.recordPermission == .granted)
         recoveredInterruptedSession = false   // dismiss the recovery note once re-arming
+        reArmSkipped = false                  // and the skipped re-arm's (fable-3)
         visionTapUnavailable = false          // last session's verdict on the tap is not this session's (item 65, finding 15)
         cloudPushRefused = false              // a new watch gets a fresh verdict (32.R1)
         cloudResetNotice = nil                // the pending badges carry the story from here
+        cloudReuploadCount = nil
         armWasAutoRecovered = false           // a manual arm is user-initiated (cancellable)
         refreshSirenVolumeWarning()
         refreshDeviceName()
@@ -1270,7 +1296,7 @@ final class MonitoringEngine: ObservableObject {
         cameraAskBlockedByGuidedAccess = Self.cameraAskBlocked(
             guidedAccessOn: guidedAccessEnabled,
             cameraNeeded: settings.isEnabled(.camera) || settings.isEnabled(.vision),
-            undetermined: AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined)
+            undetermined: camera.videoPermission == .notDetermined)
         // First arm only (BACKLOG 68): waive the Guided Access requirement for a brand-new
         // user's very first arm, automatically and logged, so nothing stands between install and
         // seeing the app work. `liftGuidedAccessRequirementForThisArm` no-ops if Guided Access is
@@ -1349,7 +1375,7 @@ final class MonitoringEngine: ObservableObject {
         guard settings.isEnabled(.camera) else { return }
         // Never asked yet (Guided Access blocked the ARM tap's ask, item 69): no warm-up and
         // no "camera unavailable" notice — the arming screen carries the honest one.
-        guard AVCaptureDevice.authorizationStatus(for: .video) != .notDetermined else { return }
+        guard camera.videoPermission != .notDetermined else { return }
         syncVisionTap()
         // Warm the shape the NEXT CAPTURE will actually use, not the configured one.
         //
@@ -1404,7 +1430,7 @@ final class MonitoringEngine: ObservableObject {
     /// silent in exactly the common unattended configuration. Only definitive denial warns;
     /// `.notDetermined` just means the launch prompt hasn't been answered yet.
     private func refreshPermissionNotices() {
-        let cam = AVCaptureDevice.authorizationStatus(for: .video)
+        let cam = camera.videoPermission
         if settings.isEnabled(.camera), cam == .denied || cam == .restricted {
             cameraNotice = "Camera access is denied - no photo or video evidence can be captured. Allow Camera in iOS Settings → Privacy."
         }
@@ -1660,6 +1686,7 @@ final class MonitoringEngine: ObservableObject {
                 guard let self, let endsAt = self.graceEndsAt else { return }
                 let remaining = endsAt.timeIntervalSinceNow
                 self.graceRemaining = max(0, Int(remaining.rounded(.up)))
+                self.refreshSirenRouteWarning()   // headphones connected or put away during the countdown (fable-2)
                 if remaining <= 0 {
                     self.graceTimer?.invalidate(); self.graceTimer = nil
                     self.graceEndsAt = nil
@@ -1794,6 +1821,7 @@ final class MonitoringEngine: ObservableObject {
     private func refreshSirenVolumeWarning() {
         sirenVolumeLow = settings.responseMode == .siren
             && AVAudioSession.sharedInstance().outputVolume < 0.5
+        refreshSirenRouteWarning()   // and where the sound goes (fable-2)
     }
 
     /// End the calibration review and switch to the covert armed state. Also called
@@ -2083,7 +2111,7 @@ final class MonitoringEngine: ObservableObject {
         if state == .triggered || capturePipeline.isCapturingUntilClear {
             // An until-clear recording treats the attempt as activity, like any trip.
             if capturePipeline.isCapturingUntilClear { capturePipeline.noteActivity() }
-            tripsDuringCapture.insert(.touch)
+            tripsDuringCapture[armSession, default: []].insert(.touch)
             wrongPINsDuringCapture[armSession, default: 0] += 1
             extendAlertWindow()
             return
@@ -2093,7 +2121,7 @@ final class MonitoringEngine: ObservableObject {
         if showingCalibrationReview { goCovert() }
         isHandlingTrigger = true
         state = .triggered
-        tripsDuringCapture.removeAll()
+        tripsDuringCapture[armSession] = nil
         wrongPINsDuringCapture[armSession] = nil
         let startDate = Date()
         lastTriggerDate = startDate
@@ -2612,7 +2640,7 @@ final class MonitoringEngine: ObservableObject {
         // clock — and keep any alert/siren alive while tampering continues.
         if capturePipeline.isCapturingUntilClear {
             capturePipeline.noteActivity()
-            tripsDuringCapture.insert(sensor)   // on the record, not just in the clip's length (item 54)
+            tripsDuringCapture[armSession, default: []].insert(sensor)   // on the record, not just in the clip's length (item 54)
             extendAlertWindow()
             return
         }
@@ -2621,7 +2649,7 @@ final class MonitoringEngine: ObservableObject {
         // alert alive — exactly what until-clear trips do above. The capture already running
         // IS the response; the record must still show every sensor that fired.
         if state == .triggered {
-            tripsDuringCapture.insert(sensor)
+            tripsDuringCapture[armSession, default: []].insert(sensor)
             extendAlertWindow()
             return
         }
@@ -3017,7 +3045,7 @@ final class MonitoringEngine: ObservableObject {
         }
         isHandlingTrigger = true
         state = .triggered
-        tripsDuringCapture.removeAll()   // fresh window for this capture (M1)
+        tripsDuringCapture[armSession] = nil   // fresh window for this capture (M1)
         wrongPINsDuringCapture[armSession] = nil
         let startDate = recentTrips.values.min() ?? Date()
         lastTriggerDate = Date()
@@ -3105,7 +3133,7 @@ final class MonitoringEngine: ObservableObject {
             // Flood onset: full capture for the record, mark it as the sustained event.
             isHandlingTrigger = true
             state = .triggered
-            tripsDuringCapture.removeAll()   // fresh window for this capture (M1)
+            tripsDuringCapture[armSession] = nil   // fresh window for this capture (M1)
             wrongPINsDuringCapture[armSession] = nil
             let startDate = recentTrips.values.min() ?? Date()
             lastTriggerDate = Date()
@@ -3355,10 +3383,9 @@ final class MonitoringEngine: ObservableObject {
         // Trips that landed during this capture join the record (34-review M1) — the
         // flood coalescer's precedent: coalesce log spam, never evidence. Folded before the
         // final persist and the full cloud push, so both carry the complete sensor list.
-        if !tripsDuringCapture.isEmpty {
-            event.triggeredSensors = Self.foldedSensors(event.triggeredSensors,
-                                                        adding: tripsDuringCapture)
-            tripsDuringCapture.removeAll()
+        // Only this response's own session's (item 129, F3).
+        if let trips = tripsDuringCapture.removeValue(forKey: session), !trips.isEmpty {
+            event.triggeredSensors = Self.foldedSensors(event.triggeredSensors, adding: trips)
         }
         // Wrong PINs typed during the capture join the record the same way (item 49).
         // Only this response's own session's (item 89, A2).
@@ -3704,6 +3731,7 @@ final class MonitoringEngine: ObservableObject {
         encryptedResetHandled = true
         cloud.acknowledgeEncryptedDataReset()
         let requeued = eventStore.requeueAllForReupload()
+        cloudReuploadCount = nil   // this notice is not the launch check's, and stays as it is
         cloudResetNotice = "iCloud's protected data was reset, which cleared the cloud copies. This device is re-uploading \(requeued) event(s)."
         Log.engine.warning("Encrypted-data reset detected; requeued \(requeued, privacy: .public) event(s) for re-upload")
         Task { await retryPendingSync() }
@@ -4256,6 +4284,9 @@ extension MonitoringEngine {
     /// download runs, and writing back the copy read before it undid that (item 96). Camera
     /// placement also uses that current record, after staging and storage have finished, so
     /// newly learned labels and captures from another download cannot be overwritten.
+    /// What lands counts toward the media byte limit (item 129, F4): the store runs the limit's
+    /// pass as each file is attached, and on a phone over the limit it frees synced media oldest
+    /// first, which can be the download itself; the iCloud copy stays, so it can be downloaded again.
     func downloadFullEvidence(for id: UUID) async -> EvidenceDownload {
         guard entitlements.proActive else { return EvidenceDownload(landed: false, complete: true) }
         guard let event = eventStore.events.first(where: { $0.id == id }) else {

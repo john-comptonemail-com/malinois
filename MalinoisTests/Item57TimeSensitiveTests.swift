@@ -72,12 +72,15 @@ final class Item57TimeSensitiveTests: XCTestCase {
     }
 
     /// On the watch the relayed tamper alert asks for Time Sensitive and the disarm alert does not, and
-    /// the watch app holds the capability in both of its entitlement files.
+    /// the watch app holds the capability in both of its entitlement files. Since 1.8 (73) the watch's
+    /// `WatchRelayInbox` builds the alert (ADR 0051), so it is asked here directly.
     func testTheWatchShowsRelayedTamperAlertsTimeSensitive() throws {
-        XCTAssertTrue(WatchAlertMessage(kind: .tamper, eventID: UUID(), at: Date()).isTimeSensitive)
-        XCTAssertFalse(WatchAlertMessage(kind: .disarm, eventID: UUID(), at: Date()).isTimeSensitive)
-        let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
-        XCTAssertTrue(delegate.contains("content.interruptionLevel = message.isTimeSensitive ? .timeSensitive : .active"))
+        let tamper = WatchAlertMessage(kind: .tamper, eventID: UUID(), at: Date())
+        let disarm = WatchAlertMessage(kind: .disarm, eventID: UUID(), at: Date())
+        XCTAssertTrue(tamper.isTimeSensitive)
+        XCTAssertFalse(disarm.isTimeSensitive)
+        XCTAssertEqual(WatchRelayInbox.request(for: tamper, now: Date()).content.interruptionLevel, .timeSensitive)
+        XCTAssertEqual(WatchRelayInbox.request(for: disarm, now: Date()).content.interruptionLevel, .active)
         for file in ["MalinoisWatch/MalinoisWatch.entitlements", "MalinoisWatch/MalinoisWatch-Release.entitlements"] {
             XCTAssertTrue(try text(file).contains("<key>com.apple.developer.usernotifications.time-sensitive</key>"), file)
         }

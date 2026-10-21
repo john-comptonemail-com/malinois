@@ -77,6 +77,7 @@ final class CloudEnrollment: ObservableObject {
     @Published private(set) var notice = "Verify this installation in Settings before using iCloud. Local monitoring remains available."
     private let file: URL
     private let authenticate: @MainActor (String) async -> Bool
+    private let guidedAccess: @MainActor () -> Bool
     private let persist: (Data, URL) throws -> Void
     @Published private var state: State?
     private var generation = UUID()
@@ -84,13 +85,20 @@ final class CloudEnrollment: ObservableObject {
     private var authenticating = false
     private var captureHeld = false
 
+    /// - Parameters:
+    ///   - file: where the grant is kept (tests pass their own).
+    ///   - authenticate: the device-owner check (Face ID, Touch ID or the passcode).
+    ///   - persist: the grant's write.
+    ///   - guidedAccess: whether Guided Access is on, read when a verification fails (item 135).
     init(file: URL? = nil,
          authenticate: @escaping @MainActor (String) async -> Bool = CloudEnrollment.deviceAuthentication,
-         persist: @escaping (Data, URL) throws -> Void = CloudEnrollment.write) {
+         persist: @escaping (Data, URL) throws -> Void = CloudEnrollment.write,
+         guidedAccess: @escaping @MainActor () -> Bool = { UIAccessibility.isGuidedAccessEnabled }) {
         self.file = file ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CloudEnrollment/state.json")
         self.authenticate = authenticate
         self.persist = persist
+        self.guidedAccess = guidedAccess
         _ = load()
     }
 
@@ -138,6 +146,10 @@ final class CloudEnrollment: ObservableObject {
         verified = false
     }
 
+    /// What a verification that fails with Guided Access on says (item 135): iOS holds the Face ID / passcode sheet
+    /// until Guided Access ends (BACKLOG 44), so `deviceAuthentication` refuses at once.
+    static let guidedAccessNotice = "Verification did not complete: Guided Access was on. Local monitoring remains available."
+
     /// Explicit foreground enrollment. A changed account, cancellation, or failed durable write grants nothing.
     func enroll(account: String, resolve: @escaping @MainActor () async -> String?) async -> Bool {
         guard !Task.isCancelled, !authenticating, !account.isEmpty, load() else { return false }
@@ -149,7 +161,9 @@ final class CloudEnrollment: ObservableObject {
               await resolve() == account,
               !Task.isCancelled, generation == attempt,
               var next = state else {
-            notice = "Verification did not complete. Local monitoring remains available; retry while disarmed."
+            // Read now, not when the tap came: Guided Access may have started during the attempt (item 135).
+            notice = guidedAccess() ? Self.guidedAccessNotice
+                : "Verification did not complete. Local monitoring remains available; retry while disarmed."
             return false
         }
         next.account = account
@@ -179,6 +193,21 @@ final class CloudEnrollment: ObservableObject {
     /// `Event.keptLocal`, still never uploads it.
     var holdsNewEventsLocal: () -> Bool = { false }
 
+    /// Whether an event recorded now is held on this device, tied to no account (`register`): a different account was
+    /// seen since the grant, or iCloud backup is off.
+    private var holdsNewEvents: Bool {
+        captureHeld || state?.observedDifferentAccount != nil || holdsNewEventsLocal()
+    }
+
+    /// Whether an event recorded now is tied to this installation's verified account, so it uploads once iCloud names
+    /// that account again, with no new verification (item 140's codex-1): true while a verified installation waits
+    /// for iCloud, offline or after a relaunch. False before the first verification, after another account was seen
+    /// and while iCloud backup is off: those events stay on this device. Presentation only; it grants nothing.
+    var newEventsBindToVerifiedAccount: Bool {
+        guard let account = state?.account, !account.isEmpty else { return false }
+        return !holdsNewEvents
+    }
+
     /// Registers ownership at capture time, never opportunistically when an upload is attempted.
     func registerLocalEvent(_ event: Event) {
         guard !event.isMirrored else { return }
@@ -195,8 +224,8 @@ final class CloudEnrollment: ObservableObject {
         // observed. That hold survives relaunch and later identity failures; only new verification
         // or positively resolving the original account permits binding future captures again.
         // Recorded while iCloud backup is off: held the same way, for good (item 116, R3).
-        let held = captureHeld || next.observedDifferentAccount != nil || holdsNewEventsLocal()
-        next.owners[id.uuidString] = held ? "" : (next.account ?? "")
+        // The same rule as Home's iCloud row and line (`newEventsBindToVerifiedAccount`).
+        next.owners[id.uuidString] = holdsNewEvents ? "" : (next.account ?? "")
         _ = commit(next)
     }
 
@@ -282,6 +311,9 @@ final class CloudEnrollment: ObservableObject {
         try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
+    /// Face ID, Touch ID or the passcode, asked only while the app is active. Under Guided Access iOS holds the
+    /// sheet until Guided Access ends (BACKLOG 44), so this refuses at once rather than leave a request waiting;
+    /// Settings greys out Verify iCloud access meanwhile and says why (item 135).
     static func deviceAuthentication(_ reason: String) async -> Bool {
         guard UIApplication.shared.applicationState == .active, !UIAccessibility.isGuidedAccessEnabled else { return false }
         let context = LAContext()

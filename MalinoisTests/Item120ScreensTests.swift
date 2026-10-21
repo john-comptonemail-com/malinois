@@ -267,7 +267,7 @@ final class Item120ScreensTests: XCTestCase {
     /// Every text Home's iCloud row can show on Pro.
     private static let iCloudRowTexts: [String] = [
         CloudExfiltrator.AccountState.unknown, .available, .noAccount, .restricted, .error("")
-    ].map(\.displayName) + ["iCloud verification needed"]
+    ].map(\.displayName) + ["iCloud verification needed", HomeView.iCloudWaitingRow]
 
     private func makeRig(tier: ProEntitlements.Status = .trial, timing: EngineTiming = EngineCharacterizationTests.fastTiming,
                          _ configure: (AppSettings) -> Void = { _ in }) -> Rig {

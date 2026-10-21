@@ -9,8 +9,12 @@
 //  seam: `CameraController`.
 //
 
-import Foundation
+import AVFoundation
 import Combine
+import Foundation
+import SwiftUI
+import UIKit
+import XCTest
 @testable import Malinois
 
 /// Calls arrive from the engine's deadline-racing tasks off the main actor, so every recorded
@@ -24,6 +28,9 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     // MARK: Knobs (set before driving the engine)
 
     var supportsMultiCam = false
+    /// The camera permission the engine reads (item 129, T1): allowed unless a test says
+    /// otherwise, whatever the simulator has been granted.
+    var videoPermission: AVAuthorizationStatus = .authorized
     var omittedBothCameras: Set<String> = []
     var invalidBothClipFiles: Set<String> = []
     var multiCamWarmUpError: Error?
@@ -348,4 +355,44 @@ enum TestIsolation {
 @MainActor
 final class LockState {
     var unlocked = false
+}
+
+/// A yes or no a test sets on one thread and reads on another, behind a lock. A test's stand-ins (an
+/// upload held open, a step entered) run off the main actor, where a captured local `var` is "mutated
+/// after capture by sendable closure" under Swift 6 (item 124's test housekeeping).
+final class TestFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag: Bool
+
+    init(_ value: Bool = false) { flag = value }
+
+    var value: Bool {
+        get { lock.withLock { flag } }
+        set { lock.withLock { flag = newValue } }
+    }
+}
+
+/// What a real screen shows when laid out in a window of `size` (item 82's pattern: at the origin, safe
+/// areas ignored): the texts its reporting views show (`OnScreenText.swift`, Debug only) and where each
+/// is laid out, read before the window closes. For tests that check a screen, rather than its source.
+@MainActor
+func shownOnScreen<V: View>(_ view: V, in size: CGSize = CGSize(width: 402, height: 874))
+    throws -> (shown: [String], frames: [String: CGRect]) {
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
+                              "the test host has no window scene")
+    let recorder = OnScreenRecorder()
+    let window = UIWindow(windowScene: scene)
+    window.frame = CGRect(origin: .zero, size: size)
+    let controller = UIHostingController(rootView: view.environment(\.onScreenRecorder, recorder))
+    controller.safeAreaRegions = []
+    window.rootViewController = controller
+    window.isHidden = false
+    defer {
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+    controller.view.layoutIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    controller.view.layoutIfNeeded()
+    return (recorder.shown, recorder.frames)
 }

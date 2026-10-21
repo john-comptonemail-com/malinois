@@ -162,11 +162,11 @@ struct PaywallView: View {
 
     static let benefits: [Benefit] = [
         .init(feature: .cloudBackup, icon: "icloud.and.arrow.up",
-              title: "Evidence survives a power-off",
-              detail: "Pushed to your private iCloud the instant a tamper fires."),
+              title: "Evidence backed up to iCloud",
+              detail: "Uploading starts as soon as a tamper fires, the record before the photo, so evidence can outlast a power-off."),
         .init(feature: .crossDevicePush, icon: "iphone.radiowaves.left.and.right",
-              title: "Instant alerts to your other devices",
-              detail: "Know the moment your phone is touched, wherever you are."),
+              title: "Alerts on your other devices",
+              detail: "Your other iPhone, iPad and Apple Watch get a tamper alert when they can be reached."),
         .init(feature: .multiCam, icon: "camera.on.rectangle",
               title: "Both cameras at once",
               detail: "Capture the face and the room together."),
@@ -178,6 +178,6 @@ struct PaywallView: View {
               detail: "Trips on a sudden sound nearby."),
         .init(feature: .visionSensor, icon: "eye",
               title: "Vision tripwire",
-              detail: "While charging, the camera watches its view for movement, catching someone approaching before they touch it.")
+              detail: "While the camera is ready (on a charger by default), it watches its view for movement, catching someone approaching before they touch it.")
     ]
 }

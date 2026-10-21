@@ -424,16 +424,22 @@ final class AppSettingsTests: XCTestCase {
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
 
-        UserDefaults.standard.set(Data("{\"gracePeriodSeconds\":\"not a number\"}".utf8), forKey: key)
+        let blob = Data("{\"gracePeriodSeconds\":\"not a number\"}".utf8)
+        UserDefaults.standard.set(blob, forKey: key)
         let loaded = AppSettings.load()
 
         XCTAssertTrue(AppSettings.loadWasReset, "the owner has to be told their settings went back to defaults")
         XCTAssertEqual(loaded.gracePeriodSeconds, AppSettings().gracePeriodSeconds)
-        XCTAssertNil(UserDefaults.standard.data(forKey: key), "the unreadable blob is not left to be written over")
+        // Since Codex's review of 1.8 (V1) the reset's settings are stored at once in place of the unreadable
+        // blob, which is set aside first: the blob is not left to be written over, and a relaunch reads the reset.
+        let stored = try XCTUnwrap(UserDefaults.standard.data(forKey: key), "the reset's settings are stored at once")
+        XCTAssertNotEqual(stored, blob, "the unreadable blob is not left in place")
+        XCTAssertNoThrow(try JSONDecoder().decode(AppSettings.self, from: stored), "what is stored now decodes")
 
         let stashed = UserDefaults.standard.dictionaryRepresentation().keys
             .filter { $0.hasPrefix(key + ".corrupt-") }
         XCTAssertFalse(stashed.isEmpty, "and it is preserved, in case the bytes are recoverable by hand")
+        XCTAssertTrue(stashed.contains { UserDefaults.standard.data(forKey: $0) == blob }, "the stash holds the original bytes")
         stashed.forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 

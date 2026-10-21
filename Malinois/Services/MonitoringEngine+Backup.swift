@@ -13,6 +13,15 @@ extension MonitoringEngine {
     /// (item 120, F1): Home's row said "iCloud ready" and the arming screens said nothing.
     static let backupOffNotice = "iCloud backup is off: new events stay on this iPhone."
 
+    /// Home's notice when the launch check finds this phone's iCloud copies gone and queues them again (item 87). With
+    /// iCloud backup off they upload only once it is turned back on; the notice said "uploading" (claude-1, found while
+    /// checking Fable's fable-5 on 75). Pure (unit-tested).
+    nonisolated static func cloudReuploadNotice(requeued: Int, backupOn: Bool) -> String {
+        let found = "iCloud no longer held this phone's records, as happens when iCloud data is deleted in iOS Settings. "
+        return backupOn ? found + "This phone is uploading \(requeued) of them again."
+            : found + "\(requeued) of them will upload again when iCloud backup is turned back on."
+    }
+
     /// Whether iCloud backup lets this record upload. While backup is off nothing does, except the
     /// entry recording that it was turned off, so the cloud log shows it even when its first upload
     /// fails. An event recorded while backup was off never uploads, even once it is back on (the
@@ -35,6 +44,7 @@ extension MonitoringEngine {
         if !on { logStateChange(Event.backupOffKind) }
         settings.cloudBackup = on
         settings.save()
+        refreshCloudReuploadNotice()   // the launch check's notice, in the words for the switch now (codex-1 on 76)
         guard on else { return true }
         logStateChange(Event.backupOnKind)
         sweepAfterTheRunningOne()

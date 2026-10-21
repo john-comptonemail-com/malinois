@@ -40,6 +40,8 @@ struct MalinoisApp: App {
         #endif
         // Before anything can arm: whether the tamper warning still shows how to disarm (item 107).
         OnboardingState.seedHasDisarmedOnce()
+        // Before anything can arm: whether the one-time screen before the first arm is due (item 131).
+        OnboardingState.seedFirstArmBriefing()
         // Clear clip temp files a failed store-move orphaned (disk full mid-recording), and
         // pending recordings no event took (item 108, F8). Off the launch path — nothing waits
         // on it, and it only touches files over a day (temp) or a month (pending) old.

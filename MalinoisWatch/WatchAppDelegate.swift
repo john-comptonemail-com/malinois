@@ -5,7 +5,9 @@
 //  Registers the watch for the Malinois alert pushes (item 57, ADR 0042). The watch registers its
 //  own device token, so an alert reaches the wrist over the watch's own connection, also when the
 //  armed iPhone is the watch's own: an armed iPhone stays in the foreground and never forwards its
-//  notifications to its watch. The push carries the alert's fixed text; nothing is fetched.
+//  notifications to its watch. The push carries the alert's fixed text; nothing is fetched. The alerts
+//  its own iPhone relays (ADR 0043) are handled by `WatchRelayInbox` (ADR 0051), which pairs each with
+//  iCloud's copy of the same event; the watch's alert extension shows iCloud's (ADR 0052).
 //
 
 import CloudKit
@@ -42,23 +44,24 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     nonisolated static let lastAlertReceivedKey = "com.malinois.watch.lastAlertReceived"
     /// Which path brought that alert, kept beside it.
     nonisolated static let lastAlertSourceKey = "com.malinois.watch.lastAlertSource"
-    /// The relayed alerts already shown, the newest 50, kept across launches (the 1.6 review's
-    /// finding 5): the iPhone sends an alert live while the app is open and queued as well, and a
-    /// copy arriving after the app restarted must not alert again.
-    nonisolated static let shownRelayIDsKey = "com.malinois.watch.shownRelayIDs"
     private let log = Logger(subsystem: "com.johncompton.Malinois.watchkitapp", category: "alerts")
     /// Background wakes for the iPhone link, held until the delivered alerts are handled.
     private var linkTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
-    /// The relayed alerts already shown, so a repeated delivery is not shown twice, and those being
-    /// posted now (item 108, CE-03).
-    private var relayLedger = WatchAlertStatus.RelayLedger(
-        shown: UserDefaults.standard.stringArray(forKey: WatchAppDelegate.shownRelayIDsKey) ?? [])
+    /// The relayed alerts' handling (ADR 0043, ADR 0051): each event once, kept across launches (the
+    /// iPhone sends an alert live while the app is open and queued as well, and a copy arriving after
+    /// the app restarted must not alert again); one more than an hour old joins one summary; iCloud's
+    /// copy of the event in the list is paired with it (ADR 0052).
+    private let relayInbox = WatchRelayInbox(
+        post: { request in try await UNUserNotificationCenter.current().add(request) },
+        delivered: { await WatchAppDelegate.deliveredAlerts() },
+        remove: { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: $0) })
     /// Set when the link's activation completes without activating; a held wake then ends, since
     /// nothing more can arrive (the 1.6 review's finding 6). Cleared at each new activation.
     private var activationFailed = false
-    /// Relayed alerts the link has handed over but the app has not yet posted. The link reports
-    /// nothing pending as soon as it has handed an alert over, so a wake is held until this is zero
-    /// too (TestFlight 1.6 (60), Test 3: a wake ended in between could lose the alert).
+    /// Relayed alerts the link has handed over but the app has not yet handled (posted on their own or
+    /// in the summary, or passed over as already shown). The link reports nothing pending as soon as it
+    /// has handed an alert over, so a wake is held until this is zero too (TestFlight 1.6 (60), Test 3:
+    /// a wake ended in between could lose the alert).
     private let alertsInFlight = OSAllocatedUnfairLock(initialState: 0)
 
     func applicationDidFinishLaunching() {
@@ -114,29 +117,11 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         task.setTaskCompletedWithSnapshot(false)
     }
 
-    /// Shows a relayed alert as a local notification on the wrist, once per event. The alert is
-    /// remembered, and recorded for the screen, only once it was posted (item 108, CE-03), so a
-    /// later copy of one that failed is tried again.
+    /// Hands a relayed alert to the inbox, which shows it on the wrist with its time, joins it to the
+    /// summary, or knows it already (ADR 0051). Recorded for the screen only once something was posted
+    /// (item 108, CE-03).
     private func showRelayed(_ message: WatchAlertMessage) async {
-        let id = message.notificationIdentifier
-        guard relayLedger.begin(id) else { return }
-        let content = UNMutableNotificationContent()
-        content.title = message.title
-        content.body = message.body(deliveredAt: Date())   // dated when it arrives late
-        content.sound = .default
-        content.interruptionLevel = message.isTimeSensitive ? .timeSensitive : .active
-        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
-        var posted = false
-        do {
-            try await UNUserNotificationCenter.current().add(request)
-            posted = true
-        } catch {
-            log.error("Relayed alert not shown: \(Self.reference(error), privacy: .public) \(error, privacy: .private)")
-        }
-        relayLedger.finish(id, posted: posted)
-        guard posted else { return }
-        UserDefaults.standard.set(relayLedger.shown, forKey: Self.shownRelayIDsKey)
-        recordAlert(source: .iPhoneLink)
+        if await relayInbox.receive(message) { recordAlert(source: .iPhoneLink) }
     }
 
     /// Each time the app is opened: sign up again (a token can change), read the newest delivered
@@ -145,17 +130,32 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     func applicationDidBecomeActive() {
         WKApplication.shared().registerForRemoteNotifications()
         Task {
+            await relayInbox.reconcile()   // iCloud's copies of alerts already shown (ADR 0052)
             await refreshLastAlert()
             await requestNotificationPermission()
             await refreshCloud()
         }
     }
 
-    /// An alert push arrived; the system shows the alert itself. Recorded for the screen.
+    /// An alert push arrived; the system shows the alert itself, through the alert extension (ADR 0052).
+    /// The push can wake the app (its remote-notification background mode; whether and when is up to
+    /// watchOS): recorded for the screen, then iCloud's copies of events already handled leave the list,
+    /// which keeps the relayed copies, with their times. The tidy-up's read of the list has a deadline, so
+    /// the wake ends in time.
     func didReceiveRemoteNotification(_ userInfo: [AnyHashable: Any],
                                       fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void) {
         recordAlert(source: .iCloud)
-        completionHandler(.newData)
+        Task {
+            await relayInbox.reconcile()
+            completionHandler(.newData)
+        }
+    }
+
+    /// The watch's notification list, as the pairing reads it (ADR 0052).
+    static func deliveredAlerts() async -> [WatchAlertPairing.Delivered] {
+        await UNUserNotificationCenter.current().deliveredNotifications().map {
+            WatchAlertPairing.Delivered(identifier: $0.request.identifier, content: $0.request.content)
+        }
     }
 
     private func recordAlert(at date: Date = Date(), source: WatchAlertStatus.AlertSource) {
@@ -213,14 +213,15 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         }
     }
 
-    /// An alert arriving while the app is open still shows, and is recorded.
+    /// An alert arriving while the app is open still shows, and is recorded; the summary's quiet
+    /// updates are listed only (ADR 0051).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler:
                                                 @escaping (UNNotificationPresentationOptions) -> Void) {
         let identifier = notification.request.identifier
         Task { @MainActor in self.recordAlert(source: WatchAlertStatus.source(ofNotification: identifier)) }
-        completionHandler([.banner, .sound, .list])
+        completionHandler(WatchRelayInbox.presentationOptions(for: notification.request.content))
     }
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,

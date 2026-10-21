@@ -2,7 +2,7 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.7.1 (71)**. Start with the practical guide below.
+This document describes **Malinois 1.8 (77)**. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
 
@@ -16,6 +16,7 @@ knowledge.
 
 - [What Malinois is designed to protect](#what-malinois-is-designed-to-protect)
 - [What to enable before leaving your phone](#what-to-enable-before-leaving-your-phone)
+- [When you come back](#when-you-come-back)
 - [What happens when a sensor triggers](#what-happens-when-a-sensor-triggers)
 - [Your PIN, Guided Access and device authentication](#your-pin-guided-access-and-device-authentication)
 - [Where events and recordings are stored](#where-events-and-recordings-are-stored)
@@ -60,6 +61,13 @@ so a normal button press does not lock the screen and suspend the watch. In Sire
 mode, disable Volume Buttons too. Turn off Voice Control before arming: its command
 to close an application has been observed to close Malinois even under Guided Access.
 
+**Know which settings Malinois can check.** It checks that Guided Access is on: Home
+shows it, and by default arming requires it. iOS doesn't let it see the rest, so these
+are up to you: Guided Access's Side Button option off (and Volume Buttons off in Siren
+mode); Voice Control off; Screen Time's **Deleting Apps** set to **Don't Allow**, behind
+a Screen Time passcode of its own; and iOS set to ask before new wired accessories
+connect.
+
 **Choose the sensors, camera and response you need.** Wait for the countdown and
 calibration to finish. Monitoring begins when calibration finishes, including while
 the brief calibration-complete screen is still visible. The earlier countdown and
@@ -77,6 +85,18 @@ camera indicator. Sound monitoring uses the microphone; iOS shows its microphone
 green camera indicator taking precedence while the camera is live. Metering alone
 does not save an audio recording.
 
+## When you come back
+
+**Before typing your PIN,** look at "Armed for" above the pad: it should match how long
+ago you armed. **After disarming,** Home's "Last armed" line should start at the time
+you armed. If it starts later, the session you started ended and another began: someone
+disarmed and re-armed with your PIN, or Malinois was interrupted and re-armed itself.
+
+**Then read every Event Log entry since you armed,** not just the newest. A disarm you
+didn't make, "Monitoring interrupted" or a wrong PIN means someone tried, even if the
+phone looks exactly as you left it. With Pro, look at the alerts on your other devices
+too.
+
 ## What happens when a sensor triggers
 
 The app first attempts to save an event record. For eligible Pro events, it begins
@@ -91,7 +111,11 @@ necessarily produce several separate rows or videos.
 
 Your response setting controls the normal on-device reaction. Alert, the default,
 shows a silent warning. On a new install the warning also shows how to disarm until
-your first disarm; after that it never does, so a later intruder is not told. Siren mode uses photos instead of clips so capture does not
+your first disarm; after that it never does, so a later intruder is not told. Since 1.8 a
+new install's first Start countdown also brings a one-time screen, seen only by the owner
+before the countdown, with the hold and, under Guided Access, how to end it (including that
+a forced restart ends it); the countdown waits for its "I understand", and the automatic
+re-arm after a crash never shows it (ADR 0050). Siren mode uses photos instead of clips so capture does not
 take over the audio needed for the alarm. Its optional volume ramp gives you time
 to disarm before the alarm reaches full volume.
 
@@ -171,7 +195,10 @@ Malinois is installed over this one. Events recorded before it was turned off up
 is back on. Existing iCloud copies are not deleted. Turning Malinois off for iCloud in iOS
 Settings also stops uploads, but what was recorded meanwhile uploads when it is back on.
 While backup is off, Home shows it in orange in place of its iCloud row, and the Guided Access
-step and the countdown say it before each arm (1.7 (70)). ADR 0047.
+step and the countdown say it before each arm (1.7 (70)). ADR 0047. If the stored settings ever
+cannot be read (the app then starts from its defaults, and says so), the backup and cross-device
+alerts switches keep the owner's choices where the damaged settings still show them; where
+backup's cannot be read, backup is off rather than on (1.8, ADR 0049).
 
 The cloud storage setting can keep full media indefinitely, clean it up manually,
 or remove it automatically after the selected age. App cleanup preserves event
@@ -214,17 +241,26 @@ Verification does not silently adopt records whose original account is unknown.
 For example, an event with an unknown original account stays local after verification;
 a new event bound to the verified account can be submitted for upload. This does not
 make every hold permanent: a temporary verification pause is a different condition.
+Home tells the two apart: while a verified installation waits for iCloud (offline, or just
+after a relaunch) its iCloud row says **Waiting for iCloud**; while new events would be tied to
+no account (before the first verification, or after another account was seen) it asks for
+verification and says that events recorded before then stay on this iPhone.
 
 Account changes invalidate pending cloud work, and stale results must not be
 attached to the local log. Work already accepted by the server cannot be recalled.
 The [cloud reference](#cloud-cloudkit) describes these checks and the existing
 cloud-deletion detection and recovery conditions.
 
-Cross-device notifications use generic tamper and disarm text. The notification
-extension does not fetch private event details. From 1.6 an Apple Watch on which Malinois
-has been opened once shows the same alerts: from your other devices through iCloud, and from
-its own iPhone straight over Bluetooth or shared Wi-Fi, and in testing also with the watch on a
-different network from the phone. It reads no event records. On Pro, a watch with verified cloud
+Cross-device notifications use generic tamper and disarm text. Neither alert extension (the
+iPhone's, and from 1.8 (75) the watch's) fetches private event details. From 1.6 an Apple Watch on
+which Malinois has been opened once shows the same alerts: from your other devices through iCloud,
+and from its own iPhone straight over Bluetooth or shared Wi-Fi, and in testing also with the watch
+on a different network from the phone. Its own iPhone's alerts now come through iCloud too; since
+1.8 (75) the watch pairs the two copies of an event and keeps one entry, with the event's time; since 1.8 (77) the
+watch asks for an alert for the relayed copy every time, so when iCloud's comes first there can be two taps; watchOS
+and the notification settings decide the actual sound and tap (details under the Apple Watch app below). Its own iPhone's alerts name the event's time, and since 1.8 (73)
+those more than an hour old, for example after the watch was off, arrive as one summary: how many
+there were, and the latest one's kind and time. It reads no event records. On Pro, a watch with verified cloud
 access and a matching account binding attempts a heartbeat every five minutes.
 Another device can show when that watch was last heard from. Failed heartbeats are not uploaded later; a gap can reflect a connection
 problem and is not proof of tampering.
@@ -259,13 +295,21 @@ accessories and Guided Access exceptions, see [Known limitations](#non-goals--kn
 
 ## Report a security issue
 
-Email **support@comptonemail.com**. Do not open a public issue containing sensitive
-security details. Include the app and iOS versions, the steps that reproduce the
-problem, what you expected, and what happened instead. Name relevant source files
-if you know them; you do not need to read code to report a problem.
+Report it privately, either way:
 
-Reports receive an acknowledgement. Fixes ship through the App Store, and this
-repository mirrors the source for each shipped release.
+- **On GitHub:** **Report a vulnerability**, on the public repository's
+  [Security tab](https://github.com/john-comptonemail-com/malinois/security). Only you
+  and the developer see the report.
+- **By email:** **support@comptonemail.com**.
+
+Please don't put security details in a public issue. Include the app and iOS versions,
+the steps that reproduce the problem, what you expected, and what happened instead. Name
+relevant source files if you know them; you do not need to read code to report a
+problem.
+
+You will get a reply within 7 days. Confirmed problems are fixed in an App Store update,
+and this repository mirrors the source for each shipped release. Malinois is a
+one-person project and has no bug bounty.
 
 <a id="defenses"></a>
 
@@ -289,7 +333,7 @@ picking it up, unplugging it, plugging it into a computer, searching around it, 
 trying to power it off before the evidence escapes.
 
 **Adversary tiers:**
-- **Tier 1 — opportunistic snoop or thief, no credentials.** The design target,
+- **Tier 1 — opportunistic snoop or intruder, no credentials.** The design target,
   subject to sensor coverage, foreground execution, storage and delivery limits below.
 - **Tier 2 — someone holding one of the owner's credentials.** Bounded outcomes: a PIN
   holder can stop *future* monitoring. The app has no individual-event delete control;
@@ -359,7 +403,7 @@ built) the way it is — skip them on a first read; return to them before propos
 <details>
 <summary>Threat model and credentials</summary>
 
-**Who:** an opportunistic snoop or thief with brief **physical access** to your
+**Who:** an opportunistic snoop or intruder with brief **physical access** to your
 unattended, unlocked iPhone while you're away from it. They can pick it up,
 tilt/move it, unplug it (or **plug it into a computer** to pull data off it), make
 noise near it, tap the screen, or try to power it off.
@@ -374,7 +418,7 @@ delivery before shutdown is guaranteed.
 
 **Adversary tiers.** Three, each analyzed and *bounded* below:
 
-**Tier 1 — the design target.** The opportunistic snoop or thief above, with
+**Tier 1 — the design target.** The opportunistic snoop or intruder above, with
 no credentials. The documented operating conditions and limits still apply.
 
 **Tier 2 — credentialed insiders (in scope, with bounded outcomes).** A partner, colleague,
@@ -444,7 +488,11 @@ something specific and leaves something behind (details in
   does not remove), so since 1.4 the app looks: at each launch it asks iCloud for its newest
   records that went up, by name, and when most are gone it can requeue eligible local
   records for upload and say so on Home. Cloud verification and account checks apply;
-  requeueing does not mean that the subsequent upload has succeeded. It does so only while the device is signed into the account those
+  requeueing does not mean that the subsequent upload has succeeded. The check also runs with
+  iCloud backup off; the requeued records then wait until backup is turned back on, as Home's
+  notice says since 1.8 (76). So an owner's
+  own deletion in iOS Settings lasts only while this phone keeps iCloud backup off or no longer
+  holds the events. The requeue happens only while the device is signed into the account those
   records went to (remembered the first time it found them in place); under another account it
   declines that recovery requeue and says so. Since 1.5.1 ordinary uploads are bound as
   well: each event carries the account it was captured under, and evidence whose account
@@ -475,7 +523,7 @@ lines fall:
   device is outside Malinois's guarantees, including any guarantee that its cloud
   copy cannot be altered. Existing cloud copies may remain available, but the app
   cannot promise they are beyond an attacker controlling an authorized client.
-- **Credential theft:** the outcome depends on the credential and interface obtained.
+- **Compromised credentials:** the outcome depends on the credential and interface obtained.
   Ordinary storage controls permit wholesale deletion; access through an authorized
   cloud client can have broader consequences. The app's verification and account-binding
   checks are not cryptographic proof of a record's originating device or integrity. The
@@ -513,7 +561,7 @@ Two consequences matter for the threat model:
 1. **Malinois's CloudKit evidence uploads require Pro.** The "two-shot exfiltration races a
    power-off" design below applies only on Pro (or in trial), and delivery can fail. A **free** or
    lapsed-trial device does not upload evidence through Malinois. If that device is
-   taken or wiped, Malinois has no new cloud copy of those events to restore. Device backups may contain
+   lost or wiped, Malinois has no new cloud copy of those events to restore. Device backups may contain
    separate copies, but their completion and contents are not assured by the app.
    The app and trial-end notification state the loss of Malinois cloud protection.
 > **Design note — the trial clock fails toward the user.** `trialActive` treats a
@@ -554,8 +602,8 @@ Two consequences matter for the threat model:
   device-authenticated recovery, rather than minting a replacement salt over the gap —
   which could never match, silently bricking the PIN (fourth pass, R1-M1).
 - **Brute-force lockout:** after 5 failed attempts the pad locks with escalating
-  backoff (30s → 1m → 2m → … up to **1 hour**, doubling — it keeps growing rather than
-  plateauing, so a determined offline brute-force stays impractical). The counter lives
+  backoff (30s → 1m → 2m → … up to **1 hour**, doubling, and then every further wrong PIN waits
+  the full hour, so guessing on the phone itself stays impractical). The counter lives
   in the Keychain, so **killing the app does not reset it**, and the remaining wait is
   measured against the **monotonic uptime clock, not the wall clock** — so moving the
   device's date forward can't skip it, and a reboot is a dead end rather than a bypass
@@ -613,9 +661,13 @@ Two consequences matter for the threat model:
      by moving the device clock forward, which is the F-09 attack the uptime clock was chosen
      to defeat. Adding it back would reintroduce a bypass that needs only Settings access, in
      exchange for defending one that needs the device passcode.
-- **Design note — the iteration count.** A 4-digit space is only 10k candidates, so no
-  KDF makes an offline crack "impossible" — PBKDF2 raises the per-guess cost, and the
-  on-device lockout is the primary defense against online guessing.
+- **Design note — the iteration count.** A 4-digit PIN has only 10,000 possibilities (a
+  6-digit one, a million), so no key derivation can protect it from an offline attack:
+  anyone holding the hash and salt could try every 4-digit PIN within minutes. PBKDF2
+  only raises the cost of each try. What keeps the hash out of reach is the Keychain:
+  the item is this-device-only and unreadable while the phone is locked, so a device
+  backup carries no usable copy. On the phone itself, the lockout above is what stops
+  guessing.
 - **Anti-observation (opt-in): scramble the PIN pad.** A snoop watching a disarm — the
   core anti-snoop scenario — could learn the PIN from finger *positions* alone, and fixed
   layouts also leak via smudge or thermal residue on the glass. An optional setting
@@ -637,14 +689,15 @@ Two consequences matter for the threat model:
   and PIN-protected cloud cleanup can remove eligible old full media and heartbeat
   trails. The cloud cleanup floor does not protect local records from count or byte limits.
   (The Home button's event *count* shows without the PIN — a deliberate glanceability
-  trade: it is the local count, which an iCloud-only attacker
-  cannot change, and it reveals volume, never content. Since 1.4 it counts only the records
+  trade: it counts the log's records, including those mirrored from the owner's other devices,
+  so someone with the owner's iCloud account can add to it; it reveals volume, never content. Since 1.4 it counts only the records
   that are new since the Event Log was last opened or closed, so only someone who can open the
   log can clear it: the PIN, or Face ID or Touch ID where the owner turned that on for the log.
   The acknowledgment happens before the authenticated navigation transition; cancelling a PIN
   prompt or receiving a late cloud result after closure does not clear unread records.)
-- **Every screen that reveals configuration is PIN-gated too.** The Event Log, Settings, and
-  *Test sensors* all sit behind the same gate. The owner may opt the two READ surfaces —
+- **The screens that show the log or change settings are PIN-gated too.** The Event Log, Settings, and
+  *Test sensors* all sit behind the same gate (Home and the arming screens show status, such as
+  iCloud, Guided Access and the camera, without the PIN). The owner may opt the two READ surfaces —
   the Event Log and Test sensors — into Face ID, or Touch ID on an iPhone SE (off by default);
   **Settings never accepts a face or a finger, whatever the toggle says**: it is a *write*
   surface (tripwires, response mode,
@@ -720,7 +773,7 @@ Two consequences matter for the threat model:
   camera takes the later copy that adds the other, which can arrive after it as late
   evidence. This is not a guarantee that either camera always succeeds.
 - **Bounded retry.** Because a single dropped push at trigger time can mean lost
-  evidence — a stolen device never comes back to retry — each push retries transient
+  evidence — a device that is lost or destroyed never comes back to retry — each push retries transient
   CloudKit failures (network loss, throttling) with backoff, honoring the server's
   retry-after, but capped to a few attempts and to 4 s per wait to limit time spent
   racing a shutdown. These limits do not guarantee completion within iOS's background
@@ -777,7 +830,9 @@ Two consequences matter for the threat model:
   locally even if unsynced. Count trimming does not delete records from iCloud. The
   cloud-cleanup minimum age of 30 days does not apply to these local storage limits.
   A copy previously marked synced may no longer exist remotely; re-download is
-  possible only while that cloud copy remains. A
+  possible only while that cloud copy remains. Since 1.8 the media cap is applied as soon as
+  media is attached (a capture, a download or a recovered file), not only at the next event:
+  on a phone at the cap the oldest synced media goes first, which can be a download itself. A
   pending capture the byte cap must discard in a storage emergency is
   **marked on its event** so the loss is visible. A launch-time
   sweep also reclaims media files no event references (true leaks); it deletes nothing
@@ -924,7 +979,9 @@ where the tell is the *pattern* of triggers, not any single one:
   activity" counter event instead of hundreds, and the app **goes loud** (abandons Stealth with an on-screen warning; the siren joins only in Siren mode — suspected jamming is the one escalation that always sirens). Crucially, coalescing suppresses **log spam and upload volume, not
   evidence**: capture continues on a bounded cadence (a photo every ~20 s) so a real
   tamper that looks like a flood still gets capture attempts, subject to camera
-  availability and the cadence limit. A
+  availability and the cadence limit. Each of those photos is its own record, so with Pro and
+  cross-device alerts on, each also alerts the owner's other devices and the paired watch, about
+  every 20 seconds while the flood lasts. A
   **byte-aware retention cap** keeps synthetic clips from filling storage (their log
   entries are kept), and **both** the media (byte) cap **and** the event (count) cap
   prefer dropping coalesced flood records before ordinary incidents. This reduces
@@ -968,7 +1025,7 @@ where the tell is the *pattern* of triggers, not any single one:
 Malinois cannot guarantee detection of every loss of service. It cannot force
 bits out of a jammed radio, and iOS exposes no signal-strength API — so it detects
 the **symptom** (total loss of every network path), never the cause. The
-discriminators below make that meaningful for a stationary anti-theft deployment
+discriminators below make that meaningful for a phone left armed in one place
 rather than jumpy:
 
 - **Canary baseline.** It records whether a usable path existed *at arm*. Only the
@@ -1095,7 +1152,9 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   a photo record that finished uploading late for an old event follows its event's age,
   which avoids treating upload delay as a new capture; eighth review, L2.) A purge whose walk couldn't
   read every candidate record reports failure rather than "Deleted" — under-deletion
-  stays the safe direction, but observably so (ninth review, R3-3). The auto modes also
+  stays the safe direction, but observably so (ninth review, R3-3). The photo cleanup, manual or
+  automatic, walks every device's events on the account, not only this phone's, so with several
+  devices the shortest setting among them applies to all. The auto modes also
   delete the per-beat heartbeat records of this phone's past watches, keeping each watch's
   latest beat (ADR 0022). A trail goes only when its watch's last beat, by the server's
   clock, is older than the setting. The trim independently obtains the same conservative
@@ -1124,21 +1183,48 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   installed builds retain their previous alert behavior.
 - **The Apple Watch app only receives (1.6, ADR 0042 and 0043).** It registers its own push
   token, so the subscriptions' fixed alerts from the owner's other devices reach the wrist.
-  iCloud does not send a watch a change made by its own iPhone while the watch is connected
+  In 1.6 iCloud did not send a watch a change made by its own iPhone while the watch was connected
   through that iPhone, so the armed iPhone also sends its own alerts straight to its paired watch
   over WatchConnectivity (Bluetooth or shared Wi-Fi, never iCloud), while this iPhone's
   Cross-device alerts setting is on and Pro is active; the message carries only the fixed alert
-  text, the event's ID and its time. A relayed alert arriving more than a minute late shows the
-  event's time, and a relayed tamper alert is Time Sensitive (ADR 0045). The watch shows each
-  relayed alert once, remembering it only after the post succeeded: a later copy of one it
-  failed to show is shown, and a copy arriving while the first is being posted is not posted
-  twice. The setting is per iPhone: turning alerts off from another device stops the iCloud
+  text, the event's ID and its time. Every relayed alert the watch shows on its own names the
+  event's time (since 1.8 (73); before, only when more than a minute late), and a relayed tamper
+  alert is Time Sensitive (ADR 0045). One whose event is more than an hour old when the watch
+  handles it, by the watch's clock, is not shown on its own (1.8 (73), ADR 0051): it joins one
+  summary, which holds only how many alerts it sums up and the latest one's kind and time, lights
+  the screen and taps when it starts (the ordinary level, not Time Sensitive) and then changes its
+  count quietly; an old alert more than an hour after the summary last changed starts a new one.
+  The watch handles relayed alerts one at a time and shows or counts each once, remembering it
+  only after the post succeeded: a later copy of one it failed to show is tried again, and a copy
+  arriving while the first is being posted waits for it. iCloud now sends the watch its own
+  iPhone's alerts as well, a few seconds before the relayed copy (TestFlight 1.8 (74)). Since 1.8
+  (75) the watch pairs the two by the event's ID, which iCloud's push carries in the name of the
+  record that fired it (ADR 0052): the watch's alert extension shows iCloud's tamper copy Time
+  Sensitive, as the iPhone's does, or quietly when the relayed copy of the event already tapped; the
+  watch app posts the relayed copy as before, a tamper Time Sensitive with sound, whatever the list holds, then
+  removes iCloud's copy from the list. (In 75 and 76 it posted the relayed copy quietly when iCloud's copy was listed
+  as loud; on the owner's watch, with the app closed, tamper alerts then came with no tap: a listed copy need not
+  have tapped. Since 77 it does not.) It also tidies the list
+  when an iCloud push wakes it (the remote-notification background mode; whether and when is up to
+  watchOS), when it opens, and when a repeat of a relayed alert arrives; every pairing or clean-up
+  read of the list has a 2-second deadline, after which a relayed alert is posted as in 74. The watch asks for an
+  alert for each copy it shows on its own: one when the relayed copy comes first (iCloud's then comes quietly); two
+  when iCloud's does, the usual order with the watch app closed; two also when they arrive within a moment of each
+  other, when the first was cleared before the second arrived, when the extension could not read the list, and for
+  an old event, whose iCloud copy and the summary's first post both ask for one; later summary updates are quiet
+  (ADR 0051). watchOS and the notification settings (haptics, Time Sensitive, a Focus) decide the actual sound and
+  tap. One entry per event, subject to the deadline and the clean-up limits above. The setting is per iPhone: turning alerts off from another device stops the iCloud
   alerts at once, but this iPhone keeps relaying to its own watch until its own switch is turned
   off, and its next arm restores the subscriptions as before. The log read at unlock after a launch
   while the phone was locked is not relayed again. The watch reads no event records (its one server call lists the
-  account's subscriptions to confirm the tamper alert exists), writes nothing, never arms or
-  disarms, and compiles none of the iPhone app's cloud code; a test pins that. Nothing reaches
-  the wrist beyond the fixed alert text, so the watch needs no Malinois PIN: its own passcode
+  account's subscriptions to confirm the tamper alert exists), writes nothing to iCloud, never arms or
+  disarms, and compiles none of the iPhone app's cloud code; a test pins that, for its alert
+  extension too, which reads only the push and the watch's list of notifications and keeps
+  nothing. On the watch it
+  keeps only the last alert's time and path and, in one record, the identifiers of the newest 500
+  relayed alerts shown on their own and of the 1,000 summed up with the newest events (with those
+  events' times), and the current summary. Nothing reaches the wrist beyond the fixed alert text, the event's time and
+  a summary's count, so the watch needs no Malinois PIN: its own passcode
   and wrist detection are its boundary. It names the iPhone app's container literally and uses
   the production push environment in release builds.
 - **Heartbeat records (1.4; ADR 0020).** While a watch is live on Pro, online, and
@@ -1292,7 +1378,7 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   instructs users to turn Voice Control off; with it off, the command doesn't exist. And a
   close-while-armed is no longer silent — see the interruption record below.
 - iOS's own **green camera indicator** joins the REC badge whenever a session is live —
-  equally non-suppressible, equally intentional: Malinois is an anti-theft tool, not
+  equally non-suppressible, equally intentional: Malinois guards its own device; it is not
   covert surveillance of others. In every battery mode, eligible Pro events with
   verified cloud access and matching account bindings attempt metadata upload before
   capture. A cold camera delays the photo/clip; it does not delay that upload attempt.
@@ -1388,13 +1474,19 @@ These are out of scope by design — Malinois does not claim to defend against t
   upload. Relaunch attempts automatic re-arm with its guards and countdown; there
   is no monitoring while the app is stopped or during the new countdown/calibration.
 - **Siren volume.** iOS gives no app a way to override the hardware volume buttons,
-  so a thief can turn the siren down. The `.playback` category defeats the silent
+  so whoever has the phone can turn the siren down. The `.playback` category defeats the silent
   switch, and the on-screen warning + already-escaped evidence are the deterrents
   that don't depend on audio — but the alarm's loudness itself isn't guaranteed.
   Mitigations shipped: the arming screen tells Siren-mode users to disable **Volume
   Buttons** in Guided Access → Options (so the siren's volume can't be lowered while
   armed), and a low-volume warning is now re-sampled at go-live — not just at the
   start of arming — so it reflects the volume the device will actually alarm at.
+- **Siren route.** The siren plays wherever the iPhone's sound goes: with headphones, AirPods, a
+  Bluetooth speaker, AirPlay or a car connected it plays there, not in the room (on the owner's
+  iPhone with AirPods, 2026-10-20; it moved back to the iPhone as soon as they went in their case).
+  Since 1.8 (76) the countdown says so in Siren mode, reading the route iOS gives the siren's own
+  audio setting at arm and at each tick. Nothing pins the siren to the speaker, and headphones
+  connected after the countdown still take it (ADR 0053).
 - **Power tripwire is bidirectional but connection-state only.** The Power / Cable
   tripwire fires on a power-connection change in **either** direction — unplugged, or
   plugged in (the latter catches a device armed on battery being connected to a computer
@@ -1546,7 +1638,10 @@ These are out of scope by design — Malinois does not claim to defend against t
   owed re-arm is **persisted**, not just held in memory, so if iOS terminates the
   background launch before the owner foregrounds it, the next launch still recovers rather
   than silently dropping the re-arm (M4). The crash-loop guard is timed against actual
-  re-arm *attempts*, so a re-arm that was only deferred never counts toward it.
+  re-arm *attempts*, so a re-arm that was only deferred never counts toward it. Two attempts
+  within 90 seconds stop the automatic re-arm; since 1.8 (76) Home then says so ("Not re-armed
+  automatically ..."), until the owner's next arm. Someone who can close the app twice within
+  90 seconds gets the same, and each close is still recorded.
 - **The recovery countdown itself leaves a marker (F1, external review round 11).** The window
   between consuming the owed re-arm flag and re-engaging covert used to hold no persistent
   state, so killing the app a second time *during* the visible recovery countdown left the next
@@ -1589,8 +1684,12 @@ These are out of scope by design — Malinois does not claim to defend against t
   *sandbox* token, and the CloudKit subscription that alerts the owner's other devices
   would silently never arrive. Keep the two files in sync when adding capabilities (both
   carry Time Sensitive Notifications since 1.4). The alert extension signs with its own file,
-  which names the app's CloudKit container and nothing else: the Time Sensitive level it sets
+  which holds no entitlement since 1.8 (until then it named the app's CloudKit container, unused
+  since 1.5.1): it reads only which subscription sent the push. The Time Sensitive level it sets
   on tamper alerts works through the app's capability, as device tests in 1.4 and 1.6 showed
-  (ADR 0045). Apple does not document that, so a signing change calls for that device test again.
+  (ADR 0045). Apple does not document that, so a signing change calls for that device test again,
+  and 1.8's TestFlight repeats it. The watch's alert extension (1.8 (75)) signs with its own empty
+  file as well; its Time Sensitive level relies on the watch app's capability, which TestFlight
+  1.8 (75) checks with a Focus on the wrist.
 
 </details>

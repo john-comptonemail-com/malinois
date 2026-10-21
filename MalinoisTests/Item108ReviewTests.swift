@@ -240,16 +240,21 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertEqual(full.shown.last, "new")
     }
 
-    /// The watch posts first and records the alert only when the post succeeded.
+    /// The watch posts first and records the alert only when the post succeeded. Since 1.8 (73) the
+    /// watch's `WatchRelayInbox` posts and remembers (ADR 0051; a failed post is driven through it in
+    /// Item134WatchSummaryTests), and the watch app records what the inbox says it posted.
     func testTheWatchPostsBeforeRememberingOrRecording() throws {
+        let inbox = try text("MalinoisWatch/WatchRelayInbox.swift")
+        let handle = try section(inbox, from: "private func handle(", to: "\n    }\n")
+        let post = try XCTUnwrap(handle.range(of: "try await post(request)"))
+        let remember = try XCTUnwrap(handle.range(of: "ledger.finish("))
+        XCTAssertLessThan(post.lowerBound, remember.lowerBound)
+        XCTAssertTrue(handle.contains("ledger.begin("))
         let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
         let show = try section(delegate, from: "private func showRelayed(", to: "\n    }\n")
-        let post = try XCTUnwrap(show.range(of: ".add(request)"))
-        let remember = try XCTUnwrap(show.range(of: "relayLedger.finish("))
+        let posted = try XCTUnwrap(show.range(of: "relayInbox.receive(message)"))
         let record = try XCTUnwrap(show.range(of: "recordAlert(source: .iPhoneLink)"))
-        XCTAssertLessThan(post.lowerBound, remember.lowerBound)
-        XCTAssertLessThan(post.lowerBound, record.lowerBound)
-        XCTAssertTrue(show.contains("relayLedger.begin("))
+        XCTAssertLessThan(posted.lowerBound, record.lowerBound)
     }
 
     // MARK: - F8: the torch waits for storage; orphaned clips are reaped
@@ -361,10 +366,33 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertTrue(ArmingView.unconfinedWarning.contains("unlocked"))
         XCTAssertTrue(ArmingView.unconfinedWarning.contains("Stay nearby"))
         XCTAssertFalse(ArmingView.unconfinedWarning.contains("\u{2014}"), "no em-dash")
-        let arming = try text("Malinois/Views/ArmingView.swift")
-        let guided = try section(arming, from: "private var guidedAccessStep: some View {", to: "\n    }\n")
-        let grace = try section(arming, from: "private var graceStep: some View {", to: "\n    }\n")
-        XCTAssertTrue(guided.contains("ArmingView.unconfinedWarning") || guided.contains("Self.unconfinedWarning"))
-        XCTAssertTrue(grace.contains("ArmingView.unconfinedWarning") || grace.contains("Self.unconfinedWarning"))
+    }
+
+    /// Both arming screens show the warning, as laid out (item 124's test housekeeping: this read the
+    /// screens' source before): the Guided Access step and the countdown, for an arm whose requirement
+    /// was lifted while Guided Access is off (the simulator has none).
+    @MainActor
+    func testBothArmingScreensShowTheWarningForAnArmWithoutGuidedAccess() throws {
+        // Each screen on an engine of its own: closing a test's window ends the arming screen, which
+        // clears an unused lift (as leaving the screen does in the app).
+        for countdown in [false, true] {
+            let settings = AppSettings()
+            settings.gracePeriodSeconds = 60
+            settings.requireGuidedAccess = true
+            let entitlements = ProEntitlements(resolvedAs: .trial)
+            let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: EventStore(), cloud: CloudExfiltrator(),
+                                                              camera: FakeCamera(), entitlements: entitlements,
+                                                              timing: EngineCharacterizationTests.fastTiming))
+            engine.beginArming()
+            engine.liftGuidedAccessRequirementForThisArm()
+            if countdown {
+                engine.confirmGuidedAccessAndStartGrace()
+                XCTAssertEqual(engine.state, .arming, "counting down")
+            }
+            let screen = ArmingView().environmentObject(engine).environmentObject(entitlements).environmentObject(settings)
+            XCTAssertTrue(try shownOnScreen(screen).shown.contains(ArmingView.unconfinedWarning),
+                          countdown ? "the countdown" : "the Guided Access step")
+            engine.cancelArming()
+        }
     }
 }

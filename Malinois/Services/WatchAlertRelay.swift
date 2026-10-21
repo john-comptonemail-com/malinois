@@ -18,17 +18,20 @@ import WatchConnectivity
 @MainActor
 final class WatchAlertRelay {
     /// Pure (unit-tested): the alerts newly added events earn, on the iCloud alerts' terms
-    /// (Cross-device alerts on, Pro active). A first-hand incident sends the tamper alert and a
-    /// first-hand disarm the disarm alert; another device's events arrive through iCloud, and the
-    /// silent status entries alert nobody.
+    /// (Cross-device alerts on, Pro active). A first-hand incident sends the tamper alert; a
+    /// first-hand status entry sends the disarm alert exactly when iCloud sends one for it, a disarm
+    /// or a countdown someone cancelled, by iCloud's own rule (`disarmSignalWanted`, item 124's F10:
+    /// a cancelled countdown used to reach no watch). Another device's events arrive through iCloud,
+    /// and the other status entries alert nobody.
     nonisolated static func alerts(for newEvents: [Event], alertsOn: Bool, proActive: Bool) -> [WatchAlertMessage] {
         guard alertsOn, proActive else { return [] }
         return newEvents.compactMap { event -> WatchAlertMessage? in
             guard !event.isMirrored else { return nil }
-            if event.stateChange == "disarmed" {
+            if let kind = event.stateChange {
+                guard CloudExfiltrator.disarmSignalWanted(kind: kind) else { return nil }
                 return WatchAlertMessage(kind: .disarm, eventID: event.id, at: event.startDate)
             }
-            return event.isStateChange ? nil : WatchAlertMessage(kind: .tamper, eventID: event.id, at: event.startDate)
+            return WatchAlertMessage(kind: .tamper, eventID: event.id, at: event.startDate)
         }
     }
 

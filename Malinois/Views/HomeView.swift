@@ -9,6 +9,33 @@
 import SwiftUI
 
 struct HomeView: View {
+    /// Home's orange line while what this installation records stays on this iPhone until it verifies iCloud access:
+    /// before its first verification, or after another account was seen (item 140 pins its words).
+    /// Said when the crash-loop guard declined an automatic re-arm (fable-3 on Fable's review of 75; item 132).
+    static let reArmSkippedNotice = "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming "
+        + "itself. Arm it again when you're ready."
+    static let iCloudPausedNotice = "iCloud is paused. Verify iCloud access in Settings to back up new events; events recorded before then stay on this iPhone."
+    /// The iCloud row while a verified installation waits for iCloud, offline or after a relaunch: what it records
+    /// uploads once iCloud names the verified account again (item 140's codex-1).
+    static let iCloudWaitingRow = "Waiting for iCloud"
+
+    /// The iCloud row's words on Pro with iCloud backup on: iOS's account state, or, while iOS reports an account but
+    /// this installation's access is not current, whether new events wait for the verified account (`newEventsBound`,
+    /// `CloudEnrollment.newEventsBindToVerifiedAccount`) or a verification is needed.
+    static func iCloudRow(_ account: CloudExfiltrator.AccountState, verified: Bool, newEventsBound: Bool) -> String {
+        guard account.isReady, !verified else { return account.displayName }
+        return newEventsBound ? iCloudWaitingRow : "iCloud verification needed"
+    }
+
+    /// Home's orange iCloud line, or nil for none (item 140's codex-1): on Pro, with iCloud backup on (off, the
+    /// backup-off line says new events stay here), in a build with iCloud, while this installation's access is not
+    /// current and new events are tied to no verified account (`newEventsBound` false): only a verification helps.
+    static func iCloudPauseLine(proActive: Bool, backupOn: Bool, verified: Bool, newEventsBound: Bool,
+                                cloudUnavailable: Bool) -> String? {
+        guard proActive, backupOn, !verified, !newEventsBound, !cloudUnavailable else { return nil }
+        return iCloudPausedNotice
+    }
+
     @EnvironmentObject private var engine: MonitoringEngine
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var cloud: CloudExfiltrator
@@ -16,6 +43,7 @@ struct HomeView: View {
     @EnvironmentObject private var entitlements: ProEntitlements
     @ObservedObject private var enrollment = CloudEnrollment.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// PIN-gated areas. Both the event log and Settings require the PIN.
     enum Gate: Identifiable {
@@ -58,7 +86,8 @@ struct HomeView: View {
                 // Item 82: scrolls when taller than the room between the wordmark and the buttons
                 // (the iPhone Duo's outer display, an iPhone SE, large text) instead of squeezing
                 // the notices to one line each. Where it fits, the frame centres it between them,
-                // where the two spacers kept it; scrolling, it adds no height of its own.
+                // where the two spacers kept it; scrolling, it adds no height of its own. At the
+                // accessibility text sizes the buttons are its last part (item 119, `bottomButtons`).
                 VStack(spacing: 18) {
                     statusBadge
 
@@ -98,28 +127,13 @@ struct HomeView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+
+                    if typeSize.isAccessibilitySize { bottomButtons }
                 }
                 .frame(maxHeight: .infinity)
                 .scrollingIfNeeded()
 
-                HStack(spacing: 16) {
-                    Button {
-                        pinGate = .log
-                    } label: {
-                        Label(eventLogTitle, systemImage: "list.bullet.rectangle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        pinGate = .settings
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(.horizontal)
+                if !typeSize.isAccessibilitySize { bottomButtons }
             }
             .padding()
             .navigationBarTitleDisplayMode(.inline)
@@ -233,6 +247,35 @@ struct HomeView: View {
         newCount > 0 ? "Event Log (\(newCount) new)" : "Event Log"
     }
 
+    /// The Event Log and Settings buttons (item 119). Below the part of Home that scrolls they sit side
+    /// by side. At the accessibility text sizes, half the width each, their names broke into a few
+    /// letters a line ("E / v / …"), so there they stack, each the full width with its name whole, at
+    /// the end of the part that scrolls: pinned below it, stacked, they left it a window a few lines
+    /// tall, with ARM out of sight (BACKLOG 128).
+    private var bottomButtons: some View {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+        return layout {
+            Button {
+                pinGate = .log
+            } label: {
+                Label { Text(eventLogTitle).fixedSize(horizontal: false, vertical: true).reportedOnScreen(eventLogTitle) }
+                      icon: { Image(systemName: "list.bullet.rectangle") }
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                pinGate = .settings
+            } label: {
+                Label { Text("Settings").fixedSize(horizontal: false, vertical: true).reportedOnScreen("Settings") }
+                      icon: { Image(systemName: "gearshape") }
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal)
+    }
+
     /// "Last armed 2:15 PM – 3:42 PM · 1:23:45" when the wall-clock window is known;
     /// falls back to duration-only for a session recorded before the interval was tracked.
     private func lastArmedText(duration: TimeInterval, interval: (start: Date, end: Date)?) -> String {
@@ -268,8 +311,8 @@ struct HomeView: View {
                     .reportedOnScreen(MonitoringEngine.backupOffNotice)
             } else if entitlements.proActive {
                 statusRow(ready: cloud.accountState.isReady && enrollment.verified,
-                          text: cloud.accountState.isReady && !enrollment.verified
-                            ? "iCloud verification needed" : cloud.accountState.displayName)
+                          text: Self.iCloudRow(cloud.accountState, verified: enrollment.verified,
+                                               newEventsBound: enrollment.newEventsBindToVerifiedAccount))
             } else {
                 statusRow(ready: false, text: "iCloud backup is Pro - evidence stays on device")
             }
@@ -346,6 +389,14 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            if engine.reArmSkipped {   // fable-3: the crash-loop guard declined the automatic re-arm
+                Label(Self.reArmSkippedNotice, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .reportedOnScreen(Self.reArmSkippedNotice)
+            }
             if engine.cloudRestoreInProgress {
                 // The launch pull (owner, 2026-09-04): while it runs, an empty log is "loading".
                 // It says "Restoring" only for a real restore, otherwise "Checking" (2026-10-11).
@@ -378,8 +429,8 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            // The defaults include Guided Access enforcement off and the Sound and Vision
-            // tripwires off, so a settings reset the owner didn't ask for reduces protection.
+            // The defaults include PIN-pad scrambling off and the Sound and Vision tripwires off,
+            // so a settings reset the owner didn't ask for can reduce protection.
             // It has to be said, not just logged.
             if AppSettings.loadWasReset {
                 Label("Your settings couldn't be read and have been reset to defaults. Check Settings before arming - tripwires and Guided Access enforcement may not be as you left them.",
@@ -436,12 +487,16 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            if entitlements.proActive, !enrollment.verified, !cloud.cloudUnavailable {
-                Label("iCloud is paused. Open Settings and verify iCloud access. Local monitoring is available.", systemImage: "icloud.slash")
+            if let line = Self.iCloudPauseLine(proActive: entitlements.proActive, backupOn: settings.cloudBackup,
+                                               verified: enrollment.verified,
+                                               newEventsBound: enrollment.newEventsBindToVerifiedAccount,
+                                               cloudUnavailable: cloud.cloudUnavailable) {
+                Label(line, systemImage: "icloud.slash")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .reportedOnScreen(line)
             }
             if cloud.cloudUnavailable {
                 Label("iCloud backup isn't available in this build - evidence is kept on-device only. A signed build with an iCloud container restores off-device sync.",

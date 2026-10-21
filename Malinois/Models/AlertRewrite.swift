@@ -2,12 +2,11 @@
 //  AlertRewrite.swift
 //  Malinois
 //
-//  How the receiving iPhone words a cross-device alert (item 76, ADR 0017). A push arrives with
-//  the static text its subscription carries ("Tamper detected on your device."). The
-//  notification service extension fetches the record the push names, decodes the few fields an
-//  alert needs, and asks this for the words, the sound and the urgency. The words come from the
-//  Event Log's own (`Event.sensorSummary`), so an alert and the log never disagree. Compiled into
-//  the app, where the tests pin it, and into the extension, which uses it; Foundation only.
+//  How a cross-device alert would be worded from its record (item 76, ADR 0017): the words come
+//  from the Event Log's own (`Event.sensorSummary`), so an alert and the log never disagree. Since
+//  1.5.1 the alert extension reads no record and shows the push's own text (ADR 0039), and since 1.8
+//  it compiles only its own file: this stays in the app for a Debug-only preview, where the tests
+//  pin it. Foundation only.
 //
 
 import Foundation

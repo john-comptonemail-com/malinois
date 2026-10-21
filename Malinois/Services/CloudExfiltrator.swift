@@ -152,6 +152,9 @@ final class CloudExfiltrator: ObservableObject {
     #if DEBUG
     /// Replaces only account identity discovery; it grants no database permission.
     var accountIdentityForTesting: (@MainActor () async -> String?)?
+    /// Replaces only iOS's account-status answer in `refreshAccountState` (item 140's codex-1: the Simulator has no
+    /// container, so Home's own check always found no account); it grants no database permission.
+    var accountStatusForTesting: AccountState?
     /// Replaces one save attempt's CloudKit operation (item 116): everything before it runs as
     /// shipped, and a thrown error takes the shipped retry path. The Simulator has no container.
     var saveAttemptForTesting: (@MainActor ([CKRecord]) async throws -> Void)?
@@ -368,6 +371,13 @@ final class CloudExfiltrator: ObservableObject {
 
     func refreshAccountState() async {
         let generation = identityGeneration
+        #if DEBUG
+        if let accountStatusForTesting {
+            accountState = accountStatusForTesting
+            if !accountState.isReady { invalidateAccountResolution() }
+            return
+        }
+        #endif
         guard let container else {
             accountState = .noAccount
             invalidateAccountResolution()

@@ -238,10 +238,10 @@ final class Item116ReviewTests: XCTestCase {
     /// The owner's ruling: the paired watch keeps getting this iPhone's alerts directly while
     /// backup is off, and the switch's text says so instead of "no alerts".
     func testTheSwitchSaysThePairedWatchStillGetsAlerts() throws {
-        let settings = try text("Malinois/Views/SettingsView.swift")
-        let caption = try XCTUnwrap(slice(settings, from: "Text(\"Uploads this iPhone's events", to: ")\n"))
-        XCTAssertTrue(caption.contains("paired Apple Watch"), String(caption))
-        XCTAssertFalse(caption.contains("your other devices get no alerts from this iPhone."), String(caption))
+        // Since 1.8 (76) the caption is `SettingsView.backupCaption`, which the switch shows (Item141WordingTests).
+        let caption = SettingsView.backupCaption
+        XCTAssertTrue(caption.contains("paired Apple Watch"), caption)
+        XCTAssertFalse(caption.contains("your other devices get no alerts from this iPhone."), caption)
     }
 
     // MARK: - R5: a status entry being uploaded is protected too
@@ -256,16 +256,16 @@ final class Item116ReviewTests: XCTestCase {
         rig.gate.registerLocalEvent(oldest)
         rig.store.add(oldest)
         let record = "state-v2-" + oldest.id.uuidString
-        var holding = true
-        var entered = false
+        let holding = TestFlag(true)
+        let entered = TestFlag()
         rig.cloud.saveAttemptForTesting = { records in
             guard records.contains(where: { $0.recordID.recordName == record }) else { return }
-            entered = true
-            while holding { try? await Task.sleep(nanoseconds: 10_000_000) }
+            entered.value = true
+            while holding.value { try? await Task.sleep(nanoseconds: 10_000_000) }
         }
         defer { rig.cloud.saveAttemptForTesting = nil }
         let upload = Task { await rig.engine.uploadSnapshotForTesting(oldest, throughSweep: false) }
-        await waitUntil(timeout: 3) { entered }
+        await waitUntil(timeout: 3) { entered.value }
         XCTAssertTrue(rig.store.isUploading(oldest.id), "protected while its record uploads")
         let now = Date()
         for i in 0..<EventStore.maxAuditEvents {
@@ -274,7 +274,7 @@ final class Item116ReviewTests: XCTestCase {
                                 stateChange: "thermalSerious"))
         }
         XCTAssertTrue(rig.store.events.contains { $0.id == oldest.id }, "the log limit leaves it alone while it uploads")
-        holding = false
+        holding.value = false
         await upload.value
         XCTAssertFalse(rig.store.isUploading(oldest.id))
         let trimmed = await waitUntil(timeout: 2) { !rig.store.events.contains { $0.id == oldest.id } }
@@ -327,18 +327,18 @@ final class Item116ReviewTests: XCTestCase {
         var event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .synced)
         event.mediaFilename = "r7.jpg"
         try Data(count: 100).write(to: store.mediaDirectory.appendingPathComponent("r7.jpg"))
-        var holding = true
-        var entered = false
+        let holding = TestFlag(true)
+        let entered = TestFlag()
         store.mediaMeasuredForTesting = {
-            entered = true
-            while holding { try? await Task.sleep(nanoseconds: 10_000_000) }
+            entered.value = true
+            while holding.value { try? await Task.sleep(nanoseconds: 10_000_000) }
         }
         defer { store.mediaMeasuredForTesting = nil }
         store.beginUpload(event.id)
         store.add(event)                                    // starts a clean-up pass
-        await waitUntil(timeout: 2) { entered }
+        await waitUntil(timeout: 2) { entered.value }
         store.endUpload(event.id)                           // the upload ends while the files are measured
-        holding = false
+        holding.value = false
         let cleaned = await waitUntil(timeout: 3) { store.events.first { $0.id == event.id }?.mediaFilename == nil }
         XCTAssertTrue(cleaned, "the clean-up looked again once the upload had ended")
     }

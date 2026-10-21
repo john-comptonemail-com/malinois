@@ -122,6 +122,8 @@ final class EventStore: ObservableObject {
     var mediaBudgetForTesting: Int64?
     /// Awaited after the clean-up has measured the files, before it decides (item 116).
     var mediaMeasuredForTesting: (@MainActor () async -> Void)?
+    /// Whether no byte-limit pass is running or owed: a test waits on it before a step that must not race one.
+    var byteCapPruneIdleForTesting: Bool { !byteCapPruneRunning }
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -630,6 +632,7 @@ final class EventStore: ObservableObject {
     /// prune stats up to ~1000 media files, which must not delay the sub-second fact push
     /// at capture time. Exactly one runner at a time; an add() that lands during a pass
     /// requests one more pass afterward, so nothing is missed and nothing runs twice (R-08).
+    /// Also requested by every write that attaches media (`update`, recovery; Codex's V3).
     private func scheduleByteCapPrune() {
         if byteCapPruneRunning { byteCapPruneRepeat = true; return }
         byteCapPruneRunning = true
@@ -645,7 +648,9 @@ final class EventStore: ObservableObject {
     /// Frees storage until on-disk media is under the byte budget, dropping flood media
     /// before genuine (the pure `mediaEvictionOrder`). The expensive part — statting
     /// every media file — runs off the main actor; only the decision + the in-memory
-    /// mutation happen on it.
+    /// mutation happen on it. An event that changed while its files were measured (a late
+    /// capture attached, its upload reopened) is left for the next pass, which judges it as it
+    /// is now (item 140, A1).
     private func pruneMediaBytes() async {
         let dir = mediaDirectory
         let snapshot = events.map { (id: $0.id,
@@ -680,10 +685,21 @@ final class EventStore: ObservableObject {
         if !discarded.isEmpty {
             Log.store.warning("Storage emergency: discarded \(discarded.count, privacy: .public) event(s)' media before it ever uploaded")
         }
+        let measured = Dictionary(snapshot.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var names: [String] = []
         for idx in events.indices where evict.contains(events[idx].id) {
             // An upload that began while the files were measured keeps its media (item 114).
             guard uploadsInFlight[events[idx].id] == nil else { limitsWaitForUploads = true; continue }
+            // Not as measured: a late capture attached, its upload reopened. Deleting now would take
+            // evidence that never uploaded, unmarked; the next pass judges it as it is (item 140, A1).
+            let now = events[idx]
+            guard let was = measured[now.id],
+                  was.media == [now.mediaFilename, now.secondaryMediaFilename].compactMap({ $0 }),
+                  was.isSynced == (now.cloudSyncState == .synced),
+                  was.isFlood == (now.sustainedCount != nil) else {
+                byteCapPruneRepeat = true
+                continue
+            }
             if let n = events[idx].mediaFilename { names.append(n) }
             if let n = events[idx].secondaryMediaFilename { names.append(n) }
             events[idx].mediaFilename = nil
@@ -1109,8 +1125,18 @@ final class EventStore: ObservableObject {
 
     func update(_ event: Event, persistNow: Bool = true) {
         guard let idx = events.firstIndex(where: { $0.id == event.id }) else { return }
-        events[idx] = Self.preservingMonotonicFields(current: events[idx], incoming: event)
+        let before = events[idx]
+        events[idx] = Self.preservingMonotonicFields(current: before, incoming: event)
         if persistNow { persist() }
+        // Media this write attaches counts toward the byte limit now, not at the next event or merge: a
+        // capture, a retry, a late file, a download (item 129's F4; Codex's V3, BACKLOG 128).
+        if Self.attachesMedia(before: before, after: events[idx]) { scheduleByteCapPrune() }
+    }
+
+    /// Pure: whether a write gives the event a media file it did not have.
+    nonisolated static func attachesMedia(before: Event, after: Event) -> Bool {
+        (after.mediaFilename != nil && after.mediaFilename != before.mediaFilename)
+            || (after.secondaryMediaFilename != nil && after.secondaryMediaFilename != before.secondaryMediaFilename)
     }
 
     /// Pure (unit-tested): a whole-value update may never walk back fields that only move
@@ -1472,7 +1498,10 @@ final class EventStore: ObservableObject {
             if events[idx].cloudSyncState == .synced { events[idx].cloudSyncState = .pending }
             changed = true
         }
-        if changed { persist() }
+        if changed {
+            persist()
+            scheduleByteCapPrune()   // recovered media counts toward the byte limit too (Codex's V3)
+        }
     }
 
     /// Retires only intents whose matching attachment is in a fully synced snapshot. The

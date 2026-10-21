@@ -12,7 +12,7 @@ import Foundation
 /// the watch shows each event once however often it arrives) and when it happened. No device, sensor
 /// or evidence detail leaves the iPhone this way.
 struct WatchAlertMessage: Equatable, Sendable {
-    enum Kind: String, Sendable { case tamper, disarm }
+    enum Kind: String, Codable, Sendable { case tamper, disarm }
 
     let kind: Kind
     let eventID: UUID
@@ -29,11 +29,12 @@ struct WatchAlertMessage: Equatable, Sendable {
         ["malinoisAlert": kind.rawValue, "id": eventID.uuidString, "at": at.timeIntervalSinceReferenceDate]
     }
 
-    /// A payload this app sent, or nil for anything else.
+    /// A payload this app sent, or nil for anything else, a time that is not a finite number included
+    /// (ADR 0051).
     init?(userInfo: [String: Any]) {
         guard let raw = userInfo["malinoisAlert"] as? String, let kind = Kind(rawValue: raw),
               let idText = userInfo["id"] as? String, let id = UUID(uuidString: idText),
-              let seconds = userInfo["at"] as? Double else { return nil }
+              let seconds = userInfo["at"] as? Double, seconds.isFinite else { return nil }
         self.init(kind: kind, eventID: id, at: Date(timeIntervalSinceReferenceDate: seconds))
     }
 
@@ -47,20 +48,32 @@ struct WatchAlertMessage: Equatable, Sendable {
         }
     }
 
-    /// A relayed alert arriving more than this long after its event says when the event happened:
-    /// a copy that waited for the watch to come back in range must not read as a new event.
-    static let lateAfter: TimeInterval = 60
-
-    /// The text the watch shows: the iCloud alert's fixed text when on time; when late, the same
-    /// text with the event's time ("... at 9:04 PM."), and its date if that was another day.
-    /// Alert text: no em-dash (B16).
+    /// The text the watch shows for an alert shown on its own: the iCloud alert's fixed text with its
+    /// event's time, on time or late ("... at 9:04 PM."), and its date if that was another day
+    /// (BACKLOG 134, ADR 0051; until 1.8 (73) only when more than a minute late). Alert text: no
+    /// em-dash (B16).
     func body(deliveredAt now: Date) -> String {
-        guard now.timeIntervalSince(at) > Self.lateAfter else { return body }
-        let time = at.formatted(date: .omitted, time: .shortened)
-        let when = Calendar.current.isDate(at, inSameDayAs: now)
+        "\(body.dropLast()) at \(Self.when(at, now: now))."
+    }
+
+    /// A relayed alert whose event is more than this old when the watch handles it is not shown on
+    /// its own: the watch sums it up with the others (BACKLOG 134, ADR 0051). A fixed hour.
+    static let summarizedAfter: TimeInterval = 3600
+
+    /// Pure (unit-tested). Whether the watch sums this alert up rather than showing it on its own: its
+    /// event is more than an hour old at `now`, by the watch's clock. An event time ahead of that clock
+    /// counts as new.
+    func isSummarized(handledAt now: Date) -> Bool {
+        now.timeIntervalSince(at) > Self.summarizedAfter
+    }
+
+    /// Pure (unit-tested). An event's time as the watch's texts give it: the time alone on the day
+    /// `now` falls on ("9:04 PM"), otherwise with its date ("Oct 15, 3:42 PM").
+    static func when(_ date: Date, now: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        return Calendar.current.isDate(date, inSameDayAs: now)
             ? time
-            : "\(at.formatted(.dateTime.month(.abbreviated).day())), \(time)"
-        return "\(body.dropLast()) at \(when)."
+            : "\(date.formatted(.dateTime.month(.abbreviated).day())), \(time)"
     }
 
     /// Whether the watch shows this alert Time Sensitive (the owner's ruling, 2026-10-12; ADR 0045):

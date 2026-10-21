@@ -72,7 +72,7 @@ enum CameraSessionEvent: Sendable {
 }
 
 /// The two mappings that know the camera's own types stay beside the pipeline; the enum itself
-/// lives in Models/CaptureFailureReason.swift, where the alert extension can compile it (item 76).
+/// lives in Models/CaptureFailureReason.swift, with nothing but Foundation.
 extension CaptureFailureReason {
     /// Pure (unit-tested). The reason a failed warm-up maps to.
     static func forWarmUpFailure(_ error: Error) -> CaptureFailureReason {

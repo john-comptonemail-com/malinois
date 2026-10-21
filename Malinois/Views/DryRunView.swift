@@ -198,6 +198,7 @@ struct SensorReadingRow: View {
 /// The calibration result card — reused by the arming review and the test view.
 struct CalibrationSummaryView: View {
     let summary: CalibrationSummary
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -213,15 +214,29 @@ struct CalibrationSummaryView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Brand.blue.opacity(0.10)))
     }
 
+    /// The label and reading, with the detail beside them; at the accessibility text sizes one under
+    /// the other, each the card's width: side by side there, each column was a few letters wide and
+    /// words broke ("Rest- / ing", BACKLOG 128).
+    @ViewBuilder
     private func row(_ label: String, _ quality: String, _ detail: String?) -> some View {
-        HStack(alignment: .firstTextBaseline) {
+        let reading = VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(.secondary).reportedOnScreen(label)
+            Text(quality).font(.subheadline.weight(.semibold)).reportedOnScreen(quality)
+        }
+        if typeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.caption).foregroundStyle(.secondary)
-                Text(quality).font(.subheadline.weight(.semibold))
+                reading
+                if let detail {
+                    Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary).reportedOnScreen(detail)
+                }
             }
-            Spacer()
-            if let detail {
-                Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        } else {
+            HStack(alignment: .firstTextBaseline) {
+                reading
+                Spacer()
+                if let detail {
+                    Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary).reportedOnScreen(detail)
+                }
             }
         }
     }
