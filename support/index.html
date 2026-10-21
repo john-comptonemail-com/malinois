@@ -107,6 +107,17 @@
   <p>A quick tap does not open the keypad, and Malinois records it as someone touching the
   iPhone.</p>
 
+  <h3>How do I tell whether anyone touched it while I was away?</h3>
+  <ol>
+    <li>Before typing your PIN, look at <strong>Armed for</strong> above the pad. It should match
+    how long ago you armed.</li>
+    <li>After disarming, Home's <strong>Last armed</strong> line should start at the time you armed.
+    If it starts later, your session ended and another began.</li>
+    <li>Open the Event Log and read every entry since you armed, not just the newest. A disarm you
+    didn't make, <strong>Monitoring interrupted</strong> or a wrong PIN means someone tried, even if
+    the phone looks untouched.</li>
+  </ol>
+
   <h3>The screen went dark. Is it broken?</h3>
   <p>No. While armed, Malinois darkens the screen so the iPhone looks switched off. It is still
   watching.</p>
