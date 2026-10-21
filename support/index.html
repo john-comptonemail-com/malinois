@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Support — Malinois</title>
-<meta name="description" content="Help and contact for Malinois, a personal anti-theft and tamper-detection app for iPhone.">
+<meta name="description" content="Help and contact for Malinois, a personal tamper-detection app for iPhone.">
 <style>
   :root {
     --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70;
@@ -86,7 +86,9 @@
     them too.</li>
     <li><strong>Arm.</strong> Tap <strong>ARM</strong>. Triple-click the side button and tap
     <strong>Start</strong> to begin Guided Access, then tap <strong>Start countdown</strong> and set
-    the iPhone down. When the countdown ends, Malinois calibrates for a few seconds and the screen
+    the iPhone down. (On a new install, the first <strong>Start countdown</strong> shows a one-time
+    screen first, with how to disarm and, under Guided Access, how to end it: tap <strong>I
+    understand</strong>.) When the countdown ends, Malinois calibrates for a few seconds and the screen
     goes dark: it is watching.</li>
     <li><strong>Disarm.</strong> Press and hold the screen for 5 seconds and enter your PIN. Then
     triple-click the side button and enter your Guided Access passcode.</li>
@@ -209,17 +211,24 @@
   iPhone it is paired with (Pro, with Cross-device alerts on). Open Malinois on the watch once: it
   signs up, asks to show alerts, and its screen says whether alerts will arrive.</p>
   <p>When the watch is near its iPhone, the iPhone sends its own alerts straight to the watch.
-  watchOS decides when to wake the watch app for them, so they can take a little while; one that
-  arrives more than a minute late says when it happened. When the watch is away from its iPhone,
-  alerts come through iCloud, usually within seconds. The watch shows only the alert text, never
-  photos or details.</p>
+  watchOS decides when to wake the watch app for them, so they can take a little while; each says
+  when it happened. The same alert usually comes through iCloud as well, a few seconds earlier, and
+  then the watch can tap twice; it keeps one of them in its list, the copy with the time. When the
+  iPhone's copy comes first, iCloud's comes quietly. Whether the watch taps or sounds follows its
+  notification settings. Alerts more than an hour old, for example after
+  the watch was off, arrive as one summary instead of one by one. When the watch is away from its
+  iPhone, alerts come through iCloud, usually within seconds, and without the time. The watch shows
+  only the alert text (with
+  its time, for its own iPhone's alerts) or a summary's count, never photos or details.</p>
 
   <h2 id="evidence">Evidence, iCloud and privacy</h2>
 
   <h3>Where does my evidence go? Can you see it?</h3>
-  <p>There is no Malinois server, and I cannot see any of it. Evidence stays on your iPhone. With
+  <p>There is no Malinois server, and I cannot see any of it. Evidence stays on your iPhone, and is
+  included in the iPhone’s own backups when you use them (iCloud Backup, or a backup made with a
+  computer); Malinois’s <strong>iCloud backup</strong> switch does not change that. With
   Pro, once you have verified iCloud access, it is also saved to your own private iCloud, so what
-  has uploaded is still there if the iPhone is switched off or taken. See the
+  has uploaded is still there if the iPhone is switched off or lost. See the
   <a href="../privacy-policy/">privacy policy</a>.</p>
   <p>You do not have to take my word for it: the app’s source code is public, so anyone can check
   that there is no server to send anything to.
@@ -229,8 +238,10 @@
   <p>Before a newly installed copy of Malinois uploads anything, you confirm with Face ID, Touch ID
   or your iPhone passcode that it is your iPhone (<strong>Settings → iCloud → Verify iCloud
   access</strong>). This stops someone who reinstalls Malinois on your iPhone from reaching your
-  iCloud evidence. Until you verify, detection and capture work as usual and evidence stays on the
-  iPhone.</p>
+  iCloud evidence, unless they can also pass Face ID, Touch ID or your iPhone passcode. Until you
+  verify, detection and capture work as usual, and what Malinois records stays on the iPhone, even
+  after you verify: verify before you rely on iCloud. While Guided Access is on, the button is greyed out: iOS holds Face ID and passcode
+  prompts until Guided Access ends.</p>
 
   <h3>How do I stop uploads to iCloud?</h3>
   <p>Turn off <strong>iCloud backup</strong> in Settings → iCloud; it asks for Face ID, Touch ID or
@@ -247,7 +258,15 @@
   <p>Not one entry at a time: the Event Log has no way to delete a single entry, not even with your
   PIN. It keeps your recent events and retires the oldest automatically. Deleting Malinois deletes
   everything stored on the iPhone. Copies in your iCloud are yours to manage in iOS Settings, under
-  your name → iCloud → Manage Account Storage.</p>
+  your name → iCloud → Manage Account Storage. But each time Malinois starts, it checks that its
+  newest uploads are still there; if most are gone, it says so on Home and uploads again what the
+  iPhone recorded and still holds (while <strong>iCloud backup</strong> is off, they wait until you
+  turn it back on). To keep them deleted, leave iCloud backup off on the iPhones that recorded
+  them, or delete Malinois from them. Malinois also removes older full-size photos and clips
+  from your iCloud by its <strong>iCloud Photo &amp; Video Storage</strong> setting (after 12 months
+  unless you change it), keeping each event's details, and never anything newer than 30 days. The
+  setting covers the photos and clips from all your devices: if they are set differently, the
+  shortest setting applies to all of them.</p>
 
   <h3>How do I share a photo or clip?</h3>
   <p>Open the event in the Event Log and tap the share button at the top right.</p>
@@ -279,8 +298,9 @@
   <p>The front camera by default, for an iPhone lying face up. With the Vision tripwire on (Pro), you
   can choose <strong>Rear</strong>, or <strong>Auto</strong> (rear when the iPhone is face down), for
   an iPhone lying face down and watching the room. <strong>Both</strong> (Pro) records the front and
-  rear cameras at once; clips from Both have no sound. Choose under <strong>Settings → Capture →
-  Camera</strong>.</p>
+  rear cameras at once; a clip from the two at once has no sound (when they can’t record together,
+  the front camera records alone, with sound if <strong>Record audio in clips</strong> is on).
+  Choose under <strong>Settings → Capture → Camera</strong>.</p>
 
   <h2 id="pro">Malinois Pro</h2>
 

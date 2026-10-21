@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacy Policy — Malinois</title>
-<meta name="description" content="Privacy policy for Malinois, a personal anti-theft and tamper-detection app for iPhone. No server, no analytics, no data collected by the developer.">
+<meta name="description" content="Privacy policy for Malinois, a personal tamper-detection app for iPhone. No server, no analytics, no data collected by the developer.">
 <style>
   :root {
     --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70;
@@ -54,13 +54,13 @@
   <div class="meta">
     <!-- ⚠️ 1.1: bump this to the date 1.1 actually goes live before pasting into Sites. The
          Vision paragraph below describes a build users do not have until then. -->
-    <div><strong>Effective date:</strong> 16 October 2026</div>
+    <div><strong>Effective date:</strong> 21 October 2026</div>
     <div><strong>Developer:</strong> John Compton</div>
     <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
   </div>
 
   <div class="lede">
-    <p>Malinois (“the app”) is a personal anti-theft and tamper-detection tool that runs on your
+    <p>Malinois (“the app”) is a personal tamper-detection tool that runs on your
     own iPhone. This policy explains what the app accesses, what it records, and where that
     information goes.</p>
     <p>The short version: <strong>the developer collects nothing, operates no server, and has no
@@ -70,8 +70,8 @@
   <h2>What the app accesses</h2>
   <ul>
     <li><strong>Camera</strong> — to capture a photo or short video clip as evidence when your
-    armed device is tampered with. While the device is charging, the camera session may be held
-    ready so that capture is immediate rather than losing the first seconds to starting the
+    armed device is tampered with. While the device is charging (or always, in the <em>Instant</em>
+    camera mode), the camera session may be held ready so that capture is immediate rather than losing the first seconds to starting the
     camera. <strong>Whenever a camera session is live the app shows an on-screen recording
     indicator that cannot be disabled.</strong> Nothing is recorded or stored while the camera is
     merely held ready — images are written only when a tripwire fires.
@@ -85,9 +85,10 @@
     <li><strong>Microphone</strong> — only if you turn on the Sound tripwire or <em>Record audio
     in clips</em>; both are off by default, and the app asks for microphone access at that
     moment, not at launch. It listens for sudden sounds nearby as a tamper tripwire, and records
-    audio in an evidence clip. (Clips recorded with the camera set to “Both” have no
-    sound: recording from both cameras at once leaves no room for the microphone. The app says
-    so in Settings and again before arming.)</li>
+    audio in an evidence clip. (A clip recorded from both cameras at once, with the camera set to
+    “Both”, has no sound: recording from two cameras leaves no room for the microphone. The app
+    says so in Settings and again before arming. When the two cameras can’t record together, the
+    clip comes from the front camera alone and follows <em>Record audio in clips</em>.)</li>
     <li><strong>Motion sensors</strong> (accelerometer/gyroscope) — to detect the device being
     moved or picked up. This is on-device sensor access and requires no permission prompt.</li>
     <li><strong>Notifications</strong> — so your other Apple devices can be alerted when a tamper
@@ -115,20 +116,36 @@
   <ul>
     <li><strong>On your device.</strong> Evidence is stored locally, encrypted at rest using iOS
     Data Protection.</li>
-    <li><strong>In your own private iCloud (optional).</strong> If you are signed into iCloud,
-    evidence is also saved to <strong>your</strong> private iCloud database (Apple CloudKit
+    <li><strong>In your device’s own backups.</strong> The evidence on your device is included in
+    its iCloud Backup, when that is on, and in any backup you make with a computer, on the free tier
+    too. The app’s <em>iCloud backup</em> switch does not change that; iCloud Backup is turned on or
+    off in iOS Settings → your name → iCloud → iCloud Backup. These backups are governed by Apple’s Privacy Policy (iCloud Backup
+    is end-to-end encrypted only if you have turned on Apple’s Advanced Data Protection), and the
+    developer cannot access them.</li>
+    <li><strong>In your own private iCloud (optional).</strong> With Pro, once you have verified
+    iCloud access in the app, evidence is also saved to <strong>your</strong> private iCloud database (Apple CloudKit
     private database) so it survives the device being switched off. This is your personal iCloud
     storage, governed by <a href="https://www.apple.com/legal/privacy/">Apple’s Privacy
     Policy</a>. <strong>The developer cannot access it.</strong> To stop these iCloud copies, turn
     off <strong>iCloud backup</strong> in the app’s Settings → iCloud, which asks for Face ID, Touch
-    ID or your passcode: nothing new is uploaded, and events recorded while it is off stay on the
-    device for good, even after you turn it back on. Turning Malinois off in the iOS Settings app,
+    ID or your passcode. From then on one record still uploads: the status entry saying backup was
+    turned off, sent (and retried) until it reaches your iCloud, so your iCloud log shows when backup
+    stopped. Nothing else new is uploaded: an upload already under way stops at its next step, though
+    what iCloud has already received stays there, and events recorded while backup is off stay on
+    the device for good, even after you turn it back on. Turning Malinois off in the iOS Settings app,
     under your name → iCloud, also stops uploads; events recorded meanwhile stay on the device and
     are uploaded once it is back on. The app’s <em>Cross-device alerts</em> setting turns off the
     alerts to your other devices, not these copies.</li>
     <li><strong>To your other devices (optional).</strong> If enabled, a “tamper detected” alert
     — and, when the app is disarmed, a “disarmed” alert — is delivered to your other Apple
     devices signed into the same iCloud account, via Apple’s push infrastructure.</li>
+    <li><strong>To your paired Apple Watch (optional).</strong> With Pro and <em>Cross-device
+    alerts</em> on, your iPhone also sends its own tamper and disarm alerts straight to its paired
+    Apple Watch, over Apple’s WatchConnectivity, also while iCloud backup is off: the kind of alert,
+    the event’s identifier and its time, never a photo, a clip or the event log. The watch keeps the
+    identifiers and times of a limited number of recent alerts, and a count of older ones it has
+    summed up, so that a second copy of an alert it still remembers is not shown or counted again.
+    Turning off <em>Cross-device alerts</em> stops this.</li>
   </ul>
   <p><strong>There is no developer-operated server, database, or analytics endpoint.</strong> The
   developer receives no copy of your evidence, metadata, or usage.</p>
@@ -147,12 +164,27 @@
   <h2>Data retention and deletion</h2>
   <ul>
     <li>Evidence is retained locally up to the app’s storage limits, after which the oldest items
-    are pruned automatically. You can review and manage events in the app’s Event Log.</li>
+    are pruned automatically. You can review events in the app’s Event Log; there is no way to
+    delete a single event.</li>
     <li>Deleting the app removes all locally stored evidence and settings, except your Malinois
     PIN, the start date of your Pro trial and your Early Access membership. These stay in the
     device’s Keychain, so a reinstall can’t bypass the PIN or start a new trial; the membership
     also syncs through iCloud Keychain, so it follows you to a new iPhone.</li>
-    <li>Evidence in your private iCloud is yours to manage and delete through your iCloud storage.</li>
+    <li>Evidence in your private iCloud is yours to manage and delete through your iCloud storage.
+    Each time the app starts, though, it checks that its newest uploads are still there; if most are
+    gone, it says so on Home and uploads again what it recorded and still holds (while the app’s
+    <em>iCloud backup</em> is off, they wait until you turn it back on). To keep evidence deleted
+    from iCloud, leave <em>iCloud backup</em> off on the devices that recorded it, or delete Malinois
+    from them, which also deletes the evidence they hold.</li>
+    <li>The app also removes older full-size photos and clips from your iCloud by its <em>iCloud
+    Photo &amp; Video Storage</em> setting (after 12 months unless you choose otherwise: 1, 3 or 6
+    months, manual only, or keep forever). It keeps each event’s details and thumbnail and the arm
+    and disarm records, and never deletes anything newer than 30 days. When the setting is a number
+    of months, it also removes this iPhone’s older heartbeats the same way, keeping each armed
+    session’s latest one, which your other devices show as “Last heard from”. <em>Free up iCloud
+    space…</em> in Settings removes full-size photos and clips only. Both act on the photos and clips
+    from all your devices on the iCloud account, not only this iPhone’s: if your devices are set
+    differently, the shortest setting applies to all of them.</li>
   </ul>
 
   <h2>Recording other people — your responsibility</h2>
