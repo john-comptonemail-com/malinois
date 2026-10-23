@@ -148,7 +148,7 @@
   <p>When your PIN has not been entered for 14 days, Malinois asks for it before arming, so you find
   out whether you still remember it before Guided Access keeps the phone in Malinois. Disarming, or
   entering it anywhere else in the app, starts the 14 days again. After updating to version 1.8.1,
-  your first ARM asks once.</p>
+  your first ARM asks once, unless you have entered your PIN in the app since updating.</p>
 
   <h3>I have forgotten my PIN.</h3>
   <p>Malinois never stores your PIN, only a scrambled check of it, so nobody can look it up. To
@@ -168,7 +168,7 @@
   <h3>Why does Malinois need Guided Access?</h3>
   <p>Guided Access is an iOS feature that locks the iPhone to one app. While Malinois is armed under
   it, nobody can go to the Home Screen, switch apps or close Malinois without your Guided Access
-  passcode, as long as Voice Control is off. Holding the buttons to force a restart still ends
+  passcode, as long as Voice Control is off and Face ID and Touch ID are off for ending Guided Access. Holding the buttons to force a restart still ends
   Guided Access and the watch; Malinois normally records the handling first and, on Pro with iCloud
   backup on and a connection, sends it.</p>
   <p>Without it, the armed iPhone is unlocked behind a dark screen: anyone who picks it up can leave
@@ -183,7 +183,9 @@
     <li>In iOS Settings, go to <strong>Accessibility → Guided Access</strong> and turn it on.</li>
     <li>Under <strong>Passcode Settings</strong>, set a Guided Access passcode that is different from
     your iPhone passcode, so someone who knows your unlock code cannot end Guided Access. They could
-    still force a restart, which ends the watch, and then unlock the phone with that code.</li>
+    still force a restart, which ends the watch, and then unlock the phone with that code. Leave
+    <strong>Face ID</strong> (or Touch ID) off there as a way to end Guided Access: anyone who knows your
+    iPhone passcode can add their own face or fingerprint and end Guided Access with it.</li>
     <li>In Malinois, triple-click the side button (or the Home button). Before you tap
     <strong>Start</strong>, tap <strong>Options</strong> and turn off <strong>Side Button</strong>
     (one press would otherwise lock the screen and pause the watch) and <strong>Volume
