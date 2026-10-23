@@ -16,6 +16,7 @@
 import XCTest
 @testable import Malinois
 
+@MainActor
 final class Item106PINAutoSubmitTests: XCTestCase {
 
     // MARK: - The pad

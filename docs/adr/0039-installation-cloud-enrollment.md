@@ -88,3 +88,62 @@ that, by the very rule `register` binds with; Home's row then says "Waiting for 
 orange line stays away. The line shows only while new events are tied to no account (never
 verified, another account seen), and not with iCloud backup off, whose own line says new events
 stay on this iPhone. No grant, lease or ownership rule changed.
+
+## A transient identity failure is not an account change (2026-10-22, 1.8.1)
+
+Every database entry point resolves the account's identity first (`fetchUserRecordID`, under a
+10 s deadline). One lookup that failed for any reason was treated as an account change for the
+whole process: every lease in flight voided, every save under way cancelled and demoted to
+local-only, the pending sweep's record of transient failures erased, the verified state cleared
+(the security audit's lead 1, BACKLOG 152). Nothing was lost, but on a phone left armed the next
+sweep could be hours away, and under a network that passes nothing the lookup's deadline cancelled
+the saves before their own deadline could give the interference verdict ADR 0001 escalates on.
+
+The lookup now tells three answers apart (`CloudExfiltrator.identityLookup`, pure): a name
+resolves the account, a different name invalidating first; iCloud's answer that there is no
+account (`.notAuthenticated`, or no record) invalidates, as before, and so does anything
+unclassified; a transient failure (the network class `retryDelay` names, a bare transport error,
+or the deadline) denies only the caller's own request, records a network-class transient failure
+for the pending sweep's follow-up, and leaves every lease in flight, every save under way and the
+verified state as they are. The account-changed notice still invalidates. An evidence push denied
+by a transient lookup reports the network-class verdict (`metaFailureWasInterference: true`), so
+the escalation's rule sees it as it would a save that lost the network; a hold is still no
+verdict. The pending sweep, whose lookup fails transiently, follows up as it does after a save's
+transient failure instead of ending with records left. Path inventory: every lease taker (the
+fact, meta, photo and state pushes, heartbeats, the sweep's own leases, the fetches and the
+retention pass) goes through the same resolution; only the evidence push reports a verdict, and
+only the sweep follows up. Device check: Network Link Conditioner at 100% loss with the path up,
+the escalation fires on the lookup's failure as it did on a save's.
+
+## Amendment (2026-10-22, 1.8.1): the other entry point, and a throttle is an answer
+
+The fresh review of 1.8.1 (BACKLOG 155, Codex's codex-4 and codex-5) found the rule above applied
+to the identity lookup only. Home's and Settings' account-status refresh (`refreshAccountState`)
+still invalidated the resolution, every lease in flight and every save under way on a temporary
+answer: iOS's "temporarily unavailable" or "could not determine", an error, or the status call's
+own deadline. Now one rule applies at both entry points (`applyAccountStatus`): iCloud's answer that
+the account is not there to use, no account or restricted, invalidates as the lookup's "no account"
+does; any other answer that is not ready goes on record as a transient failure for the sweep's
+follow-up and changes nothing else. And the lookup's transient result now carries its class and the
+server's wait: the network class and a bare transport error are interference, as `failureSuggests
+Interference` already rules for saves; Apple's throttles and outages (`requestRateLimited`,
+`serviceUnavailable`, `zoneBusy`) are answers, so an evidence push they deny reports a refusal
+verdict, which the engine surfaces on Home instead of sounding the jamming siren, and their
+retry-after reaches the pending sweep instead of being dropped. Path inventory: the two entry
+points; every lease taker through `leaseAttempt`, which hands the class to the evidence push's
+verdict; the sweep's follow-up, which reads the recorded wait.
+
+## Amendment (2026-10-23, 1.8.1): an account not ready yet, and the sweep's first lookup
+
+Codex's second look (BACKLOG 155, codex-2 and codex-3 of the second look) found two gaps in the amendment
+above. The identity lookup classified iCloud's `accountTemporarilyUnavailable`, an account that is there but not
+ready, as no account, because the transient set it consulted is the save path's: the resolution, every lease in
+flight and the verified state were revoked for an answer Apple documents as temporary, while the same answer from
+the status check (`temporarilyUnavailable`) already revoked nothing. Now the lookup classifies it as a transient
+answer, not interference and with no wait named: it denies its caller, goes on record for the sweep's follow-up
+and changes nothing else; it stays out of the save path's retry set, because a save is not retried within
+milliseconds for it. And the pending sweep made a preflight lookup before its first pass, whose throttle wait the
+pass cleared before looking up again at once, so a second lookup that succeeded uploaded before the wait the
+server had named. The preflight is gone: the first pass makes the sweep's first lookup itself; a throttle on it
+hands nothing out and its wait reaches the follow-up, as a lookup that failed for want of a network has since
+item 152's lead 1; no account still ends the sweep at once. One lookup per pass instead of two.

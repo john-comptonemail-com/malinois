@@ -30,6 +30,7 @@ enum OnboardingState {
     private static let notificationAskHiddenKey = "com.malinois.onboarding.notificationAskHidden"
     private static let disarmBriefingKey = "com.malinois.onboarding.acknowledgedDisarmBriefing"
     private static let guidedAccessBriefingKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
+    private static let voiceControlBriefingKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
 
     static var hasSeenTrialWelcome: Bool {
         get { UserDefaults.standard.bool(forKey: welcomeKey) }
@@ -75,6 +76,14 @@ enum OnboardingState {
     static var acknowledgedGuidedAccessBriefing: Bool {
         get { UserDefaults.standard.bool(forKey: guidedAccessBriefingKey) }
         set { UserDefaults.standard.set(newValue, forKey: guidedAccessBriefingKey) }
+    }
+
+    /// The same for its part on turning Voice Control off (item 144 (e)), due at every arm the owner starts until
+    /// acknowledged, with or without Guided Access. Never seeded (`seedFirstArmBriefing` leaves it alone), so every
+    /// install sees it once, updated ones included (ADR 0050, amended for 1.8.1).
+    static var acknowledgedVoiceControlBriefing: Bool {
+        get { UserDefaults.standard.bool(forKey: voiceControlBriefingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: voiceControlBriefingKey) }
     }
 
     /// Writes both acknowledgments' starting values once, at launch, before anything can arm (item 131; the owner's
@@ -207,6 +216,7 @@ struct TrialWelcomeView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 8)
+                    .reportedOnScreen(closingNote)
 
                 Button(action: onDismiss) {
                     Text("Start using Malinois").frame(maxWidth: 260)

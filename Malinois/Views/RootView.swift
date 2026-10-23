@@ -119,6 +119,8 @@ struct RootView: View {
     /// Local recovery completed with either the existing PIN or a successfully written
     /// replacement after device authentication. This does not authorize cloud enrollment.
     private func finishRecovery() {
+        // Finished whatever the Keychain answers next: a reinstall owes a record in the new log (item 148's 5).
+        engine.noteRecoveryFinished(recovery)
         let presence = KeychainService.pinPresence
         guard presence != .sealedByLock else { pinStateUnresolved = true; return }
         recovery = KeychainService.pendingRecovery

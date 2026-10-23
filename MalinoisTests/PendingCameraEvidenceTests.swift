@@ -54,6 +54,20 @@ final class PendingCameraEvidenceTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 2)
     }
 
+    /// A file larger than the room left refuses admission before its size is counted: sparse
+    /// files can claim sizes whose running total overflows (a crash), where the final "room
+    /// left" check would come too late. The two-file case above stays inside the arithmetic;
+    /// 513 sparse files of 2^54 bytes (the largest this file system takes is under 2^55) sum past
+    /// what a 64-bit count holds (test-suite audit, WB74).
+    func testHugeSparseFilesAreRefusedBeforeTheirSizesAreCounted() throws {
+        do {
+            for index in 0..<513 { _ = try retainedFile(bytes: 1 << 54, name: "huge-\(index).mov") }
+        } catch {
+            throw XCTSkip("this file system will not hold sparse files that large: \(error)")
+        }
+        XCTAssertNil(CameraController.pendingMovieAllowance(in: root))
+    }
+
     func testHardLinkedEntriesRefuseAdmissionAndKeepTheirTarget() throws {
         let target = try retainedFile(bytes: 3)
         let link = root.appendingPathComponent("link.mov")

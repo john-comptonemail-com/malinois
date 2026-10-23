@@ -17,8 +17,11 @@ import XCTest
 @MainActor
 final class Item131FirstArmBriefingTests: XCTestCase {
 
-    private static let disarmAckKey = "com.malinois.onboarding.acknowledgedDisarmBriefing"
-    private static let guidedAccessAckKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
+    nonisolated private static let disarmAckKey = "com.malinois.onboarding.acknowledgedDisarmBriefing"   // read by the nonisolated hooks
+    nonisolated private static let guidedAccessAckKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
+    /// Part 3, Voice Control (item 144 (e)), has tests of its own (Item144VoiceControlBriefingTests): here it is
+    /// acknowledged, so these tests see parts 1 and 2 as before.
+    nonisolated private static let voiceControlAckKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
 
@@ -28,13 +31,14 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     override func setUp() {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem131")
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey] {
             savedAcks[key] = UserDefaults.standard.object(forKey: key)
         }
+        UserDefaults.standard.set(true, forKey: Self.voiceControlAckKey)
     }
 
     override func tearDown() {
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey] {
             if let value = savedAcks[key] { UserDefaults.standard.set(value, forKey: key) }
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
@@ -77,11 +81,13 @@ final class Item131FirstArmBriefingTests: XCTestCase {
                 for guidedAccessAck in [false, true] {
                     XCTAssertTrue(FirstArmBriefing.partsDue(ownerStarted: false, guidedAccessOn: guidedAccessOn,
                                                             disarmAcknowledged: disarmAck,
-                                                            guidedAccessAcknowledged: guidedAccessAck).isEmpty,
+                                                            guidedAccessAcknowledged: guidedAccessAck,
+                                                            voiceControlAcknowledged: true).isEmpty,
                                   "an automatic re-arm never waits for a tap")
                     let due = FirstArmBriefing.partsDue(ownerStarted: true, guidedAccessOn: guidedAccessOn,
                                                         disarmAcknowledged: disarmAck,
-                                                        guidedAccessAcknowledged: guidedAccessAck)
+                                                        guidedAccessAcknowledged: guidedAccessAck,
+                                                        voiceControlAcknowledged: true)
                     XCTAssertEqual(due, Parts(disarm: !disarmAck, guidedAccess: guidedAccessOn && !guidedAccessAck),
                                    "Guided Access \(guidedAccessOn), acknowledged \(disarmAck), \(guidedAccessAck)")
                 }

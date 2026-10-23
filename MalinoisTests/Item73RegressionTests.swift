@@ -130,11 +130,10 @@ final class Item73RegressionTests: XCTestCase {
 
     /// Under Guided Access the only way to send the app to the background is the lock button,
     /// so a lapse there is a lock — and the record says so, instead of the generic "sent to the
-    /// background" that hides the tamper's actual shape.
+    /// background" that hides the tamper's actual shape. Which lapse is a lock is
+    /// Item77RegressionTests.testTheCountdownNamesItsOwnLapse's four-case table; here, the log
+    /// names it (the test-suite audit's P2).
     func testABackgroundLapseUnderGuidedAccessIsRecordedAsALock() {
-        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: true, duringCountdown: false).rawValue, "locked")
-        XCTAssertEqual(MonitoringEngine.backgroundInterruptionCause(guidedAccessOn: false, duringCountdown: false), .backgrounded,
-                       "without Guided Access a background can be a swipe-away — the generic cause stands")
         let locked = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .localOnly,
                            interrupted: true, interruptionCause: "locked")
         XCTAssertTrue(locked.sensorSummary.lowercased().contains("locked"),
@@ -258,7 +257,7 @@ final class Item73RegressionTests: XCTestCase {
         XCTAssertTrue(CloudExfiltrator.disarmSignalWanted(kind: "armingCancelled"))
         XCTAssertTrue(CloudExfiltrator.disarmSignalWanted(kind: "disarmed"))
         XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "armingInterrupted"))
-        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "armed"))
+        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "armed"), "arming stays silent")
         XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "gaLifted"))
     }
 

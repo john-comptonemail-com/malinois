@@ -17,6 +17,7 @@
 		B1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift */; };
 		B1B2C3D4E5F6000000000312 /* AlertRewrite.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000312 /* AlertRewrite.swift */; };
 		B1B2C3D4E5F6000000000004 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000004 /* AppSettings.swift */; };
+		C16000000000000000000063 /* BiometricBinding.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000053 /* BiometricBinding.swift */; };
 		B1B2C3D4E5F6000000000005 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000005 /* KeychainService.swift */; };
 		B1B2C3D4E5F6000000000006 /* EventStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000006 /* EventStore.swift */; };
 		B1B2C3D4E5F6000000000007 /* CameraController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000007 /* CameraController.swift */; };
@@ -27,6 +28,15 @@
 		B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */; };
 		C15100000000000000000011 /* MonitoringEngine+LaunchPull.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */; };
 		C16000000000000000000014 /* MonitoringEngine+SoundHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000004 /* MonitoringEngine+SoundHealth.swift */; };
+		C1600000000000000000004E /* MonitoringEngine+SweepOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000003E /* MonitoringEngine+SweepOrder.swift */; };
+		C1600000000000000000004F /* MonitoringEngine+MotionHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000003F /* MonitoringEngine+MotionHealth.swift */; };
+		C16000000000000000000060 /* MonitoringEngine+Reinstall.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000050 /* MonitoringEngine+Reinstall.swift */; };
+		C16000000000000000000061 /* MonitoringEngine+ArmPINCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000051 /* MonitoringEngine+ArmPINCheck.swift */; };
+		C16000000000000000000062 /* MonitoringEngine+SettingsGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000052 /* MonitoringEngine+SettingsGuard.swift */; };
+		C16000000000000000000064 /* MonitoringEngine+SirenMicRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000054 /* MonitoringEngine+SirenMicRelease.swift */; };
+		C16000000000000000000065 /* BackgroundAssertion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000055 /* BackgroundAssertion.swift */; };
+		C16000000000000000000066 /* MonitoringEngine+PushAssertion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000056 /* MonitoringEngine+PushAssertion.swift */; };
+		C16000000000000000000067 /* MonitoringEngine+AuditRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000057 /* MonitoringEngine+AuditRecords.swift */; };
 		C1600000000000000000004B /* MonitoringEngine+Backup.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000003B /* MonitoringEngine+Backup.swift */; };
 		C14100000000000000000014 /* MonitoringEngine+SirenRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14100000000000000000004 /* MonitoringEngine+SirenRoute.swift */; };
 		C13100000000000000000012 /* MonitoringEngine+FirstArmBriefing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13100000000000000000002 /* MonitoringEngine+FirstArmBriefing.swift */; };
@@ -78,6 +88,23 @@
 		C10D00000000000000000012 /* CloudEnrollmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D00000000000000000002 /* CloudEnrollmentTests.swift */; };
 		E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000002 /* EventTests.swift */; };
 		E1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */; };
+		E1D2C3D4E5F6000000000039 /* Item144LockoutValueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000039 /* Item144LockoutValueTests.swift */; };
+		E1D2C3D4E5F600000000003A /* Item144InterruptionRecordOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003A /* Item144InterruptionRecordOrderTests.swift */; };
+		E1D2C3D4E5F600000000003B /* Item148SweepOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003B /* Item148SweepOrderTests.swift */; };
+		E1D2C3D4E5F600000000003C /* Item144MotionStallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003C /* Item144MotionStallTests.swift */; };
+		E1D2C3D4E5F600000000003D /* Item143VerifyPullTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003D /* Item143VerifyPullTests.swift */; };
+		E1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift */; };
+		E1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */; };
+		E1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */; };
+		E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */; };
+		E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */; };
+		E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */; };
+		E1D2C3D4E5F6000000000044 /* Item152WalkAwayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000044 /* Item152WalkAwayTests.swift */; };
+		E1D2C3D4E5F6000000000045 /* Item152TwoGuardsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000045 /* Item152TwoGuardsTests.swift */; };
+		E1D2C3D4E5F6000000000046 /* Item152IdentityFailureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000046 /* Item152IdentityFailureTests.swift */; };
+		E1D2C3D4E5F6000000000047 /* Item152AssetStallDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000047 /* Item152AssetStallDeadlineTests.swift */; };
+		E1D2C3D4E5F6000000000048 /* Item153BackgroundAssertionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000048 /* Item153BackgroundAssertionTests.swift */; };
+		E1D2C3D4E5F6000000000049 /* Item153StatusRecordsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000049 /* Item153StatusRecordsTests.swift */; };
 		C1600000000000000000001B /* Item57WatchRelayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000000B /* Item57WatchRelayTests.swift */; };
 		C1600000000000000000001E /* Item57WatchDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000000E /* Item57WatchDeliveryTests.swift */; };
 		C1600000000000000000001F /* Item57WatchReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000000F /* Item57WatchReviewTests.swift */; };
@@ -239,6 +266,7 @@
 		A1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureFailureReason.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000312 /* AlertRewrite.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertRewrite.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000004 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		C16000000000000000000053 /* BiometricBinding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricBinding.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000005 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000006 /* EventStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventStore.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000007 /* CameraController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraController.swift; sourceTree = "<group>"; };
@@ -249,6 +277,15 @@
 		A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringEngine.swift; sourceTree = "<group>"; };
 		C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+LaunchPull.swift"; sourceTree = "<group>"; };
 		C16000000000000000000004 /* MonitoringEngine+SoundHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+SoundHealth.swift"; sourceTree = "<group>"; };
+		C1600000000000000000003E /* MonitoringEngine+SweepOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+SweepOrder.swift"; sourceTree = "<group>"; };
+		C1600000000000000000003F /* MonitoringEngine+MotionHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+MotionHealth.swift"; sourceTree = "<group>"; };
+		C16000000000000000000050 /* MonitoringEngine+Reinstall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+Reinstall.swift"; sourceTree = "<group>"; };
+		C16000000000000000000051 /* MonitoringEngine+ArmPINCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+ArmPINCheck.swift"; sourceTree = "<group>"; };
+		C16000000000000000000052 /* MonitoringEngine+SettingsGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+SettingsGuard.swift"; sourceTree = "<group>"; };
+		C16000000000000000000054 /* MonitoringEngine+SirenMicRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+SirenMicRelease.swift"; sourceTree = "<group>"; };
+		C16000000000000000000055 /* BackgroundAssertion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundAssertion.swift; sourceTree = "<group>"; };
+		C16000000000000000000056 /* MonitoringEngine+PushAssertion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+PushAssertion.swift"; sourceTree = "<group>"; };
+		C16000000000000000000057 /* MonitoringEngine+AuditRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+AuditRecords.swift"; sourceTree = "<group>"; };
 		C1600000000000000000003B /* MonitoringEngine+Backup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+Backup.swift"; sourceTree = "<group>"; };
 		C14100000000000000000004 /* MonitoringEngine+SirenRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+SirenRoute.swift"; sourceTree = "<group>"; };
 		C13100000000000000000002 /* MonitoringEngine+FirstArmBriefing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MonitoringEngine+FirstArmBriefing.swift"; sourceTree = "<group>"; };
@@ -305,6 +342,23 @@
 		C10D00000000000000000002 /* CloudEnrollmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudEnrollmentTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000002 /* EventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingCameraEvidenceTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000039 /* Item144LockoutValueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144LockoutValueTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003A /* Item144InterruptionRecordOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144InterruptionRecordOrderTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003B /* Item148SweepOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item148SweepOrderTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003C /* Item144MotionStallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144MotionStallTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003D /* Item143VerifyPullTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item143VerifyPullTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item148ReinstallRecordTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item148DecoderFuzzTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144VoiceControlBriefingTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144ArmPINCheckTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152SettingsGuardTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152BiometricBindingTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000044 /* Item152WalkAwayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152WalkAwayTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000045 /* Item152TwoGuardsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152TwoGuardsTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000046 /* Item152IdentityFailureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152IdentityFailureTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000047 /* Item152AssetStallDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152AssetStallDeadlineTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000048 /* Item153BackgroundAssertionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item153BackgroundAssertionTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000049 /* Item153StatusRecordsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item153StatusRecordsTests.swift; sourceTree = "<group>"; };
 		C1600000000000000000000B /* Item57WatchRelayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item57WatchRelayTests.swift; sourceTree = "<group>"; };
 		C1600000000000000000000E /* Item57WatchDeliveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item57WatchDeliveryTests.swift; sourceTree = "<group>"; };
 		C1600000000000000000000F /* Item57WatchReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item57WatchReviewTests.swift; sourceTree = "<group>"; };
@@ -469,6 +523,7 @@
 				A1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift */,
 				A1B2C3D4E5F6000000000312 /* AlertRewrite.swift */,
 				A1B2C3D4E5F6000000000004 /* AppSettings.swift */,
+				C16000000000000000000053 /* BiometricBinding.swift */,
 				A1B2C3D4E5F6000000000313 /* ProtectionSettings.swift */,
 				C16000000000000000000006 /* PINStrength.swift */,
 				C1600000000000000000000C /* DisarmTip.swift */,
@@ -492,6 +547,15 @@
 				A1B2C3D4E5F6000000000009 /* MonitoringEngine.swift */,
 				C15100000000000000000001 /* MonitoringEngine+LaunchPull.swift */,
 				C16000000000000000000004 /* MonitoringEngine+SoundHealth.swift */,
+				C1600000000000000000003E /* MonitoringEngine+SweepOrder.swift */,
+				C1600000000000000000003F /* MonitoringEngine+MotionHealth.swift */,
+				C16000000000000000000050 /* MonitoringEngine+Reinstall.swift */,
+				C16000000000000000000051 /* MonitoringEngine+ArmPINCheck.swift */,
+				C16000000000000000000052 /* MonitoringEngine+SettingsGuard.swift */,
+				C16000000000000000000054 /* MonitoringEngine+SirenMicRelease.swift */,
+				C16000000000000000000055 /* BackgroundAssertion.swift */,
+				C16000000000000000000056 /* MonitoringEngine+PushAssertion.swift */,
+				C16000000000000000000057 /* MonitoringEngine+AuditRecords.swift */,
 				C1600000000000000000003B /* MonitoringEngine+Backup.swift */,
 				C14100000000000000000004 /* MonitoringEngine+SirenRoute.swift */,
 				C13100000000000000000002 /* MonitoringEngine+FirstArmBriefing.swift */,
@@ -580,6 +644,23 @@
 				C10D00000000000000000002 /* CloudEnrollmentTests.swift */,
 				D1D2C3D4E5F6000000000002 /* EventTests.swift */,
 				D1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift */,
+				D1D2C3D4E5F6000000000039 /* Item144LockoutValueTests.swift */,
+				D1D2C3D4E5F600000000003A /* Item144InterruptionRecordOrderTests.swift */,
+				D1D2C3D4E5F600000000003B /* Item148SweepOrderTests.swift */,
+				D1D2C3D4E5F600000000003C /* Item144MotionStallTests.swift */,
+				D1D2C3D4E5F600000000003D /* Item143VerifyPullTests.swift */,
+				D1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift */,
+				D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */,
+				D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */,
+				D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */,
+				D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */,
+				D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */,
+				D1D2C3D4E5F6000000000044 /* Item152WalkAwayTests.swift */,
+				D1D2C3D4E5F6000000000045 /* Item152TwoGuardsTests.swift */,
+				D1D2C3D4E5F6000000000046 /* Item152IdentityFailureTests.swift */,
+				D1D2C3D4E5F6000000000047 /* Item152AssetStallDeadlineTests.swift */,
+				D1D2C3D4E5F6000000000048 /* Item153BackgroundAssertionTests.swift */,
+				D1D2C3D4E5F6000000000049 /* Item153StatusRecordsTests.swift */,
 				C1600000000000000000000B /* Item57WatchRelayTests.swift */,
 				C1600000000000000000000E /* Item57WatchDeliveryTests.swift */,
 				C1600000000000000000000F /* Item57WatchReviewTests.swift */,
@@ -888,6 +969,7 @@
 				B1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift in Sources */,
 				B1B2C3D4E5F6000000000312 /* AlertRewrite.swift in Sources */,
 				B1B2C3D4E5F6000000000004 /* AppSettings.swift in Sources */,
+				C16000000000000000000063 /* BiometricBinding.swift in Sources */,
 				B1B2C3D4E5F6000000000005 /* KeychainService.swift in Sources */,
 				B1B2C3D4E5F6000000000006 /* EventStore.swift in Sources */,
 				B1B2C3D4E5F6000000000007 /* CameraController.swift in Sources */,
@@ -898,6 +980,15 @@
 				B1B2C3D4E5F6000000000009 /* MonitoringEngine.swift in Sources */,
 				C15100000000000000000011 /* MonitoringEngine+LaunchPull.swift in Sources */,
 				C16000000000000000000014 /* MonitoringEngine+SoundHealth.swift in Sources */,
+				C1600000000000000000004E /* MonitoringEngine+SweepOrder.swift in Sources */,
+				C1600000000000000000004F /* MonitoringEngine+MotionHealth.swift in Sources */,
+				C16000000000000000000060 /* MonitoringEngine+Reinstall.swift in Sources */,
+				C16000000000000000000061 /* MonitoringEngine+ArmPINCheck.swift in Sources */,
+				C16000000000000000000062 /* MonitoringEngine+SettingsGuard.swift in Sources */,
+				C16000000000000000000064 /* MonitoringEngine+SirenMicRelease.swift in Sources */,
+				C16000000000000000000065 /* BackgroundAssertion.swift in Sources */,
+				C16000000000000000000066 /* MonitoringEngine+PushAssertion.swift in Sources */,
+				C16000000000000000000067 /* MonitoringEngine+AuditRecords.swift in Sources */,
 				C1600000000000000000004B /* MonitoringEngine+Backup.swift in Sources */,
 				C14100000000000000000014 /* MonitoringEngine+SirenRoute.swift in Sources */,
 				C13100000000000000000012 /* MonitoringEngine+FirstArmBriefing.swift in Sources */,
@@ -955,6 +1046,23 @@
 				C10D00000000000000000012 /* CloudEnrollmentTests.swift in Sources */,
 				E1D2C3D4E5F6000000000002 /* EventTests.swift in Sources */,
 				E1D2C3D4E5F6000000000038 /* PendingCameraEvidenceTests.swift in Sources */,
+				E1D2C3D4E5F6000000000039 /* Item144LockoutValueTests.swift in Sources */,
+				E1D2C3D4E5F600000000003A /* Item144InterruptionRecordOrderTests.swift in Sources */,
+				E1D2C3D4E5F600000000003B /* Item148SweepOrderTests.swift in Sources */,
+				E1D2C3D4E5F600000000003C /* Item144MotionStallTests.swift in Sources */,
+				E1D2C3D4E5F600000000003D /* Item143VerifyPullTests.swift in Sources */,
+				E1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift in Sources */,
+				E1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift in Sources */,
+				E1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift in Sources */,
+				E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */,
+				E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */,
+				E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */,
+				E1D2C3D4E5F6000000000044 /* Item152WalkAwayTests.swift in Sources */,
+				E1D2C3D4E5F6000000000045 /* Item152TwoGuardsTests.swift in Sources */,
+				E1D2C3D4E5F6000000000046 /* Item152IdentityFailureTests.swift in Sources */,
+				E1D2C3D4E5F6000000000047 /* Item152AssetStallDeadlineTests.swift in Sources */,
+				E1D2C3D4E5F6000000000048 /* Item153BackgroundAssertionTests.swift in Sources */,
+				E1D2C3D4E5F6000000000049 /* Item153StatusRecordsTests.swift in Sources */,
 				C1600000000000000000001B /* Item57WatchRelayTests.swift in Sources */,
 				C1600000000000000000001E /* Item57WatchDeliveryTests.swift in Sources */,
 				C1600000000000000000001F /* Item57WatchReviewTests.swift in Sources */,
@@ -1188,6 +1296,8 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_CFLAGS = "$(inherited) -fdebug-prefix-map=$(SRCROOT)=/malinois -ffile-compilation-dir=/malinois";
+				OTHER_SWIFT_FLAGS = "$(inherited) -debug-prefix-map $(SRCROOT)=/malinois -file-compilation-dir /malinois -Xcc -fdebug-prefix-map=$(SRCROOT)=/malinois -Xcc -ffile-compilation-dir=/malinois";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -1203,7 +1313,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1213,7 +1323,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1231,7 +1341,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1241,7 +1351,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1260,7 +1370,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1277,7 +1387,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1292,7 +1402,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1301,7 +1411,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1317,7 +1427,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1326,7 +1436,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1343,7 +1453,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatch/MalinoisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1355,7 +1465,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1374,7 +1484,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "MalinoisWatch/MalinoisWatch-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1386,7 +1496,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1404,7 +1514,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1413,7 +1523,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1430,7 +1540,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 77;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1439,7 +1549,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8;
+				MARKETING_VERSION = 1.8.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;

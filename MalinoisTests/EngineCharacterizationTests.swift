@@ -119,18 +119,42 @@ final class EngineCharacterizationTests: XCTestCase {
         rig.engine.disarm()
     }
 
+    /// A capture's photo can be recovered from disk as soon as it is saved, before the engine
+    /// attaches it: on time, the engine's own save; late, after the capture's deadline, the
+    /// pipeline's save to the recovery destination the engine supplied, once the engine has
+    /// given up waiting. Only a late capture uses that destination, so the on-time check alone
+    /// passed without it (test-suite audit, EC02 and EC03).
     func testFrontCaptureHasRecoveryDestinationBeforeEngineAttachment() {
         assertRecoverableCapture(camera: .front, expected: 1)
+        assertRecoverableCapture(camera: .front, expected: 1, late: true)
     }
 
     func testBothCapturesHaveRecoveryDestinationsBeforeEngineAttachment() {
         assertRecoverableCapture(camera: .both, expected: 2)
+        assertRecoverableCapture(camera: .both, expected: 2, late: true)
     }
 
-    private func assertRecoverableCapture(camera: CameraChoice, expected: Int,
+    /// `late`: the camera holds the photo (for Both, the second lens) past a short capture
+    /// deadline, then delivers it; the late run gets its own log folder.
+    private func assertRecoverableCapture(camera: CameraChoice, expected: Int, late: Bool = false,
                                           file: StaticString = #filePath, line: UInt = #line) {
-        let rig = makeRig { $0.captureMode = .photo; $0.cameraPosition = camera }
+        var timing = Self.fastTiming
+        let testRoot = EventStore.rootOverrideForTesting
+        defer { EventStore.rootOverrideForTesting = testRoot }
+        if late {
+            timing.warmUpDeadline = 0.3   // the fake camera warms at once
+            timing.captureFinalizationDeadline = 0.3
+            EventStore.rootOverrideForTesting = testRoot?.appendingPathComponent("late", isDirectory: true)
+        }
+        let rig = makeRig(timing: timing) { $0.captureMode = .photo; $0.cameraPosition = camera }
         rig.camera.supportsMultiCam = true
+        if late {
+            rig.camera.holdStills = true
+            let held = rig.camera
+            rig.camera.bothPhotoProbeForTesting = {
+                while held.holdStills { try? await Task.sleep(for: .milliseconds(10)) }
+            }
+        }
         var observed = 0
         rig.store.attachmentPublishedForTesting = { eventID, filename in
             observed += 1
@@ -142,21 +166,41 @@ final class EngineCharacterizationTests: XCTestCase {
             }
             do {
                 // A separate snapshot stops the live engine from repairing the simulated
-                // crash window before the new store has demonstrated its own recovery.
+                // crash window before the new store has demonstrated its own recovery. The live
+                // store's pending saves finish first: an atomic save writes a temporary file and
+                // renames it, so a copy taken meanwhile can list a file that is gone a moment later
+                // (seen once, item 145's step 9 run). The engine's write-back comes after this hook.
+                rig.store.drainIOForTesting()
                 try FileManager.default.copyItem(at: originalRoot, to: copiedRoot)
                 EventStore.rootOverrideForTesting = copiedRoot
                 let relaunched = EventStore()
                 let recovered = try XCTUnwrap(relaunched.events.first { $0.id == eventID })
                 XCTAssertTrue([recovered.mediaFilename, recovered.secondaryMediaFilename].contains(filename),
                               "restart attaches already-saved evidence without engine write-back", file: file, line: line)
-                XCTAssertEqual(recovered.cloudSyncState, .pending)
+                if late {
+                    // The engine has already settled the record (local only here, with no iCloud).
+                    XCTAssertNotEqual(recovered.cloudSyncState, .synced, "never read as already uploaded", file: file, line: line)
+                } else {
+                    XCTAssertEqual(recovered.cloudSyncState, .pending)
+                }
                 relaunched.flush()
                 relaunched.drainIOForTesting()
             } catch { XCTFail("snapshot recovery failed: \(error)", file: file, line: line) }
         }
         arm(rig)
         rig.engine.handleTrip(.motion)
-        XCTAssertTrue(pump(until: { rig.engine.state == .armed && rig.camera.stills.count + rig.camera.bothStills * 2 >= expected }, timeout: 5))
+        if late {
+            XCTAssertTrue(pump(until: { rig.engine.state == .armed && rig.store.events.contains { $0.captureFailure != nil } },
+                               timeout: 5), "the engine gave up on the held capture", file: file, line: line)
+            rig.camera.releaseStills()
+            XCTAssertTrue(pump(until: { observed >= expected }, timeout: 5),
+                          "the late photo is saved at the engine's recovery destination", file: file, line: line)
+            let event = rig.store.events.first { !$0.isStateChange }
+            XCTAssertNotNil(event?.mediaFilename, "and attached to its event", file: file, line: line)
+            if expected == 2 { XCTAssertNotNil(event?.secondaryMediaFilename, file: file, line: line) }
+        } else {
+            XCTAssertTrue(pump(until: { rig.engine.state == .armed && rig.camera.stills.count + rig.camera.bothStills * 2 >= expected }, timeout: 5))
+        }
         XCTAssertEqual(observed, expected, "each real capture path supplies its recoverable destination", file: file, line: line)
         rig.engine.disarm()
     }
@@ -433,14 +477,22 @@ final class EngineCharacterizationTests: XCTestCase {
     /// Until-clear keeps the clip open while trips keep coming and ends it once the scene has
     /// been quiet for the idle threshold. Today's behavior, pinned as it is: a trip that
     /// extends the recording refreshes the activity clock but is NOT folded into the record's
-    /// sensor list — that is what "until clear" has always done.
+    /// sensor list — that is what "until clear" has always done. The extending trip comes late
+    /// in the quiet time and the clip is checked after the first quiet time would have ended:
+    /// checked at once, a clip is still recording whether or not the trip extended it
+    /// (test-suite audit, EC11).
     func testUntilClearRecordsWhileTripsContinueAndEndsWhenQuiet() {
-        let rig = makeRig { $0.captureMode = .untilClear; $0.cameraPosition = .front }
+        var timing = Self.fastTiming
+        timing.untilClearIdle = 1.5
+        let rig = makeRig(timing: timing) { $0.captureMode = .untilClear; $0.cameraPosition = .front }
         arm(rig)
         rig.engine.handleTrip(.motion)
         XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        let started = Date()
+        pump(until: { Date().timeIntervalSince(started) >= 1.0 }, timeout: 2)
         rig.engine.handleTrip(.power)   // activity while recording extends it
-        XCTAssertEqual(rig.camera.clipEnds, 0, "still recording while trips continue")
+        pump(until: { Date().timeIntervalSince(started) >= 1.9 }, timeout: 2)
+        XCTAssertEqual(rig.camera.clipEnds, 0, "still recording 0.4 s after the first quiet time would have ended")
         XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 5),
                       "quiet for the idle threshold ends the clip")
         XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3))
@@ -631,4 +683,190 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertNil(rig.engine.cameraNotice, "the durable event records it; disarmed Home stays clear")
     }
 
+    // MARK: - Wiring: the engine hands each rule its real inputs (test-suite audit, P5)
+
+    // Each rule below is tested as a pure function elsewhere; these drive the engine, so that
+    // passing a rule a fixed or wrong input is noticed too (the audit's wiring mutants).
+
+    private func settle(_ seconds: TimeInterval) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    /// F4: in Siren mode the first capture is a still even with clips chosen, so the alarm does
+    /// not wait behind a clip (captureModeForNow; ME90).
+    func testSirenModesFirstCaptureIsAStillEvenWithClipsChosen() {
+        let rig = makeRig { $0.responseMode = .siren; $0.captureMode = .clip3; $0.cameraPosition = .front }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.stills.count + rig.camera.clips.count >= 1 }, timeout: 3), "a capture starts")
+        XCTAssertEqual(rig.camera.stills.count, 1, "a still")
+        XCTAssertTrue(rig.camera.clips.isEmpty, "not a clip")
+        rig.engine.disarm()
+    }
+
+    /// The blackout canary reads a signal loss as jamming only while the phone lies still: one
+    /// that has just moved is being carried away, the tamper path's case (shouldEscalateBlackout's
+    /// `stationary`; ME91).
+    func testASignalLossRightAfterThePhoneMovedIsNotJamming() {
+        var timing = Self.fastTiming
+        timing.blackoutDebounce = 0.2
+        let rig = makeRig(timing: timing) { $0.captureMode = .photo; $0.cameraPosition = .front }
+        rig.engine.evidencePushForTesting = { _ in .init(syncState: .synced, metaFailureWasInterference: nil) }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        rig.engine.handleTrip(.motion)   // the phone moves
+        XCTAssertTrue(pump(until: { rig.camera.stills.count == 1 && rig.engine.state == .armed }, timeout: 3))
+        rig.engine.simulateConnectivityForTesting(online: false)
+        settle(1)   // five times the debounce
+        XCTAssertNil(rig.engine.escalation, "moved inside the stationary window: not jamming")
+        rig.engine.disarm()
+    }
+
+    /// A trip in the first two seconds of a signal loss does not go loud: a Wi-Fi to cellular
+    /// hand-off can drop the path for well under a second (shouldGoLoudOnFailedExfil's
+    /// `offlineFor`; ME92).
+    func testATripInTheFirstSecondsOfASignalLossDoesNotGoLoud() {
+        var timing = Self.fastTiming
+        timing.blackoutDebounce = 60   // keeps the canary out of it
+        let rig = makeRig(timing: timing) {
+            $0.captureMode = .photo; $0.cameraPosition = .front; $0.cameraReadiness = .batterySaver
+        }
+        rig.engine.evidencePushForTesting = { _ in .init(syncState: .localOnly, metaFailureWasInterference: nil) }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        rig.engine.simulateConnectivityForTesting(online: false)
+        rig.engine.handleTrip(.touch)   // at once: inside the hand-off filter
+        XCTAssertTrue(pump(until: { rig.camera.stills.count == 1 && rig.engine.state == .armed }, timeout: 3))
+        settle(0.3)
+        XCTAssertNil(rig.engine.escalation, "a signal loss under two seconds old is not yet jamming")
+        rig.engine.disarm()
+    }
+
+    /// An upload that fails with interference after the owner has disarmed never goes loud: the
+    /// watch is over (pushFailureResponse's `watching`; ME104).
+    func testAnInterferedUploadThatEndsAfterTheDisarmStaysQuiet() {
+        let rig = makeRig { $0.captureMode = .photo; $0.cameraPosition = .front }
+        var entered = false
+        var release = false
+        rig.engine.evidencePushForTesting = { _ in
+            entered = true
+            while !release { try? await Task.sleep(for: .milliseconds(10)) }
+            return .init(syncState: .localOnly, metaFailureWasInterference: true)
+        }
+        rig.engine.simulateConnectivityForTesting(online: true)
+        arm(rig)
+        rig.engine.handleTrip(.touch)
+        XCTAssertTrue(pump(until: { entered }, timeout: 3), "the upload is under way")
+        rig.engine.disarm()
+        release = true
+        settle(0.5)
+        XCTAssertNil(rig.engine.escalation, "no alarm after the disarm")
+        XCTAssertFalse(rig.engine.alertActive)
+    }
+
+    /// A ramping siren keeps the alert up through its hold and fade on top of the alert time, so
+    /// the alarm is not cut off while it is still building (alertDismissInterval's
+    /// `sirenRamping`; ME105).
+    func testARampingSirenKeepsTheAlertUpPastTheAlertTime() {
+        let rig = makeRig { $0.responseMode = .siren; $0.sirenRampUp = true; $0.captureMode = .photo; $0.cameraPosition = .front }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.engine.alertActive }, timeout: 3), "the alarm starts")
+        settle(Self.fastTiming.alertDuration + 0.7)
+        XCTAssertTrue(rig.engine.alertActive, "still up: the ramp adds its 20 s")
+        rig.engine.disarm()
+    }
+
+    /// With an empty log, the launch pull asks for the whole log (its limit), not one page
+    /// (launchSyncLimit's `localEventCount`; ME106). A fresh store also owes a restore, which asks
+    /// for the whole log by itself, so the restore is marked done first: the empty log decides.
+    func testTheLaunchPullOfAnEmptyLogAsksForTheWholeLog() {
+        let rig = makeRig()
+        rig.store.completeRestore()   // before the Pro check's answer starts the pull
+        XCTAssertNil(rig.store.restoreOwedSince)
+        var limits: [Int] = []
+        rig.engine.cloudFetchForTesting = { limit in limits.append(limit); return ([], true) }
+        XCTAssertTrue(pump(until: { !limits.isEmpty }, timeout: 3), "the launch pull runs once the Pro check answers")
+        XCTAssertEqual(limits.first, EventStore.maxEvents)
+    }
+
+    /// The automatic purge waits an hour after an attempt: a launch ten minutes after one does not
+    /// start another (autoPurgeDue; ME107).
+    func testTheAutomaticPurgeDoesNotRunAgainSoonAfterAnAttempt() async {
+        let attemptKey = "com.malinois.cloudRetention.lastAttempt"
+        let runKey = "com.malinois.cloudRetention.lastRun"
+        let attempted = Date().addingTimeInterval(-600)
+        UserDefaults.standard.removeObject(forKey: runKey)
+        UserDefaults.standard.set(attempted, forKey: attemptKey)
+        defer {
+            UserDefaults.standard.removeObject(forKey: attemptKey)
+            UserDefaults.standard.removeObject(forKey: runKey)
+        }
+        let rig = makeRig { $0.cloudRetention = .months3 }
+        await rig.engine.enforceCloudRetentionIfDue()
+        XCTAssertEqual(UserDefaults.standard.object(forKey: attemptKey) as? Date, attempted,
+                       "ten minutes after an attempt, no new attempt is stamped")
+    }
+
+    /// A failed push registration matters only while Cross-device alerts are on: with them off,
+    /// Home says nothing (notificationNotice's `notifyOtherDevices`; ME99).
+    func testThePushRegistrationNoticeFollowsTheCrossDeviceSwitch() async {
+        RemotePushCoordinator.shared.registrationFailed = true
+        defer { RemotePushCoordinator.shared.registrationFailed = false }
+        let rig = makeRig { $0.notifyOtherDevices = false }
+        await rig.engine.refreshNotificationHealth()
+        XCTAssertNil(rig.engine.notificationNotice, "alerts off: a failed registration is not worth a notice")
+        rig.settings.notifyOtherDevices = true
+        await rig.engine.refreshNotificationHealth()
+        XCTAssertNotNil(rig.engine.notificationNotice, "alerts on: it is")
+    }
+
+    /// A background push on the free tier reports "no data", never "failed", whatever the last
+    /// fetch did: the free tier has no iCloud to pull from (pushResult's `pro`; ME100).
+    func testABackgroundPushOnTheFreeTierNeverReportsAFailedFetch() async {
+        let cloud = CloudExfiltrator()
+        _ = await cloud.fetchRecentEvents()   // no account here: the fetch fails
+        XCTAssertTrue(cloud.lastFetchFailed)
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(), cloud: cloud,
+                                                          camera: FakeCamera(),
+                                                          entitlements: ProEntitlements(resolvedAs: .free),
+                                                          timing: Self.fastTiming))
+        let result = await engine.handleRemotePush()
+        XCTAssertEqual(result, .noData)
+    }
+
+    /// Sixteen triggers inside the flood window, from four tripwires taking turns so none passes
+    /// its own bar, are a flood: an attacker alternating sources cannot stay under the
+    /// per-tripwire count (isAggregateFlood; ME97).
+    func testSixteenTriggersFromAlternatingTripwiresAreAFlood() {
+        let rig = makeRig { $0.captureMode = .photo; $0.cameraPosition = .front }
+        rig.engine.evidencePushForTesting = { _ in .init(syncState: .synced, metaFailureWasInterference: nil) }
+        arm(rig)
+        let sensors: [SensorType] = [.motion, .power, .proximity, .touch]
+        for index in 0..<MonitoringEngine.aggregateFloodThreshold {   // fifteen ordinary triggers
+            rig.engine.handleTrip(sensors[index % sensors.count])
+            XCTAssertTrue(pump(until: { rig.engine.state == .armed && rig.camera.stills.count == index + 1 }, timeout: 3),
+                          "trigger \(index + 1) is handled on its own")
+        }
+        XCTAssertNil(rig.engine.escalation, "fifteen is not yet a flood")
+        rig.engine.handleTrip(.motion)   // the sixteenth
+        XCTAssertTrue(pump(until: { rig.engine.escalation == .flood }, timeout: 3), "the sixteenth starts a flood")
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3))
+        rig.engine.handleTrip(.power)   // the seventeenth joins it
+        settle(0.2)
+        let incidents = rig.store.events.filter { !$0.isStateChange && !$0.triggeredSensors.isEmpty }
+        XCTAssertEqual(incidents.count, 16, "the seventeenth is counted into the flood's record, not a record of its own")
+        rig.engine.disarm()
+    }
+
+    /// Arming under Guided Access with the camera never asked for says so: iOS cannot show its
+    /// question while Guided Access is on (cameraAskBlocked's `guidedAccessOn`; ME110).
+    func testArmingUnderGuidedAccessWithTheCameraNeverAskedSaysSo() {
+        let rig = makeRig()
+        rig.camera.videoPermission = .notDetermined
+        rig.engine.simulateGuidedAccessForTesting(on: true)
+        rig.engine.beginArming()
+        XCTAssertTrue(rig.engine.cameraAskBlockedByGuidedAccess)
+        rig.engine.disarm()
+    }
 }

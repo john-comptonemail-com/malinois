@@ -22,6 +22,10 @@ enum KeychainService {
     private static let confirmedLengthAccount = "com.malinois.pin.confirmedLength"
     private static let attemptsAccount = "com.malinois.pin.attempts"
     private static let lockoutAccount = "com.malinois.pin.lockout"
+    /// When the PIN was last entered correctly or set (ADR 0054): seconds since 1970, as text.
+    private static let lastEntryAccount = "com.malinois.pin.lastEntry"
+    /// The enrolled-biometrics state Face ID or Touch ID unlock was bound to when the owner turned it on (ADR 0056).
+    private static let biometricStateAccount = "com.malinois.biometric.enrolledState"
 
     private static let hashVersion: UInt8 = 2          // 1 = legacy SHA-256, 2 = PBKDF2
     private static let pbkdf2Iterations: UInt32 = 120_000
@@ -224,6 +228,7 @@ enum KeychainService {
     #if DEBUG
     /// Test-fixture cleanup only. Production has no automatic credential-wipe path.
     /// Does not remove trial or Early-Access membership.
+    @MainActor
     static func wipeStalePINData() {
         mirroredFailures = 0
         mirroredLockout = nil
@@ -233,9 +238,43 @@ enum KeychainService {
         delete(account: confirmedLengthAccount)
         delete(account: attemptsAccount)
         delete(account: lockoutAccount)
+        delete(account: lastEntryAccount)
+        delete(account: biometricStateAccount)
         UserDefaults.standard.removeObject(forKey: setupCompletedKey)
     }
+
+    /// Test-only (ADR 0054): plants the stored time of the last correct entry, as text, or removes it.
+    static func writeLastEntryForTesting(_ text: String) { _ = write(Data(text.utf8), account: lastEntryAccount) }
+    static func removeLastEntryForTesting() { delete(account: lastEntryAccount) }
     #endif
+
+    /// When the PIN was last entered correctly or set (ADR 0054), or nil when none is on record or the stored value is
+    /// unreadable or not a finite time, either of which makes the ARM tap ask: the safe direction. This device only,
+    /// readable while the phone is unlocked, like the lockout's deadline.
+    static var lastCorrectEntry: Date? {
+        guard let data = read(account: lastEntryAccount),
+              let text = String(data: data, encoding: .utf8),
+              let seconds = Double(text), seconds.isFinite else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    /// Records a correct entry now (ADR 0054): every successful `verify`, and every PIN set. Best effort: a refused
+    /// write leaves the older time, and the next ARM tap may ask once more.
+    private static func noteCorrectEntry() {
+        write(Data(String(Date().timeIntervalSince1970).utf8), account: lastEntryAccount)
+    }
+
+    /// The enrolled-biometrics state the unlock is bound to (ADR 0056), nil when none is on record. This device only,
+    /// readable while the phone is unlocked, like the lockout's deadline.
+    static var enrolledBiometricState: Data? { read(account: biometricStateAccount) }
+
+    /// Binds the unlock to `state` (ADR 0056): the state iOS reports when Settings turns the unlock on. False when the
+    /// write is refused, in which case the unlock is unbound and the pad's first offer turns it off again.
+    @discardableResult
+    static func recordEnrolledBiometricState(_ state: Data) -> Bool { write(state, account: biometricStateAccount) }
+
+    /// Clears the binding (ADR 0056): the unlock turned off, by Settings or by the pad.
+    static func clearEnrolledBiometricState() { delete(account: biometricStateAccount) }
 
     /// The PIN's length as confirmed by a successful PIN change or entry (item 106): the pad
     /// auto-submits at it. Nil when unconfirmed, unreadable or out of range, and the pad then
@@ -269,8 +308,9 @@ enum KeychainService {
         return n
     }
 
-    /// Sets (or replaces) the PIN. Accepts 4–6 digits.
+    /// Sets (or replaces) the PIN. Accepts 4–6 digits. Main-actor isolated: it clears the lockout (item 144's point 5).
     @discardableResult
+    @MainActor
     static func setPIN(_ pin: String) -> Bool {
         guard isValidPIN(pin), pinPresence != .sealedByLock else { return false }
         let hash = versionedHash(pin)
@@ -285,6 +325,7 @@ enum KeychainService {
         guard store(hash) else { return false }
         _ = write(Data("\(pin.count)".utf8), account: lengthAccount)
         confirmLength(pin.count)
+        noteCorrectEntry()   // a PIN just chosen is a PIN remembered (ADR 0054)
         resetAttempts()   // a fresh PIN clears any lockout
         UserDefaults.standard.set(true, forKey: setupCompletedKey)
         return true
@@ -298,6 +339,7 @@ enum KeychainService {
     ///
     /// Callers must NOT also call `recordFailure()` — that would double-count and escalate
     /// the lockout at twice the intended rate.
+    @MainActor
     static func verify(_ pin: String) -> Bool {
         guard pinPresence == .present, rateLimitReadable, lockoutRemaining() == 0 else { return false }
         guard let verified = verifyWithoutRateLimit(pin) else { return false }
@@ -312,6 +354,7 @@ enum KeychainService {
         // everything" was a property of one screen, not of the service it names.
         resetAttempts()
         confirmLength(pin.count)   // the pad may now auto-submit at it (item 106)
+        noteCorrectEntry()   // the ARM tap's check counts from here (ADR 0054)
         return true
     }
 
@@ -366,6 +409,7 @@ enum KeychainService {
     /// item unreadable until then), and the threat model excludes an attacker who has that
     /// passcode. So a reboot is a dead end, not a rate-limit — and the count survives too.
     @discardableResult
+    @MainActor
     static func recordFailure() -> TimeInterval {
         let failures = failedAttempts + 1
         setFailedAttempts(failures)
@@ -383,23 +427,30 @@ enum KeychainService {
     /// guesses against a Keychain refusing writes never engaged the lockout — rate limiting
     /// failed open on a storage fault. The mirror keeps the count and the deadline for the
     /// life of the process; each read takes the stricter of the two, the Keychain stays the
-    /// durable copy, and a correct PIN clears both.
-    nonisolated(unsafe) private static var mirroredFailures = 0
-    nonisolated(unsafe) private static var mirroredLockout: String?
+    /// durable copy, and a correct PIN clears both. Main-actor isolated, with every function that
+    /// reads or writes them (item 144's point 5): every caller is a PIN pad or the engine, and the
+    /// compiler now holds what used to be a promise in this comment.
+    @MainActor private static var mirroredFailures = 0
+    @MainActor private static var mirroredLockout: String?
 
     /// Lockout backoff for a given cumulative failure count (pure; unit-tested).
     /// Zero below the threshold, then 30s doubling each further failure, capped at
-    /// 3600s (1 hour). The cap keeps escalating rather than plateauing at 5 min, so a
-    /// determined offline brute-force stays impractical (F-09): the failure count is
+    /// `maxLockoutDelay` (1 hour). The cap keeps escalating rather than plateauing at 5 min, so
+    /// guessing on the phone itself stays impractical (F-09; item 144's point 8: no key derivation
+    /// protects a 4-digit PIN offline, and this wait makes no such claim): the failure count is
     /// monotonic — it can't be un-done by resetting the clock — so each further guess
     /// costs more even if an attacker skips the current wait. (Guided Access, the
     /// recommended armed config, also blocks reaching Settings to change the clock.)
     static func lockoutDelay(forFailures failures: Int) -> TimeInterval {
         guard failures >= failuresBeforeLockout else { return 0 }
         let extra = Double(failures - failuresBeforeLockout)
-        return min(30.0 * pow(2.0, extra), 3600)
+        return min(30.0 * pow(2.0, extra), maxLockoutDelay)
     }
 
+    /// The longest wait a lockout can impose; a stored deadline further ahead than this is damage (item 144's F3).
+    static let maxLockoutDelay: TimeInterval = 3600
+
+    @MainActor
     static func resetAttempts() {
         mirroredFailures = 0
         mirroredLockout = nil
@@ -409,28 +460,72 @@ enum KeychainService {
 
     /// Seconds until PIN entry is allowed again (0 if not locked out). Pure decision
     /// extracted for testing; measured against the monotonic uptime clock (F-09).
+    @MainActor
     static func lockoutRemaining() -> TimeInterval {
-        let stored = read(account: lockoutAccount).flatMap { String(data: $0, encoding: .utf8) }
+        var stored = read(account: lockoutAccount).flatMap { String(data: $0, encoding: .utf8) }
         let uptime = ProcessInfo.processInfo.systemUptime
         let wallNow = Date().timeIntervalSince1970
+        if let value = stored, !lockoutValueIsWellFormed(value, wallNow: wallNow) {
+            // Damage (item 144's F3): a fresh deadline from the failure count, so the pad is locked for
+            // the right time, neither not at all (garbage read as 0) nor for good (an absurd deadline).
+            stored = repairLockout(uptime: uptime)
+        }
         // The stricter of the durable copy and the in-process mirror (item 73, R10).
         return [stored, mirroredLockout].compactMap { $0 }
             .map { lockoutRemaining(stored: $0, uptime: uptime, wallNow: wallNow) }
             .max() ?? 0
     }
 
+    /// Replaces a damaged lockout value with the deadline the stored failure count earns, written as
+    /// `recordFailure` writes one and mirrored when nothing is mirrored yet; below the threshold there is
+    /// nothing to lock, so the damaged value is removed. Returns the new stored value, or nil.
+    @MainActor
+    private static func repairLockout(uptime: Double) -> String? {
+        let delay = lockoutDelay(forFailures: failedAttempts)
+        guard delay > 0 else {
+            delete(account: lockoutAccount)
+            return nil
+        }
+        let deadline = "\(uptime + delay)|\(uptime)"
+        if mirroredLockout == nil { mirroredLockout = deadline }
+        _ = write(Data(deadline.utf8), account: lockoutAccount)
+        return deadline
+    }
+
+    /// Pure (unit-tested; item 144's F3). Whether a stored lockout value is one this app could have written: two
+    /// finite numbers `deadline|setAt` with the deadline at or after its set time and at most `maxLockoutDelay`
+    /// ahead, or one finite legacy wall-clock epoch, zero or more and at most `maxLockoutDelay` past `wallNow` (a legacy
+    /// deadline far ahead read as the longest wait on every read, for good: item 155's A4). Anything else is damage, and `lockoutRemaining()`
+    /// replaces it with a fresh deadline from the failure count rather than reading it as "not locked" (garbage
+    /// fell through to the legacy branch and gave 0) or as locked for good (an absurd deadline).
+    nonisolated static func lockoutValueIsWellFormed(_ stored: String, wallNow: Double) -> Bool {
+        let parts = stored.split(separator: "|", omittingEmptySubsequences: false).map { Double($0) }
+        switch parts.count {
+        case 2:
+            guard let deadline = parts[0], let setAt = parts[1], deadline.isFinite, setAt.isFinite else { return false }
+            return deadline >= setAt && deadline - setAt <= maxLockoutDelay
+        case 1:
+            guard let epoch = parts[0], epoch.isFinite else { return false }
+            return epoch >= 0 && epoch - wallNow <= maxLockoutDelay   // a deadline past the longest wait is damage (item 155's A4)
+        default:
+            return false
+        }
+    }
+
     /// Pure (unit-tested). New format is `deadlineUptime|setUptime`; if the current uptime
     /// is below the set-uptime the device rebooted (uptime is monotonic and only resets on
     /// boot), so the stored deadline is stale → not locked. Falls back to the legacy
-    /// single wall-clock epoch for a value written by an older build.
+    /// single wall-clock epoch for a value written by an older build. Bounded by
+    /// `maxLockoutDelay` (item 144's F3): the live read repairs a damaged value first, and
+    /// this bound holds for whatever reaches it, the in-process mirror included.
     static func lockoutRemaining(stored: String, uptime: Double, wallNow: Double) -> TimeInterval {
         let parts = stored.split(separator: "|").compactMap { Double($0) }
         if parts.count == 2 {
             let (deadline, setAt) = (parts[0], parts[1])
             if uptime < setAt - 1 { return 0 }   // uptime went backward → rebooted → stale
-            return max(0, deadline - uptime)
+            return min(max(0, deadline - uptime), maxLockoutDelay)
         }
-        return max(0, (parts.first ?? 0) - wallNow)   // legacy wall-clock format
+        return min(max(0, (parts.first ?? 0) - wallNow), maxLockoutDelay)   // legacy wall-clock format
     }
 
     private static var rateLimitReadable: Bool {
@@ -440,6 +535,7 @@ enum KeychainService {
         }
     }
 
+    @MainActor
     private static var failedAttempts: Int {
         let stored: Int
         if let data = read(account: attemptsAccount),
@@ -448,6 +544,7 @@ enum KeychainService {
         return max(stored, mirroredFailures)   // a refused write cannot lower the count (item 73, R10)
     }
 
+    @MainActor
     private static func setFailedAttempts(_ n: Int) {
         mirroredFailures = n
         _ = write(Data(String(n).utf8), account: attemptsAccount)
@@ -536,9 +633,18 @@ enum KeychainService {
         hasher.update(data: Data(pin.utf8))
         return write(Data(hasher.finalize()), account: account)
     }
+    /// Test-only: the stored hash's length, 32 for the legacy format and 33 for the current
+    /// one (nil while unreadable), so the upgrade after a correct PIN can be seen.
+    static var storedHashLengthForTesting: Int? { read(account: account)?.count }
     #endif
 
     #if DEBUG
+    /// Test-only (item 144's F3): plants a lockout value as damage would leave it.
+    static func writeLockoutValueForTesting(_ value: String) { _ = write(Data(value.utf8), account: lockoutAccount) }
+    /// Test-only companion: the stored lockout value, nil when absent.
+    static var lockoutValueForTesting: String? { read(account: lockoutAccount).flatMap { String(data: $0, encoding: .utf8) } }
+    /// Test-only: forgets the in-process copy of the deadline, so a test sees what the stored value alone says.
+    @MainActor static func clearMirroredLockoutForTesting() { mirroredLockout = nil }
     /// Test-only: every Keychain write reports failure, constructing the partial-failure state
     /// of item 73's R10 (reads fine, writes refused) against a live Keychain.
     nonisolated(unsafe) static var failWritesForTesting = false

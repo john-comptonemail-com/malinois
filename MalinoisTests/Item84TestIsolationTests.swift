@@ -152,6 +152,27 @@ final class Item84TestIsolationTests: XCTestCase {
         XCTAssertEqual(engine.state, .disarmed)
     }
 
+    /// An engine hears its Pro check through the main run loop, so a test that never turns the loop
+    /// leaves the answer waiting. It used to land in the next test that turned the loop, where the
+    /// engine acted on that test's flags: it took the re-arm owed to that test's own engine (the
+    /// test-suite audit's ME206). The shared tearDown lets the answer land in the test that left it.
+    func testAnEnginesQueuedProAnswerLandsInItsOwnTest() {
+        let owed = "com.malinois.recovery.pendingReArm"
+        TestIsolation.setUp(folderPrefix: "MalinoisItem84")
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
+                                                          cloud: CloudExfiltrator(), camera: FakeCamera(),
+                                                          entitlements: ProEntitlements(resolvedAs: .free)))
+        engines.append(engine)   // this class's tearDown disarms it too, so a red run leaks nothing
+        TestIsolation.tearDown()   // a test that never turned the main run loop ends
+
+        EventStore.rootOverrideForTesting = newFolder()   // the next test begins
+        UserDefaults.standard.set(true, forKey: owed)   // owing a re-arm to an engine of its own
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: owed), "the earlier test's engine took no re-arm")
+        XCTAssertEqual(engine.state, .disarmed, "and did not re-arm itself")
+    }
+
     // MARK: - The test runner's app
 
     /// The app the test runner launches to host these tests builds nothing of its own: no engine,

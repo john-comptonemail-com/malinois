@@ -188,4 +188,21 @@ final class Item92GuidedAccessScreenTests: XCTestCase {
         XCTAssertEqual(engine.state, .guidedAccessCheck)
         XCTAssertTrue(screenHeldOn)
     }
+
+    /// A hold's end already on its way never ends the hold that replaced it. Staged exactly: the
+    /// main thread is held past the hold's end, so in one run-loop pass the hold's timer fires
+    /// (its end is queued) and then a second timer brings the app back on screen, starting a new
+    /// hold before the old end arrives (test-suite audit, W221).
+    func testAnEndAlreadyOnItsWayDoesNotEndTheHoldThatReplacedIt() {
+        let engine = makeEngine(hold: 0.2)
+        engine.simulateGuidedAccessForTesting(on: true)   // hold 1: its end is due in 0.2 s
+        let replace = Timer(timeInterval: 0.2, repeats: false) { _ in
+            MainActor.assumeIsolated { engine.handleScenePhase(true) }   // hold 2
+        }
+        RunLoop.main.add(replace, forMode: .common)
+        Thread.sleep(forTimeInterval: 0.3)   // both come due unseen: one pass fires them, hold 1's first
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(replace.isValid, "the new hold started")
+        XCTAssertTrue(screenHeldOn, "the old hold's end did not end the new hold")
+    }
 }

@@ -60,9 +60,10 @@ final class MotionMonitor: SensorMonitor {
     nonisolated static let stallThreshold: TimeInterval = 3
     private let watchdogInterval: TimeInterval = 1.5
     private let restartBackoff: TimeInterval = 2
-    /// Stalls detected this watch; the engine logs each. Kept for future UI.
+    /// Stalls detected this watch, counted afresh at each `start()`.
     private(set) var stallCount = 0
-    /// Called on the main actor after a stall is detected and the restart issued.
+    /// Called on the main actor after a stall is detected and the restart issued, with this watch's count. The engine
+    /// writes every stall to the system log and the first of a live watch to the owner's log (item 144 (g)).
     var onStall: ((Int) -> Void)?
 
     /// Pure (unit-tested): has the stream gone quiet past the threshold? Measured from the last

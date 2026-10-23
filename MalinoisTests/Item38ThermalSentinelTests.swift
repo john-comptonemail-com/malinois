@@ -114,6 +114,16 @@ final class Item38ThermalSentinelTests: XCTestCase {
         XCTAssertTrue(thermalRecords(rig).isEmpty)
     }
 
+    /// A phone already hot when the watch goes live is recorded at once: the sentinel takes its
+    /// first reading at go-live, not at the next change, which may never come (test-suite audit,
+    /// W234).
+    func testAPhoneAlreadyHotAtGoLiveIsRecordedAtOnce() {
+        let rig = makeRig(thermal: { .serious })
+        arm(rig)
+        XCTAssertEqual(thermalRecords(rig), ["thermalSerious"], "recorded at go-live, with no change notice")
+        rig.engine.disarm()
+    }
+
     /// Each armed session starts afresh.
     func testANewSessionRecordsAgain() {
         let rig = makeRig()

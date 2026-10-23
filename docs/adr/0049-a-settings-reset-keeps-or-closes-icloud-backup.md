@@ -61,3 +61,6 @@ What decides whether anything leaves the phone after a reset:
   the owner may have chosen to keep.
 - Other settings still reset to their defaults on a reset, as before; reading more of them back from
   the damaged data is not part of this decision.
+- Since 1.8.1 (ADR 0055) the reset sets retention to Keep forever rather than the 12-month default, so a
+  reset never starts deleting iCloud media; and a store that cannot be read before the phone's first
+  unlock after a restart is not a reset: the settings wait for the unlock.

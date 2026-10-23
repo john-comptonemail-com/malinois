@@ -104,6 +104,17 @@ final class DisarmEntryCoordinatorTests: XCTestCase {
         XCTAssertEqual(rig.coordinator.takeOwnerEventsOnDisarm(), [id])
     }
 
+    /// The attribution window closes: with the pad never opened, a capture after it is evidence,
+    /// not the owner's own handling, even if a correct PIN comes later. The closing had no test
+    /// (test-suite audit, PN21).
+    func testTheCandidateWindowCloses() {
+        let rig = makeRig()
+        rig.coordinator.noteCandidate()
+        XCTAssertTrue(pump(until: { !rig.coordinator.inFlow }, timeout: 1), "the window closes after its 0.3 s")
+        rig.coordinator.noteCandidateEvent(UUID())
+        XCTAssertTrue(rig.coordinator.takeOwnerEventsOnDisarm().isEmpty, "a later capture is not attributed")
+    }
+
     /// A capture with no hold and no pad is neither attributed nor suppressed.
     func testNoFlowMeansNoAttribution() {
         let rig = makeRig()

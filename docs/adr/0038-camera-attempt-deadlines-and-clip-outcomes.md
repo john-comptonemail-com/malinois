@@ -103,3 +103,9 @@ checks must exercise charging/unplugged audio, early disarm, supported Both mode
 and an actual interruption where reproducible. This does not bound every unrelated
 engine operation (for example cloud work), nor force-stop a blocked Apple API.
 Submitted 1.5 (55), release metadata and cloud enrollment policy are unchanged.
+
+Amended 2026-10-22 (1.8.1, BACKLOG 152's lead 6): the siren's wait for the camera to release the
+microphone, the one engine wait on the session queue this decision had left unbounded, now has
+the same shape: at most `EngineTiming.sirenMicReleaseWait` (1.5 s), after which the alarm sounds
+anyway; the abandoned release goes on unstructured and, when it lands, the alarm is made to sound
+again if the session's deactivation silenced it (`MonitoringEngine+SirenMicRelease.swift`).

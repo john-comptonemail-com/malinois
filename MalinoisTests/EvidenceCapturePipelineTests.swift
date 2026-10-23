@@ -499,11 +499,20 @@ final class EvidenceCapturePipelineTests: XCTestCase {
     // MARK: - A capture cut short by the disarm (item 63 leg 6)
 
     /// The owner's disarm stops the camera; the still that was in flight fails. That is not a
-    /// camera fault: the record says "disarmed" and Home gets no notice.
+    /// camera fault: the record says "disarmed" and Home gets no notice. The disarm comes while
+    /// the still is under way: ended before the capture is asked for, the pipeline's first check
+    /// answers and the still is never taken (test-suite audit, EP23).
     func testAStillThatFailsAfterTheDisarmIsClassifiedAsDisarmedAndPostsNoNotice() async {
-        let rig = makeRig { $0.stillError = CameraController.CameraError.captureFailed }
+        let rig = makeRig()
+        rig.camera.holdStills = true
+        let capture = Task { await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off) }
+        let end = Date().addingTimeInterval(2)
+        while rig.camera.stills.isEmpty, Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(rig.camera.stills.count, 1, "the still is under way")
         rig.host.captureSessionIsOver = true
-        let outcome = await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        rig.camera.stillError = CameraController.CameraError.captureFailed   // the disarm stopped the camera
+        rig.camera.releaseStills()
+        let outcome = await capture.value
         XCTAssertNil(outcome.capture)
         XCTAssertEqual(outcome.failure, .disarmed)
         XCTAssertTrue(rig.host.notices.isEmpty, "no Home notice for a capture the owner ended")
@@ -519,11 +528,18 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertEqual(rig.host.notices.count, 1)
     }
 
-    /// A warm-up that fails because the disarm shut the session down is "disarmed" too.
+    /// A warm-up that fails because the disarm shut the session down is "disarmed" too. The
+    /// disarm comes during the warm-up: ended before the capture is asked for, the pipeline's
+    /// first check answers and the warm-up never runs (test-suite audit, EP22).
     func testAWarmUpThatFailsAfterTheDisarmIsDisarmedNotUnavailable() async {
         let rig = makeRig { $0.warmUpError = CameraController.CameraError.unavailable }
-        rig.host.captureSessionIsOver = true
+        var warmUpRan = false
+        rig.camera.onWarmUpForTesting = {
+            warmUpRan = true
+            rig.host.captureSessionIsOver = true   // the disarm, while the camera comes up
+        }
         let outcome = await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        XCTAssertTrue(warmUpRan, "the disarm came during the warm-up")
         XCTAssertEqual(outcome.failure, .disarmed)
         XCTAssertTrue(rig.host.notices.isEmpty)
     }
@@ -879,6 +895,90 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertEqual(rig.host.audioResumes, 0)
     }
 
+    // MARK: - Lines no test noticed (test-suite audit, P5)
+
+    /// A pipeline whose stills are held until `releaseStills()`, with a short capture deadline.
+    private func heldStillRig(deadline: TimeInterval) -> Rig {
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = deadline
+        let camera = FakeCamera()
+        camera.holdStills = true
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        return Rig(pipeline: pipeline, camera: camera, host: host)
+    }
+
+    /// A still that lands after its deadline, with the watch still on, is kept with the reason
+    /// "timed out"; "disarmed" is for one the owner's disarm cut short. The late-clip test's clip
+    /// carries its own reason, which hid the choice (EP13).
+    func testALateStillOnALiveWatchIsKeptAsTimedOut() async throws {
+        let rig = heldStillRig(deadline: 0.05)
+        let store = EventStore()
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion])
+        store.add(event)
+        let outcome = await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off,
+                                                 preservation: .init(event: event, store: store))
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        rig.camera.releaseStills()
+        let end = Date().addingTimeInterval(3)
+        while store.events.first(where: { $0.id == event.id })?.mediaFilename == nil, Date() < end {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let kept = try XCTUnwrap(store.events.first { $0.id == event.id })
+        XCTAssertNotNil(kept.mediaFilename, "the late still is kept")
+        XCTAssertEqual(kept.captureFailuresByCamera?["front"], CaptureFailureReason.captureTimedOut.rawValue)
+    }
+
+    /// A still that outlives its deadline with the screen lit has the light turned off when the
+    /// attempt is cleaned up: the screen must not stay white for an answer that may never come
+    /// (EP07).
+    func testTheScreenLightGoesOutWhenAHeldStillIsCleanedUp() async {
+        let rig = heldStillRig(deadline: 0.05)
+        let outcome = await rig.pipeline.capture(from: .front, mode: .photo, illumination: .on)
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        XCTAssertEqual(rig.host.flashStates.first, true, "the screen was lit for the shot")
+        XCTAssertEqual(rig.host.flashStates.last, false, "and is dark again")
+        rig.camera.releaseStills()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    /// A capture that times out after the owner disarmed posts no camera notice on Home: the
+    /// disarm, not the camera, ended it (EP08).
+    func testATimeoutAfterTheDisarmPostsNoNotice() async {
+        let rig = heldStillRig(deadline: 0.3)
+        let capture = Task { await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off) }
+        let end = Date().addingTimeInterval(2)
+        while rig.camera.stills.isEmpty, Date() < end { try? await Task.sleep(for: .milliseconds(5)) }
+        rig.host.captureSessionIsOver = true   // the disarm, while the still is held
+        let outcome = await capture.value
+        XCTAssertEqual(outcome.failure, .disarmed)
+        XCTAssertTrue(rig.host.notices.compactMap { $0 }.isEmpty, "no camera notice for a capture the owner ended")
+        rig.camera.releaseStills()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    /// A still does not borrow the microphone: only a clip pauses the Sound tripwire (EP15).
+    func testAStillLeavesTheSoundTripwireListening() async {
+        let rig = makeRig()
+        rig.host.audioHandoffNeeded = true
+        _ = await rig.pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        XCTAssertEqual(rig.host.audioPauses, 0)
+    }
+
+    /// A fixed-length clip that comes out more than a quarter second short is marked partial: a
+    /// three-second clip of 0.4 s is not the clip the owner chose (EP40).
+    func testAFixedClipThatComesOutShortIsMarkedPartial() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let movie = folder.appendingPathComponent("short.mov")
+        try await EventTests.playableClip(at: movie, frames: 4)
+        let rig = makeRig { $0.finalizedClipForTesting = movie }
+        let outcome = await rig.pipeline.capture(from: .front, mode: .clip3, illumination: .off)
+        let capture = try XCTUnwrap(outcome.capture)
+        XCTAssertEqual(capture.issue, .clipPartial)
+    }
 }
 
 /// Test-only one-shot gate. Every caller installs a safety release and drains its capture.

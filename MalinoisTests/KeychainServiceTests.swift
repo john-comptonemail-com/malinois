@@ -6,6 +6,7 @@
 import XCTest
 @testable import Malinois
 
+@MainActor
 final class KeychainServiceTests: XCTestCase {
 
     func testIsValidPINAcceptsFourToSixDigits() {
@@ -301,6 +302,31 @@ final class KeychainServiceTests: XCTestCase {
         }
         XCTAssertEqual(KeychainService.presence(hash: .missing, salt: .sealed), .sealedByLock)
         XCTAssertEqual(KeychainService.presence(hash: .found(Data()), salt: .sealed), .sealedByLock)
+    }
+
+    /// Setting a new PIN clears the old lockout: the owner, who has just authenticated to set it,
+    /// is not locked out of the new PIN by the old one's failures (test-suite audit, KC23).
+    func testANewPINClearsTheOldLockout() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable")
+        defer { KeychainService.resetAttempts() }
+        for _ in 0..<5 { _ = KeychainService.recordFailure() }
+        XCTAssertGreaterThan(KeychainService.lockoutRemaining(), 0, "locked out")
+        XCTAssertTrue(KeychainService.setPIN("1357"))
+        XCTAssertEqual(KeychainService.lockoutRemaining(), 0, "the new PIN starts unlocked")
+        XCTAssertTrue(KeychainService.verify("1357"))
+    }
+
+    /// A correct PIN against a hash in the old format (one SHA-256) upgrades it in place to the
+    /// current one (PBKDF2), so an install from before 1.0's change does not keep the weaker
+    /// hash for good (test-suite audit, KC26).
+    func testACorrectPINUpgradesALegacyHash() throws {
+        try XCTSkipUnless(KeychainService.setLegacyPINForTesting("4821"), "Keychain unavailable")
+        defer { KeychainService.resetAttempts() }
+        KeychainService.resetAttempts()
+        XCTAssertEqual(KeychainService.storedHashLengthForTesting, 32, "the old format")
+        XCTAssertTrue(KeychainService.verify("4821"))
+        XCTAssertEqual(KeychainService.storedHashLengthForTesting, 33, "upgraded to the current format")
+        XCTAssertTrue(KeychainService.verify("4821"), "and it still verifies")
     }
 
     func testKeychainReadFailureCannotReplacePINOrMutateLockout() throws {

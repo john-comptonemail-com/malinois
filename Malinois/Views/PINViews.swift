@@ -154,8 +154,9 @@ struct PINPad: View {
 
 struct PINSetupView: View {
     /// Recovery supplies a guarded save; ordinary first setup and PIN-authorized changes
-    /// retain the existing service path. A failed write never completes the view.
-    var savePIN: (String) -> Bool = KeychainService.setPIN
+    /// retain the existing service path. A failed write never completes the view. Main-actor typed,
+    /// as `setPIN` is since item 144 (a): a save runs where the lockout's state lives.
+    var savePIN: @MainActor (String) -> Bool = KeychainService.setPIN
     var onDone: () -> Void
 
     @State private var stage: Stage = .create
@@ -171,6 +172,11 @@ struct PINSetupView: View {
     nonisolated static let allowedLengths = [4, 6]
     enum Stage { case create, confirm }
 
+    /// What the PIN is for, and a code to avoid sharing.
+    private var advice: String {
+        "\(length) digits. Required to disarm Malinois and to view captured evidence. Use a code different from your iPhone passcode and your Guided Access passcode."
+    }
+
     var body: some View {
         VStack(spacing: 28) {
             Image("MalinoisEmblem")
@@ -185,11 +191,12 @@ struct PINSetupView: View {
             // barely harder to guess; the lockout remains the real defense (SECURITY.md).
             // Item 108 (the owner's decision 3, 2026-10-13): a code shared with the iPhone or Guided
             // Access falls with it, to one glance over the owner's shoulder.
-            Text("\(length) digits. Required to disarm Malinois and to view captured evidence. Use a code different from your iPhone passcode and your Guided Access passcode.")
+            Text(advice)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+                .reportedOnScreen(advice)
 
             if let error {
                 Text(error).font(.footnote).foregroundStyle(.red)
@@ -254,7 +261,8 @@ struct PINSetupView: View {
 
 /// Ephemeral permission granted only by the device-owner authentication callback. The
 /// view revokes it on background/dismissal. Credentials remain intact until a successful
-/// replacement write; unreadable Keychain state never authorizes replacement.
+/// replacement write; unreadable Keychain state never authorizes replacement. Main-actor isolated, which
+/// its guarded save needs since item 144 (a): `KeychainService.setPIN` lives with the lockout's state there.
 @MainActor
 final class PINResetPermission: ObservableObject {
     @Published private(set) var authorized = false
@@ -484,6 +492,9 @@ struct PINEntryView: View {
     /// Item 106: read once per presentation; nil keeps the explicit submit.
     @State private var autoSubmitLength = KeychainService.confirmedPINLength
     @State private var gaActive = UIAccessibility.isGuidedAccessEnabled
+    /// Why the biometric was not offered although the owner had turned it on (ADR 0056): the unlock is no longer bound
+    /// to the enrolled faces or fingers, or never was. The pad says so; the unlock is off until Settings turns it on.
+    @State private var bindingLapse: BiometricBinding.Verdict?
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private var isLocked: Bool { lockoutRemaining > 0 }
@@ -519,6 +530,12 @@ struct PINEntryView: View {
                         Text("Incorrect PIN")
                             .font(.footnote)
                             .foregroundStyle(.red)
+                    } else if let lapse = bindingLapse {
+                        Text(BiometricKind.current.bindingCaption(for: lapse))
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .reportedOnScreen(BiometricKind.current.bindingCaption(for: lapse))
                     } else if biometricsVetoedByGuidedAccess {
                         Text(BiometricKind.current.guidedAccessCaption)
                             .font(.footnote)
@@ -568,8 +585,10 @@ struct PINEntryView: View {
         allow && optedIn && !locked && !guidedAccess
     }
 
-    /// Offers Face ID / Touch ID over the pad per `shouldOfferBiometrics`. PIN counters
-    /// are untouched either way — a biometric open neither spends nor resets attempts.
+    /// Offers Face ID / Touch ID over the pad per `shouldOfferBiometrics`, and only while the unlock is still bound to
+    /// the faces or fingers enrolled when the owner turned it on (ADR 0056): a changed set, or none on record, turns
+    /// the unlock off until Settings turns it on again, and the pad says why. PIN counters are untouched either way —
+    /// a biometric open neither spends nor resets attempts.
     private func tryBiometrics() {
         guard Self.shouldOfferBiometrics(allow: allowBiometrics,
                                          optedIn: settings.biometricUnlock,
@@ -577,8 +596,9 @@ struct PINEntryView: View {
                                          guidedAccess: UIAccessibility.isGuidedAccessEnabled)
         else { return }
         let ctx = LAContext()
-        var error: NSError?
-        guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else { return }
+        guard BiometricBinding.canEvaluateBiometrics(ctx) else { return }
+        let verdict = BiometricBinding.checkBeforeOffer(context: ctx, settings: settings)
+        guard verdict == .bound else { bindingLapse = verdict; return }
         ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
                            localizedReason: BiometricKind.unlockPromptReason) { ok, _ in
             Task { @MainActor in if ok { onSuccess() } }
@@ -682,7 +702,8 @@ enum BiometricKind: Equatable, CaseIterable {
     var unlockToggleTitle: String { "\(name) unlock" }
     var unlockToggleCaption: String {
         "Open the Event Log and Test Sensors with \(name) instead of the PIN. Settings, disarming, and changing "
-            + "the PIN always require the PIN: \(presentable) can be presented; a PIN has to be given."
+            + "the PIN always require the PIN: \(presentable) can be presented; a PIN has to be given. Tied to "
+            + "\(enrolledPlural) now: if one is added or removed, this turns off until you turn it on again."
     }
     /// PIN recovery on a phone without a device passcode.
     var recoveryNeedsPasscode: String {
@@ -690,6 +711,31 @@ enum BiometricKind: Equatable, CaseIterable {
     }
     /// The PIN pad's caption when Guided Access keeps the biometric from being offered.
     var guidedAccessCaption: String { "\(name) is unavailable during Guided Access - enter your PIN." }
+
+    /// The enrolled set, plural: what the unlock is tied to (ADR 0056).
+    private var enrolledPlural: String {
+        switch self {
+        case .faceID:  return "the faces enrolled"
+        case .touchID: return "the fingers enrolled"
+        case .opticID: return "the eyes enrolled"
+        case .none:    return "the faces or fingers enrolled"
+        }
+    }
+
+    /// The PIN pad's caption when the unlock is no longer bound to the enrolled biometrics, or never was (ADR 0056):
+    /// what happened, and that Settings (behind the PIN) turns it on again. Nothing while bound.
+    func bindingCaption(for verdict: BiometricBinding.Verdict) -> String {
+        switch verdict {
+        case .bound:
+            return ""
+        case .changed:
+            return "\(name) unlock turned off: a face or finger was added or removed on this iPhone since you turned it "
+                + "on. Enter your PIN; to use \(name) again, turn it on in Settings."
+        case .unbound:
+            return "\(name) unlock is off until you turn it on again in Settings, which now ties it to \(enrolledPlural) "
+                + "on this iPhone. Enter your PIN."
+        }
+    }
 
     /// The reason line under a Touch ID prompt (Face ID shows none): only what a biometric can
     /// open. Settings, disarming and changing the PIN never accept one.

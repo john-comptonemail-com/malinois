@@ -121,10 +121,10 @@ enum Sensitivity: String, Codable, CaseIterable, Identifiable {
 /// ("Motion-confirmed" — motion had to be corroborated by audio/proximity within the
 /// correlation window) was removed: it was a setting almost nobody changed, and its
 /// correlation logic was the source of a real deafness bug (a lone uncorroborated trip
-/// could latch a one-shot monitor — the fix is the refractory sweep, which is retained
-/// because the flood path and re-entrant triggers can still latch a sensor). Kept as an
-/// enum rather than inlined so re-introducing it is a purely additive change — see
-/// BACKLOG "Motion-confirmed trigger mode".
+/// could latch a one-shot monitor — the fix is the refractory sweep, which is retained as a
+/// backstop, though every latch path now reaches a re-arm: see `MonitoringEngine`'s
+/// `latchedSensors`). Kept as an enum rather than inlined so re-introducing it is a purely
+/// additive change — see BACKLOG "Motion-confirmed trigger mode".
 enum TriggerMode: String, Codable, CaseIterable, Identifiable {
     /// Any single enabled sensor tripping fires the alarm.
     case any

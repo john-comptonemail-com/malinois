@@ -38,10 +38,32 @@ struct MalinoisApp: App {
         #if DEBUG
         Self.builtServices = true
         #endif
-        // Before anything can arm: whether the tamper warning still shows how to disarm (item 107).
-        OnboardingState.seedHasDisarmedOnce()
-        // Before anything can arm: whether the one-time screen before the first arm is due (item 131).
-        OnboardingState.seedFirstArmBriefing()
+        let services = Self.makeServices()
+        self.watchRelay = services.watchRelay
+        _settings = StateObject(wrappedValue: services.settings)
+        _eventStore = StateObject(wrappedValue: services.eventStore)
+        _cloud = StateObject(wrappedValue: services.cloud)
+        _camera = StateObject(wrappedValue: services.camera)
+        _entitlements = StateObject(wrappedValue: services.entitlements)
+        _engine = StateObject(wrappedValue: services.engine)
+    }
+
+    /// The services the launch builds.
+    struct Services {
+        let settings: AppSettings
+        let eventStore: EventStore
+        let cloud: CloudExfiltrator
+        let camera: CameraController
+        let entitlements: ProEntitlements
+        let watchRelay: WatchAlertRelay
+        let engine: MonitoringEngine
+    }
+
+    /// Builds the services in launch order, with what must come first. One function, so tests run
+    /// the launch's order instead of reading this file (the test-suite audit's P4). The launch
+    /// passes nothing; a test passes its own settings, Pro check and watch sender.
+    static func makeServices(settings: AppSettings? = nil, entitlements: ProEntitlements? = nil,
+                             relaySend: ((WatchAlertMessage) -> Void)? = nil) -> Services {
         // Clear clip temp files a failed store-move orphaned (disk full mid-recording), and
         // pending recordings no event took (item 108, F8). Off the launch path — nothing waits
         // on it, and it only touches files over a day (temp) or a month (pending) old.
@@ -49,26 +71,29 @@ struct MalinoisApp: App {
             CameraController.sweepOrphanedClips()
             CameraController.sweepOrphanedPendingClips()
         }
-        let settings = AppSettings.load()
+        let settings = settings ?? AppSettings.load()
+        // Before anything can arm, once the settings can be read (ADR 0055; at once on an unlocked launch): whether the
+        // tamper warning still shows how to disarm (item 107), and whether the one-time screen before the first arm is
+        // due (item 131).
+        settings.whenResolved { _ in
+            OnboardingState.seedHasDisarmedOnce()
+            OnboardingState.seedFirstArmBriefing()
+        }
         let eventStore = EventStore()
         let cloud = CloudExfiltrator()
         let camera = CameraController()
-        let entitlements = ProEntitlements()
+        let entitlements = entitlements ?? ProEntitlements()
         // Started before the engine, so a record the engine writes at launch is relayed too.
-        let watchRelay = WatchAlertRelay(store: eventStore, settings: settings, entitlements: entitlements)
+        let watchRelay = WatchAlertRelay(store: eventStore, settings: settings, entitlements: entitlements,
+                                         send: relaySend)
         watchRelay.start()
-        self.watchRelay = watchRelay
         let engine = MonitoringEngine(settings: settings,
                                       eventStore: eventStore,
                                       cloud: cloud,
                                       camera: camera,
                                       entitlements: entitlements)
-        _settings = StateObject(wrappedValue: settings)
-        _eventStore = StateObject(wrappedValue: eventStore)
-        _cloud = StateObject(wrappedValue: cloud)
-        _camera = StateObject(wrappedValue: camera)
-        _entitlements = StateObject(wrappedValue: entitlements)
-        _engine = StateObject(wrappedValue: engine)
+        return Services(settings: settings, eventStore: eventStore, cloud: cloud, camera: camera,
+                        entitlements: entitlements, watchRelay: watchRelay, engine: engine)
     }
 
     var body: some Scene {

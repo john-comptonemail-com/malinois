@@ -280,14 +280,14 @@ struct EventRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.15))
                 .frame(width: 52, height: 52)
-                .overlay(Image(systemName: placeholderIcon).foregroundStyle(.secondary))
+                .overlay(Image(systemName: Self.placeholderIcon(for: event.stateChange)).foregroundStyle(.secondary))
         }
     }
 
     /// Icon for an event with no captured image — a lock for a monitoring state change,
-    /// otherwise the "no frame" camera glyph.
-    private var placeholderIcon: String {
-        switch event.stateChange {
+    /// otherwise the "no frame" camera glyph. Static so a test can read it (item 144 (g)).
+    static func placeholderIcon(for stateChange: String?) -> String {
+        switch stateChange {
         case "armed":    return "lock.fill"
         case "disarmed": return "lock.open.fill"
         case "gaLifted": return "lock.slash"
@@ -297,6 +297,10 @@ struct EventRow: View {
         case "thermalCritical":   return "thermometer.high"
         case "soundUnavailable":  return "mic.slash"   // item 105, F-09
         case "soundRestored":     return "mic"
+        case "motionStalled":     return SensorType.motion.iconName   // item 144 (g)
+        case "reinstalled":       return "arrow.down.app"   // item 148's 5
+        case "pinChanged":        return "key.fill"   // item 153's MAL-03
+        case "guidedAccessEnded": return "lock.trianglebadge.exclamationmark"   // item 153's MAL-05
         case "unsyncedRemoved":   return "tray.full"   // item 114
         case "backupOff":         return "icloud.slash"   // item 115
         case "backupOn":          return "icloud"

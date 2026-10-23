@@ -124,16 +124,45 @@ final class Item107DisarmTipTests: XCTestCase {
         engine.disarm()
     }
 
-    /// A correct PIN on the black screen records the first disarm; the app writes the starting value
-    /// at launch. Read from the source: no unit test can type a PIN on the pad or launch the app.
-    func testTheArmedScreenRecordsTheFirstDisarm() throws {
-        let armed = try text("Malinois/Views/ArmedView.swift")
-        let success = try XCTUnwrap(armed.range(of: "onSuccess: {"))
-        let handler = armed[success.upperBound...].prefix(400)
-        XCTAssertTrue(handler.contains("OnboardingState.hasDisarmedOnce = true"),
-                      "a correct PIN on the black screen ends the tip")
-        let app = try text("Malinois/MalinoisApp.swift")
-        XCTAssertTrue(app.contains("OnboardingState.seedHasDisarmedOnce()"), "the starting value is written at launch")
+    /// The first disarm is recorded by the engine's disarm of a live watch, the one a correct PIN on
+    /// the armed screen makes: the tip leaves the warning from then on. A countdown cancelled before
+    /// going live does not count. The launch writes the starting value first. Run, where this read
+    /// the screen's and the app's source before (the test-suite audit's P4).
+    @MainActor
+    func testTheFirstDisarmIsRecordedWhenALiveWatchIsDisarmed() throws {
+        TestIsolation.setUp(folderPrefix: "Item107DisarmTipTests-first")
+        let firstDisarm = OnboardingState.hasDisarmedOnce
+        defer {
+            OnboardingState.hasDisarmedOnce = firstDisarm
+            TestIsolation.tearDown()
+        }
+        let settings = AppSettings()
+        settings.gracePeriodSeconds = 60
+        settings.requireGuidedAccess = false
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: EventStore(), cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming))
+        OnboardingState.hasDisarmedOnce = false
+        engine.beginArming()
+        engine.confirmGuidedAccessAndStartGrace()
+        XCTAssertEqual(engine.state, .arming, "counting down")
+        engine.cancelArming()
+        XCTAssertFalse(OnboardingState.hasDisarmedOnce, "a cancelled countdown never used the hold")
+        settings.gracePeriodSeconds = 0
+        engine.beginArming()
+        engine.confirmGuidedAccessAndStartGrace()
+        let deadline = Date().addingTimeInterval(5)
+        while engine.state != .armed && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        XCTAssertEqual(engine.state, .armed)
+        engine.disarm()   // what the armed screen's pad does after a correct PIN
+        XCTAssertTrue(OnboardingState.hasDisarmedOnce, "the first disarm is recorded")
+
+        UserDefaults.standard.removeObject(forKey: "com.malinois.onboarding.hasDisarmedOnce")
+        let services = MalinoisApp.makeServices(settings: AppSettings(), entitlements: ProEntitlements(resolvedAs: .free),
+                                                relaySend: { _ in })   // no WatchConnectivity in a test
+        TestIsolation.track(services.engine)
+        XCTAssertNotNil(UserDefaults.standard.object(forKey: "com.malinois.onboarding.hasDisarmedOnce"),
+                        "the launch writes the starting value")
     }
 
     /// The arming screen's card leads with the hold, above Start countdown, and the countdown

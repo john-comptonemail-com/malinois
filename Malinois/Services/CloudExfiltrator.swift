@@ -39,6 +39,9 @@ final class CloudExfiltrator: ObservableObject {
             }
         }
         var isReady: Bool { self == .available }
+        /// iCloud's answer that the account is not there to use: no account, or restricted. Anything else that is not
+        /// ready is a temporary answer or an error (item 155's A2).
+        var isDefinitiveAbsence: Bool { self == .noAccount || self == .restricted }
 
         /// Whether it's worth *attempting* a push. `.unknown` and transient `.error`
         /// (e.g. `.couldNotDetermine` during a network transition) are optimistic — we
@@ -53,9 +56,9 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     @Published private(set) var accountState: AccountState = .unknown
-    /// Cloud operations stay local-only until this installation verifies the resolved account.
-    @Published private(set) var enrollmentRequired = true
 
+    /// Cloud operations stay local-only until this installation verifies the resolved account.
+    /// The screens show that state from the policy itself (`verified`, `notice`).
     let enrollment: CloudEnrollment
     /// The engine's live iCloud-backup rule for one record (item 115; ADR 0047), wired at the
     /// engine's init and read before every upload step and every save attempt (item 116, R2).
@@ -85,7 +88,6 @@ final class CloudExfiltrator: ObservableObject {
     private func invalidateAccountResolution() {
         identityGeneration = UUID()
         resolvedAccount = nil
-        enrollmentRequired = true
         submittedMetaRevisions.removeAll()
         encryptedDataResetDetected = false
         lastTransientFailure = nil
@@ -97,12 +99,8 @@ final class CloudExfiltrator: ObservableObject {
 
     /// Resolves identity afresh without prompting. Every database entry point needs this lease.
     func acquireCloudLease() async -> CloudEnrollment.Lease? {
-        guard let account = await userRecordName(), let lease = enrollment.authorize(account: account) else {
-            enrollmentRequired = true
-            return nil
-        }
-        enrollmentRequired = false
-        return lease
+        guard let account = await userRecordName() else { return nil }
+        return enrollment.authorize(account: account)
     }
 
     /// Explicit foreground enrollment; the policy verifies identity again before durable grant.
@@ -150,14 +148,20 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     #if DEBUG
-    /// Replaces only account identity discovery; it grants no database permission.
-    var accountIdentityForTesting: (@MainActor () async -> String?)?
+    /// Replaces only account identity discovery; it grants no database permission. Nil is iCloud's "no account"; a
+    /// thrown error is classified as the real lookup's would be (`identityLookup`).
+    var accountIdentityForTesting: (@MainActor () async throws -> String?)?
     /// Replaces only iOS's account-status answer in `refreshAccountState` (item 140's codex-1: the Simulator has no
     /// container, so Home's own check always found no account); it grants no database permission.
     var accountStatusForTesting: AccountState?
     /// Replaces one save attempt's CloudKit operation (item 116): everything before it runs as
     /// shipped, and a thrown error takes the shipped retry path. The Simulator has no container.
     var saveAttemptForTesting: (@MainActor ([CKRecord]) async throws -> Void)?
+    /// Takes the save's operation in place of the database (item 152's lead 2): the test drives its blocks as
+    /// CloudKit would, progress included, and sees the cancel. Everything else runs as shipped.
+    var submitForTesting: (@MainActor (CKModifyRecordsOperation) -> Void)?
+    /// A test's stall and asset cap, in place of the production 20 s and 600 s.
+    var saveDeadlinesForTesting: (stall: TimeInterval, assetCap: TimeInterval)?
     #endif
 
     // MARK: - Record types
@@ -369,18 +373,25 @@ final class CloudExfiltrator: ObservableObject {
     /// Generous: a healthy answer is near-instant.
     nonisolated static let accountStatusDeadline: TimeInterval = 10
 
+    /// Applies iOS's account status (item 155's A2): no account and restricted invalidate the resolution, as the identity
+    /// lookup's "no account" does; a temporary answer or an error only goes on record as a transient failure, every
+    /// lease in flight, every save under way and the verified state standing, as the lookup's transient failure does
+    /// since item 152's lead 1. Home's and Settings' refresh used to revoke everything on either.
+    private func applyAccountStatus(_ state: AccountState) {
+        accountState = state
+        if state.isDefinitiveAbsence { invalidateAccountResolution() } else if !state.isReady { noteTransientFailure(TransientFailure(retryAfter: nil)) }
+    }
+
     func refreshAccountState() async {
         let generation = identityGeneration
         #if DEBUG
         if let accountStatusForTesting {
-            accountState = accountStatusForTesting
-            if !accountState.isReady { invalidateAccountResolution() }
+            applyAccountStatus(accountStatusForTesting)
             return
         }
         #endif
         guard let container else {
-            accountState = .noAccount
-            invalidateAccountResolution()
+            applyAccountStatus(.noAccount)
             return
         }
         do {
@@ -394,20 +405,20 @@ final class CloudExfiltrator: ObservableObject {
                     }
                 })
             guard generation == identityGeneration else { return }
+            let state: AccountState
             switch status {
-            case .available:            accountState = .available
-            case .noAccount:            accountState = .noAccount
-            case .restricted:           accountState = .restricted
-            case .couldNotDetermine:    accountState = .error("could not determine")
-            case .temporarilyUnavailable: accountState = .error("temporarily unavailable")
-            @unknown default:           accountState = .error("unknown")
+            case .available:            state = .available
+            case .noAccount:            state = .noAccount
+            case .restricted:           state = .restricted
+            case .couldNotDetermine:    state = .error("could not determine")
+            case .temporarilyUnavailable: state = .error("temporarily unavailable")
+            @unknown default:           state = .error("unknown")
             }
-            if !accountState.isReady { invalidateAccountResolution() }
+            applyAccountStatus(state)
         } catch {
             guard generation == identityGeneration else { return }
-            invalidateAccountResolution()
-            // Status errors revoke current resolution, never the durable account grant.
-            accountState = .error(error.localizedDescription)
+            // A status error, the deadline included, is a temporary answer: nothing is revoked (item 155's A2).
+            applyAccountStatus(.error(error.localizedDescription))
         }
     }
 
@@ -496,12 +507,14 @@ final class CloudExfiltrator: ObservableObject {
     /// `.synced` can reopen it for the sweep when it did not (item 65, finding 3).
     @discardableResult
     func pushFact(_ event: Event) async -> Bool {
+        // Held from the first step, the identity lookup included (item 153's MAL-01): a push begun as the phone is
+        // locked or the app killed runs under iOS's extra time, not only once its lease and queue wait are over.
+        let assertion = BackgroundAssertion.begin("malinois-fact")
+        defer { assertion.end() }
         guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return false }
         return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
             // Ownership and enrollment are checked again after the per-event queue wait.
             guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
-            let bgTask = beginBackgroundTask()
-            defer { endBackgroundTask(bgTask) }
             return await pushMetaRecord(event, lease: lease) == nil
         }
     }
@@ -512,7 +525,15 @@ final class CloudExfiltrator: ObservableObject {
     /// `secondaryMediaURL` is the second capture from the "Both" camera option.
     func exfiltrate(_ event: Event, fullMediaURL: URL?, secondaryMediaURL: URL? = nil) async -> ExfilOutcome {
         let declined = ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: nil)
-        guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return declined }
+        let assertion = BackgroundAssertion.begin("malinois-evidence")   // from the lease attempt on (item 153's MAL-01)
+        defer { assertion.end() }
+        let attempt = await leaseAttempt()
+        guard let lease = attempt.lease, mayUpload(event, lease: lease) else {
+            // A lookup that failed for want of a network is this push's network-class failure (item 152's lead 1), and
+            // one the server throttled is a refusal (item 155's A3): the escalation's verdict hears each as it would a
+            // save's (ADR 0001). A hold is no verdict, as before.
+            return attempt.transient ? ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: attempt.interference) : declined
+        }
         return await enqueueAuthorized(event.id, lease: lease, declined: declined) { [self] in
             await exfiltrateNow(event, fullMediaURL: fullMediaURL, secondaryMediaURL: secondaryMediaURL, lease: lease)
         }
@@ -524,10 +545,6 @@ final class CloudExfiltrator: ObservableObject {
             // Authorization held the record locally; no server refusal or interference occurred.
             return ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: nil)
         }
-
-        // Hold a background-task assertion for the whole operation.
-        let bgTask = beginBackgroundTask()
-        defer { endBackgroundTask(bgTask) }
 
         // ---- Shot 1: tiny record (fast path) ----
         let metaError = await pushMetaRecord(event, lease: lease)
@@ -712,41 +729,109 @@ final class CloudExfiltrator: ObservableObject {
         }
     }
 
-    /// Item 87: the signed-in iCloud account's user record name (opaque, this app's own), or nil.
-    func userRecordName() async -> String? {
-        let generation = identityGeneration
-        let name: String?
-        #if DEBUG
-        if let accountIdentityForTesting {
-            name = await accountIdentityForTesting()
-        } else {
-            name = await fetchAccountIdentity()
-        }
-        #else
-        name = await fetchAccountIdentity()
-        #endif
-        guard generation == identityGeneration else { return nil }
-        guard let name, !name.isEmpty else {
-            invalidateAccountResolution()
-            return nil
-        }
-        if let resolvedAccount, resolvedAccount != name { invalidateAccountResolution() }
-        resolvedAccount = name
-        accountState = .available
-        return name
+    /// What an identity lookup found (item 152's lead 1; ADR 0039 amended for 1.8.1).
+    enum IdentityLookup: Equatable {
+        /// The signed-in account's record name.
+        case named(String)
+        /// iCloud's answer that there is none (or an empty name): invalidates, as it always has.
+        case noAccount
+        /// No answer: the network, a throttle, the deadline, or an account that is there but not ready yet (item
+        /// 155's S2). Denies this caller only. `interference` is the network class, `retryAfter` the server's wait
+        /// when it gave one (item 155's A3).
+        case transient(interference: Bool, retryAfter: TimeInterval?)
+        /// Resolved under a generation since replaced: void, and it changes nothing.
+        case stale
     }
 
-    private func fetchAccountIdentity() async -> String? {
-        guard let container else { return nil }
-        return try? await Self.awaitWithDeadline(
-            Self.accountStatusDeadline, onDeadline: {}, timeoutError: CKError(.networkFailure),
-            start: { resume in
-                container.fetchUserRecordID { id, error in
-                    if let error { resume(.failure(error)) }
-                    else if let id { resume(.success(id.recordName)) }
-                    else { resume(.failure(CKError(.notAuthenticated))) }
-                }
-            })
+    /// Pure (unit-tested): the lookup's result classified.
+    nonisolated static func identityLookup(_ result: Result<String?, Error>) -> IdentityLookup {
+        switch result {
+        case .success(let name):
+            guard let name, !name.isEmpty else { return .noAccount }
+            return .named(name)
+        case .failure(let error):
+            // The network class and the deadline (which is reported as a network failure), as `retryDelay` and
+            // `failureSuggestsInterference` classify them; iCloud's "not authenticated" and anything unclassified
+            // keep invalidating, as before.
+            if let transient = Self.transientFailure(from: error) {
+                return .transient(interference: Self.failureSuggestsInterference(error), retryAfter: transient.retryAfter)
+            }
+            if error is URLError { return .transient(interference: true, retryAfter: nil) }
+            // iCloud's "the account is there but not ready" (item 155's S2, Codex's second look): a temporary answer,
+            // as the status refresh's "temporarily unavailable" is (A2), not a missing account. Kept out of
+            // `retryDelay`'s set on purpose: a save is not retried within milliseconds for it; the sweep's follow-up
+            // and the next trigger re-ask.
+            if (error as? CKError)?.code == .accountTemporarilyUnavailable { return .transient(interference: false, retryAfter: nil) }
+            return .noAccount
+        }
+    }
+
+    /// Item 87: the signed-in iCloud account's user record name (opaque, this app's own), or nil.
+    func userRecordName() async -> String? {
+        if case .named(let name) = await resolveIdentity() { return name }
+        return nil
+    }
+
+    /// Resolves the account identity and applies what it found: a name resolves it, a different name invalidating
+    /// first; no account invalidates; a transient failure (item 152's lead 1) denies this caller only, and goes on
+    /// record as a network-class transient failure for the pending sweep's follow-up, leaving every lease in flight,
+    /// every save under way and the verified state as they are. The account-changed notice still invalidates.
+    private func resolveIdentity() async -> IdentityLookup {
+        let generation = identityGeneration
+        let lookup = await lookUpIdentity()
+        guard generation == identityGeneration else { return .stale }
+        switch lookup {
+        case .named(let name):
+            if let resolvedAccount, resolvedAccount != name { invalidateAccountResolution() }
+            resolvedAccount = name
+            accountState = .available
+        case .noAccount:
+            invalidateAccountResolution()
+        case .transient(_, let retryAfter):
+            noteTransientFailure(TransientFailure(retryAfter: retryAfter))
+        case .stale:
+            break
+        }
+        return lookup
+    }
+
+    /// A lease, or why not (item 152's lead 1): a transient identity failure is this caller's own network-class
+    /// failure, which an evidence push reports as its verdict (`exfiltrate`).
+    private func leaseAttempt() async -> (lease: CloudEnrollment.Lease?, transient: Bool, interference: Bool) {
+        let lookup = await resolveIdentity()
+        if case .named(let name) = lookup { return (enrollment.authorize(account: name), false, false) }
+        if case .transient(let interference, _) = lookup { return (nil, true, interference) }
+        return (nil, false, false)
+    }
+
+    /// The lookup itself: the test seam's answer, or iCloud's.
+    private func lookUpIdentity() async -> IdentityLookup {
+        #if DEBUG
+        if let accountIdentityForTesting {
+            do { return Self.identityLookup(.success(try await accountIdentityForTesting())) } catch {
+                return Self.identityLookup(.failure(error))
+            }
+        }
+        #endif
+        return await fetchAccountIdentity()
+    }
+
+    private func fetchAccountIdentity() async -> IdentityLookup {
+        guard let container else { return .noAccount }
+        do {
+            let name: String = try await Self.awaitWithDeadline(
+                Self.accountStatusDeadline, onDeadline: {}, timeoutError: CKError(.networkFailure),
+                start: { resume in
+                    container.fetchUserRecordID { id, error in
+                        if let error { resume(.failure(error)) }
+                        else if let id { resume(.success(id.recordName)) }
+                        else { resume(.failure(CKError(.notAuthenticated))) }
+                    }
+                })
+            return Self.identityLookup(.success(name))
+        } catch {
+            return Self.identityLookup(.failure(error))
+        }
     }
 
     /// Builds the disarm signal (BACKLOG 59) — see `disarmSignalRecordTypeV2`. Carries only
@@ -833,13 +918,13 @@ final class CloudExfiltrator: ObservableObject {
     /// copy survives that. Silent by construction — see `stateRecordType`.
     @discardableResult
     func pushStateChange(_ event: Event, disarmSignal: Bool = true) async -> Bool {
+        let assertion = BackgroundAssertion.begin("malinois-state")   // from the lookup on (item 153's MAL-01)
+        defer { assertion.end() }
         guard let kind = event.stateChange, let lease = await acquireCloudLease(),
               mayUpload(event, lease: lease) else { return false }
         return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
             // A queued state change must retain the account that owned it at creation.
             guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
-            let bgTask = beginBackgroundTask()
-            defer { endBackgroundTask(bgTask) }
             let record = Self.makeStateRecord(event, kind: kind, deviceName: DeviceInfo.name)
             do {
                 try await save([record], lease: lease, permitted: { backupPermits(event) })
@@ -1103,6 +1188,9 @@ final class CloudExfiltrator: ObservableObject {
               ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted",
                "thermalSerious", "thermalCritical",   // item 38
                "soundUnavailable", "soundRestored",   // item 105, F-09
+               "motionStalled",   // item 144 (g)
+               "reinstalled",   // item 148's 5
+               "pinChanged", "guidedAccessEnded",   // item 153's MAL-03 and MAL-05
                "unsyncedRemoved",   // item 114
                Event.backupOffKind, Event.backupOnKind].contains(kind)   // item 115
                 || Event.protectionChangeKinds.contains(kind)   // item 91
@@ -1532,8 +1620,8 @@ final class CloudExfiltrator: ObservableObject {
             for session in sessions { outcomes[session.id] = .failed }
             return outcomes
         }
-        let bgTask = beginBackgroundTask()
-        defer { endBackgroundTask(bgTask) }
+        let assertion = BackgroundAssertion.begin("malinois-exfil")
+        defer { assertion.end() }
         guard let serverDate = await retentionServerDate(using: access), access.isCurrent(),
               let cutoff = Self.serverAnchoredPurgeCutoff(monthsOld: months, observedServerDate: serverDate) else {
             return Dictionary(sessions.map { ($0.id, .failed) }, uniquingKeysWith: { _, last in last })
@@ -1804,8 +1892,8 @@ final class CloudExfiltrator: ObservableObject {
         guard let access = await retentionAccess() else {
             return CloudPurgeResult(eventsExamined: 0, recordsDeleted: 0, failed: true)
         }
-        let bgTask = beginBackgroundTask()
-        defer { endBackgroundTask(bgTask) }
+        let assertion = BackgroundAssertion.begin("malinois-exfil")
+        defer { assertion.end() }
 
         guard let cutoff = Self.serverAnchoredPurgeCutoff(
             monthsOld: months, observedServerDate: await retentionServerDate(using: access)), access.isCurrent() else {
@@ -2065,6 +2153,11 @@ final class CloudExfiltrator: ObservableObject {
             resumed = true
             return true
         }
+        /// Whether a resume was claimed: a deadline still waiting can stop.
+        func done() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return resumed
+        }
     }
 
     /// Awaits a callback-style operation with a deadline: `start` installs the completion,
@@ -2095,6 +2188,72 @@ final class CloudExfiltrator: ObservableObject {
         }
     }
 
+    /// Races an operation against a stall deadline (`awaitWithDeadline`'s shape, with progress; item 152's lead 2):
+    /// the clock restarts whenever `progressed` is called, and `cap` bounds the whole wait. With no progress
+    /// reported, or a cap equal to the stall, it is the fixed deadline it replaces.
+    static func awaitWithStallDeadline<T: Sendable>(
+        stall: TimeInterval, cap: TimeInterval,
+        onDeadline: @escaping @Sendable () -> Void,
+        timeoutError: Error,
+        start: (_ resume: @escaping @Sendable (Result<T, Error>) -> Void,
+                _ progressed: @escaping @Sendable () -> Void) -> Void
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+            let latch = ResumeLatch()
+            let clock = StallClock()
+            start({ result in
+                guard latch.claim() else { return }
+                cont.resume(with: result)
+            }, { clock.noteProgress() })
+            Task.detached {
+                while !latch.done() {
+                    let remaining = clock.remaining(stall: stall, cap: cap)
+                    if remaining <= 0 { break }
+                    try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                }
+                guard latch.claim() else { return }
+                onDeadline()
+                cont.resume(throwing: timeoutError)
+            }
+        }
+    }
+
+    /// The stall deadline's clock: when the wait began, and when progress was last reported (CloudKit's progress
+    /// block runs off the main actor).
+    private final class StallClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private let began = Date()
+        private var lastProgress = Date()
+
+        func noteProgress() { lock.withLock { lastProgress = Date() } }
+
+        /// Seconds until the deadline: the stall since the last progress, within the cap since the start.
+        func remaining(stall: TimeInterval, cap: TimeInterval) -> TimeInterval {
+            lock.withLock {
+                let now = Date()
+                return min(stall - now.timeIntervalSince(lastProgress), cap - now.timeIntervalSince(began))
+            }
+        }
+    }
+
+    /// Pure (unit-tested; item 152's lead 2): whether any record carries a `CKAsset` (a photo, a clip, a thumbnail).
+    /// Its save may legitimately take longer than the fixed deadline while bytes move.
+    nonisolated static func carriesAsset(_ records: [CKRecord]) -> Bool {
+        records.contains { record in record.allKeys().contains { record[$0] is CKAsset } }
+    }
+
+    /// The whole wait an asset's save may take while progress keeps coming (item 152's lead 2): ten minutes, which
+    /// a 60 s Until clear clip needs on a slow uplink; the stall deadline cuts off a save that stops moving sooner.
+    nonisolated static let assetSaveCap: TimeInterval = 600
+
+    /// The deadlines a save races: the production numbers, or a test's.
+    private var saveDeadlines: (stall: TimeInterval, assetCap: TimeInterval) {
+        #if DEBUG
+        if let saveDeadlinesForTesting { return saveDeadlinesForTesting }
+        #endif
+        return (Self.saveAttemptDeadline, Self.assetSaveCap)
+    }
+
     /// Saves records, retrying transient CloudKit failures with backoff. A single
     /// dropped push at trigger time can mean lost evidence (a stolen device never
     /// reaches `retryPendingSync`), so it's worth a few quick attempts — but bounded
@@ -2102,7 +2261,10 @@ final class CloudExfiltrator: ObservableObject {
     /// Each attempt builds a fresh operation (a CKOperation can only be added once),
     /// and each attempt races `saveAttemptDeadline` — a stalled operation is cancelled
     /// and reported as a network-class failure, so it feeds the same retry/escalation
-    /// classification as a lost connection instead of hanging silently (F1).
+    /// classification as a lost connection instead of hanging silently (F1). For a record
+    /// carrying an asset the deadline is a stall deadline within `assetSaveCap` (item 152's
+    /// lead 2): it restarts whenever CloudKit reports progress, so a clip that keeps moving
+    /// is not cut off at 20 s on every attempt and every pass.
     ///
     /// Success requires EVERY record's own per-record confirmation, not the
     /// operation-level result — see `saveError` for the incident that made this rule.
@@ -2124,7 +2286,6 @@ final class CloudExfiltrator: ObservableObject {
                     return
                 }
                 #endif
-                guard let database else { throw CKError(.notAuthenticated) }
                 let op = CKModifyRecordsOperation(recordsToSave: records)
                 op.qualityOfService = .userInitiated   // jump the queue
                 op.savePolicy = .allKeys
@@ -2134,14 +2295,21 @@ final class CloudExfiltrator: ObservableObject {
                 let results = PerRecordResults()
                 // On CloudKit's queue, as the delete's blocks are (item 97).
                 op.perRecordSaveBlock = { @Sendable id, result in results.record(id, result) }
-                try await Self.awaitWithDeadline(
-                    Self.saveAttemptDeadline,
+                // A record carrying an asset races a stall deadline within a cap (item 152's lead 2): the 20 s restart
+                // whenever CloudKit reports progress, so a clip that keeps moving on a slow uplink is not cut off;
+                // a record without one keeps the fixed 20 s.
+                let withAsset = Self.carriesAsset(records)
+                let deadlines = saveDeadlines
+                let cap = withAsset ? deadlines.assetCap : deadlines.stall
+                try await Self.awaitWithStallDeadline(
+                    stall: deadlines.stall, cap: cap,
                     onDeadline: { [weak op] in
-                        Log.cloud.error("Save attempt stalled past \(Self.saveAttemptDeadline, privacy: .public)s — cancelling the operation")
+                        Log.cloud.error("Save attempt stalled past \(deadlines.stall, privacy: .public)s — cancelling the operation")
                         op?.cancel()
                     },
                     timeoutError: CKError(.networkFailure),  // stall ≈ lost path: retry, count, escalate
-                    start: { (resume: @escaping @Sendable (Result<Void, Error>) -> Void) in
+                    start: { (resume: @escaping @Sendable (Result<Void, Error>) -> Void, progressed: @escaping @Sendable () -> Void) in
+                    if withAsset { op.perRecordProgressBlock = { @Sendable _, _ in progressed() } }   // the clock restarts
                     // Fires after every perRecordSaveBlock — the final word on the operation.
                     op.modifyRecordsResultBlock = { @Sendable result in
                         let operationError: Error?
@@ -2158,6 +2326,10 @@ final class CloudExfiltrator: ObservableObject {
                             resume(.success(()))
                         }
                     }
+                    #if DEBUG
+                    if let submitForTesting { submitForTesting(op); return }
+                    #endif
+                    guard let database else { resume(.failure(CKError(.notAuthenticated))); return }
                     submit(op, to: database, lease: lease) { resume(.failure(CKError(.notAuthenticated))) }
                 })
                 try requireCurrent(lease)
@@ -2322,9 +2494,6 @@ final class CloudExfiltrator: ObservableObject {
     enum SubscriptionAction: Equatable { case ensure, leaveAlone, remove }
     nonisolated static func subscriptionActionOnArm(notifyWanted: Bool) -> SubscriptionAction {
         notifyWanted ? .ensure : .leaveAlone
-    }
-    nonisolated static func subscriptionActionOnToggle(enabled: Bool) -> SubscriptionAction {
-        enabled ? .ensure : .remove
     }
 
     /// The Settings toggle's direct line (H6, option A): applies the account-wide state
@@ -2492,33 +2661,5 @@ final class CloudExfiltrator: ObservableObject {
             .appendingPathComponent(UUID().uuidString + "." + ext)
         do { try data.write(to: url, options: .atomic); return url }
         catch { return nil }
-    }
-
-    /// Starts a background-task assertion whose expiration handler ends it, so
-    /// iOS doesn't kill the app if the upload outlives our background time.
-    /// Per-call `id` keeps concurrent uploads independent.
-    /// Boxes the identifier so the expiration handler's `.invalid` write is visible to
-    /// the caller's `defer` (F-22): with a plain value, the handler ended the task and
-    /// the `defer` then ended it a *second* time on a stale copy.
-    final class BGTaskBox { var id: UIBackgroundTaskIdentifier = .invalid }
-
-    private func beginBackgroundTask() -> BGTaskBox {
-        let box = BGTaskBox()
-        box.id = UIApplication.shared.beginBackgroundTask(withName: "malinois-exfil") {
-            // Time expired before the upload finished. The event keeps its .pending
-            // state and is retried on the next sync — log it so the drop is visible.
-            Log.cloud.error("Background time expired mid-upload; event stays pending and will retry")
-            if box.id != .invalid {
-                UIApplication.shared.endBackgroundTask(box.id)
-                box.id = .invalid
-            }
-        }
-        return box
-    }
-
-    private func endBackgroundTask(_ box: BGTaskBox) {
-        guard box.id != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(box.id)
-        box.id = .invalid
     }
 }

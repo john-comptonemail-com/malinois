@@ -845,12 +845,6 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertNotEqual(CloudExfiltrator.disarmSignalRecordTypeV2, CloudExfiltrator.stateRecordTypeV2)
     }
 
-    func testOnlyADisarmGetsTheSignal() {
-        XCTAssertTrue(CloudExfiltrator.disarmSignalWanted(kind: "disarmed"))
-        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "armed"), "arming stays silent")
-        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "gaLifted"))
-    }
-
     /// The two subscriptions differ only in what they watch and what they say; everything
     /// else — match-everything predicate, fire on creation, sound, the content-available wake
     /// that pulls the record into the other device's log — is shared shape.
@@ -871,9 +865,11 @@ final class CloudExfiltratorTests: XCTestCase {
         }
     }
 
-    /// Ensure establishes what the account is missing, tamper first (and, since item 76, saves
-    /// again one without mutable pushes: Item76AlertRewriteTests); the OFF flip must name every
-    /// ID this app has ever created, the 1.0 one included.
+    /// Ensure establishes what the account is missing, tamper first, and upgrades in place: an
+    /// existing subscription without mutable pushes is saved again under its own ID (item 76), so
+    /// a device still on 1.3.x, which only creates missing IDs, never adds a second copy and a
+    /// second alert. The OFF flip must name every ID this app has ever created, the 1.0 one
+    /// included. (Item 76's own test of the upgrade is merged here: the test-suite audit's P2.)
     func testEnsureFillsOnlyTheGapsAndRemoveNamesEveryIDEverCreated() {
         let tamperID = CloudExfiltrator.makeTamperSubscription().subscriptionID
         let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
@@ -881,6 +877,8 @@ final class CloudExfiltratorTests: XCTestCase {
                        [tamperID, disarmID])
         XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true]).map(\.subscriptionID),
                        [disarmID], "an account that predates 1.3 gains the disarm subscription on its next ensure")
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: false, disarmID: true]).map(\.subscriptionID),
+                       [tamperID], "a 1.3.x subscription is saved again, under its own ID")
         XCTAssertTrue(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true, disarmID: true]).isEmpty)
         XCTAssertEqual(Set(CloudExfiltrator.subscriptionIDsToRemove), [tamperID, disarmID, "malinois-tamper-meta-sub"])
     }
@@ -960,15 +958,14 @@ final class CloudExfiltratorTests: XCTestCase {
     /// So an arm may HEAL the subscription but never delete it: arming with a local toggle
     /// off used to remove it for the whole account and stay broken until that device
     /// re-armed. Only the explicit Settings flip removes — and it works both directions
-    /// immediately, from any device.
+    /// immediately, from any device. (The flip itself, `setCrossDeviceAlerts`, is tested with
+    /// the cloud boundary below: refused while unverified, and fail-closed when its
+    /// authentication is cancelled.)
     func testArmingNeverDeletesTheAccountsAlertSubscription() {
         XCTAssertEqual(CloudExfiltrator.subscriptionActionOnArm(notifyWanted: true), .ensure,
                        "arm heals a deleted or failed-setup subscription")
         XCTAssertEqual(CloudExfiltrator.subscriptionActionOnArm(notifyWanted: false), .leaveAlone,
                        "a local toggle must not speak for the whole account at arm time")
-        XCTAssertEqual(CloudExfiltrator.subscriptionActionOnToggle(enabled: false), .remove,
-                       "the explicit flip is the one remover")
-        XCTAssertEqual(CloudExfiltrator.subscriptionActionOnToggle(enabled: true), .ensure)
     }
 
     // MARK: - The count freezer (found live 2026-08-30, build-25 pair)
@@ -1104,6 +1101,18 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertEqual(CloudExfiltrator.metaRevision(for: fact), 1)
         XCTAssertEqual(CloudExfiltrator.metaRevision(for: captured), 2)
         XCTAssertEqual(CloudExfiltrator.metaRevision(for: attributed), 3)
+    }
+
+    /// A Both capture whose rear camera failed names that camera with no file. That copy says
+    /// which camera failed, so it outranks the copy without it (item 108, CE-02); no test had a
+    /// second camera without a second file (test-suite audit, CX62).
+    func testASecondCameraNamedWithoutAFileRaisesTheRevision() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var event = Event(startDate: start, endDate: start, triggeredSensors: [.motion], thumbnailData: Data([0xFF]))
+        let withoutRear = CloudExfiltrator.metaRevision(for: event)
+        event.secondaryCamera = "rear"
+        XCTAssertNil(event.secondaryMediaFilename)
+        XCTAssertEqual(CloudExfiltrator.metaRevision(for: event), withoutRear + 1)
     }
 
     /// 34.B2: `respond()` creates the fact with `endDate: Date()` against a `startDate` taken
@@ -1270,6 +1279,14 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertTrue(CloudExfiltrator.deleteFailed(operationError: CKError(.networkFailure),
                                                     confirmedAbsent: [], failures: [:], expecting: ids),
                       "a non-partial operation error fails the batch")
+
+        // A partial failure is judged per record: with every record confirmed absent it is a
+        // success, so a purge that did its work is not reported failed and retried
+        // (test-suite audit, CX77).
+        XCTAssertFalse(CloudExfiltrator.deleteFailed(operationError: CKError(.partialFailure),
+                                                     confirmedAbsent: [rid(1), rid(2), rid(3)],
+                                                     failures: [:], expecting: ids),
+                       "every record confirmed absent: success, whatever the operation's own error")
     }
 
     /// Eighth-review L1: the 30-day floor is structural at the purge entry point - a caller
@@ -1368,6 +1385,13 @@ final class CloudExfiltratorTests: XCTestCase {
                                                          recordCreated: nil, now: now),
                        now.addingTimeInterval(86_400),
                        "no creation stamp — an unsaved or hand-built record — takes 'now' as the reference")
+        // Read a month after the record was made: the stamp, not today's date, is the reference
+        // (with "now" and the stamp equal above, either would pass; test-suite audit, CX30).
+        XCTAssertEqual(CloudExfiltrator.clampedStartDate(created.addingTimeInterval(10 * 86_400),
+                                                         recordCreated: created,
+                                                         now: created.addingTimeInterval(30 * 86_400)),
+                       created.addingTimeInterval(86_400),
+                       "a date ten days past the record's creation clamps to creation + a day, whenever it is read")
     }
 
     func testBothFailureMetadataRoundTripsWithOnlyKnownCamerasAndReasons() throws {
@@ -1471,7 +1495,6 @@ final class CloudExfiltratorTests: XCTestCase {
         let changed = await cloud.acquireCloudLease()
         XCTAssertNil(changed)
         XCTAssertFalse(policy.isCurrent(lease))
-        XCTAssertTrue(cloud.enrollmentRequired)
     }
 
     @MainActor

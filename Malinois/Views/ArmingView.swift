@@ -185,9 +185,9 @@ struct ArmingView: View {
         // button acknowledges it and starts the countdown. Here, not on the screen's root, which presents the
         // recovery PIN.
         .fullScreenCover(item: $engine.firstArmBriefing) { parts in
-            FirstArmBriefingView(parts: parts, recording: engine.camera.isRecordingActivePublisher) {
-                engine.acknowledgeFirstArmBriefing()
-            }
+            FirstArmBriefingView(parts: parts, recording: engine.camera.isRecordingActivePublisher,
+                                 onAcknowledge: { engine.acknowledgeFirstArmBriefing() },
+                                 onActivity: engine.noteFirstArmBriefingActivity)   // its minute without a touch
         }
     }
 

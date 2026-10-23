@@ -9,6 +9,7 @@
 import Foundation
 import Combine
 import AVFoundation
+import UIKit
 
 /// What the camera captures on a trigger.
 enum CaptureMode: String, Codable, CaseIterable, Identifiable {
@@ -455,11 +456,162 @@ final class AppSettings: ObservableObject, Codable {
         try c.encode(sirenRampUp, forKey: .sirenRampUp)
     }
 
+    // MARK: - The settings guard (item 152's lead 3, ADR 0055)
+
+    /// What the canary file says about the preferences store (ADR 0055): absent, readable, or there but unreadable.
+    enum CanaryState { case missing, readable, unreadable }
+
+    /// What the launch found: nothing stored (a fresh install), the stored settings, or a store sealed until the first
+    /// unlock after a restart, which reads as nothing stored.
+    enum StoreReading: Equatable { case fresh, sealed, stored(Data) }
+
+    /// Pure (unit-tested): the canary tells a sealed store from a fresh install. The canary is written after every
+    /// launch that read the settings, with first-unlock protection, so it exists on every install that has launched
+    /// unlocked: there but unreadable, the keys are not available yet, and the store's empty answer means nothing.
+    /// Missing (a fresh install, or an install from before the canary) or readable, the store's answer stands.
+    nonisolated static func storeReading(canary: CanaryState, stored: Data?) -> StoreReading {
+        if canary == .unreadable { return .sealed }
+        if let stored { return .stored(stored) }
+        return .fresh
+    }
+
+    /// True while the stored settings could not be read yet: a launch before the first unlock after a restart (a
+    /// silent push, iOS's prewarming), when the preferences store reads as empty (ADR 0055). The values in memory are
+    /// the defaults, not the owner's choices, so until the unlock nothing saves them (`save`), the launch seeds and
+    /// the protection baseline wait (`whenResolved`), the retention pass does not run, and uploads wait without
+    /// marking anything kept-local (`cloudBackupKnownOff`, `cloudBackupKnownOn`). Cleared by `resolveIfReadable`.
+    @Published private(set) var awaitingUnlock = false
+
+    /// Work owed once the settings are resolved (`whenResolved`), run in order at the unlock.
+    private var deferredWork: [@MainActor (Bool) -> Void] = []
+    /// The unlock notice and the app becoming active, watched while the store is sealed.
+    private var unlockWatch: AnyCancellable?
+    /// Whether the device's protected data can be read; UIKit's answer unless a test injects one. Asked only when the
+    /// canary still cannot be read at a notice: true then means the canary is broken, not sealed.
+    private var protectedDataAvailable: @MainActor () -> Bool = { UIApplication.shared.isProtectedDataAvailable }
+
+    /// Runs `work` once the settings are resolved: now when they are, else at the unlock; `waited` says which.
+    @MainActor func whenResolved(_ work: @escaping @MainActor (_ waited: Bool) -> Void) {
+        if awaitingUnlock { deferredWork.append(work) } else { work(false) }
+    }
+
+    /// Marks a launch's settings as waiting for the unlock, and watches for the unlock notice and the app becoming
+    /// active (the two signals the event log waits for, ADR 0016).
+    @MainActor private func waitForUnlock() {
+        awaitingUnlock = true
+        unlockWatch = Publishers.Merge(
+            NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification),
+            NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.resolveIfReadable() }
+    }
+
+    /// Tries the deferred load again: at the unlock notice, or when the app becomes active. A canary that reads now
+    /// ends the wait: the stored settings load into this object (or a damaged store resets, as at launch), the flag
+    /// clears, the canary is written again and the deferred work runs. One still unreadable keeps the wait, unless
+    /// UIKit says the phone is unlocked: then it is broken, not sealed, and is replaced (ADR 0016's rule for the
+    /// log, mirrored).
+    @MainActor func resolveIfReadable() {
+        guard awaitingUnlock else { return }
+        var canary = Self.canaryState()
+        if canary == .unreadable, protectedDataAvailable() {
+            Log.store.error("The settings canary cannot be read on an unlocked phone; replacing it")
+            try? FileManager.default.removeItem(at: Self.canaryURL)
+            canary = .missing
+        }
+        let loaded: AppSettings
+        switch Self.storeReading(canary: canary, stored: UserDefaults.standard.data(forKey: Self.storeKey)) {
+        case .sealed: return   // still before the unlock: the next notice tries again
+        case .fresh: loaded = AppSettings()
+        case .stored(let data): loaded = Self.decodeOrReset(data)
+        }
+        adopt(loaded)
+        awaitingUnlock = false
+        unlockWatch = nil
+        Self.finishLoad()
+        let work = deferredWork
+        deferredWork = []
+        for item in work { item(true) }
+        Log.store.info("Settings loaded at the unlock")
+    }
+
+    /// Takes every stored value from `loaded` into this object, the one the app shares: the deferred load's end.
+    private func adopt(_ loaded: AppSettings) {
+        enabledSensors = loaded.enabledSensors
+        sensitivities = loaded.sensitivities
+        triggerMode = loaded.triggerMode
+        gracePeriodSeconds = loaded.gracePeriodSeconds
+        captureMode = loaded.captureMode
+        cameraPosition = loaded.cameraPosition
+        cameraReadiness = loaded.cameraReadiness
+        deviceLabel = loaded.deviceLabel
+        illumination = loaded.illumination
+        clipAudio = loaded.clipAudio
+        notifyOtherDevices = loaded.notifyOtherDevices
+        cloudBackup = loaded.cloudBackup
+        cloudRetention = loaded.cloudRetention
+        jammingResponse = loaded.jammingResponse
+        responseMode = loaded.responseMode
+        alertMessage = loaded.alertMessage
+        scramblePINPad = loaded.scramblePINPad
+        biometricUnlock = loaded.biometricUnlock
+        requireGuidedAccess = loaded.requireGuidedAccess
+        guidedAccessDefaultMigration = loaded.guidedAccessDefaultMigration
+        sirenRampUp = loaded.sirenRampUp
+    }
+
+    /// Whether iCloud backup is known to be off: the switch read off from the stored settings (ADR 0047). False while
+    /// the settings wait for the unlock: an event recorded then is neither marked kept-local nor held to no account
+    /// by the switch, since the owner may have backup on (ADR 0055).
+    var cloudBackupKnownOff: Bool { !awaitingUnlock && !cloudBackup }
+    /// Whether iCloud backup is known to be on. False while the settings wait for the unlock: no heartbeat goes out
+    /// on the strength of the default (ADR 0055).
+    var cloudBackupKnownOn: Bool { !awaitingUnlock && cloudBackup }
+
+    /// Where the canary lives: Application Support, this installation only.
+    nonisolated static var canaryURL: URL {
+        #if DEBUG
+        if let override = canaryURLOverrideForTesting { return override }
+        #endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SettingsGuard/canary")
+    }
+
+    #if DEBUG
+    /// A test's own canary file.
+    nonisolated(unsafe) static var canaryURLOverrideForTesting: URL?
+    /// A test's answer to "is protected data available", in place of UIKit's.
+    func useProtectedDataAnswerForTesting(_ answer: @escaping @MainActor () -> Bool) { protectedDataAvailable = answer }
+    #endif
+
+    /// The canary as it stands: missing, readable, or there but unreadable (a metadata check, then a read: a file
+    /// with first-unlock protection exists before the unlock but its bytes cannot be read).
+    nonisolated static func canaryState() -> CanaryState {
+        let url = canaryURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        return (try? Data(contentsOf: url)) == nil ? .unreadable : .readable
+    }
+
+    /// Writes the canary after a launch that read the settings: a file with first-unlock protection, so a launch
+    /// before the unlock finds it there and unreadable. A write that fails is logged; the next launch tries again,
+    /// and a launch before the unlock reads as a fresh install meanwhile, as before 1.8.1.
+    nonisolated static func writeCanary() {
+        let url = canaryURL
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+            try Data("1".utf8).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch {
+            Log.store.error("The settings canary could not be written: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
+        }
+    }
+
     // MARK: - Persistence
 
     private static let storeKey = "com.malinois.settings"
 
     func save() {
+        guard !awaitingUnlock else { return }   // the defaults are not the owner's choices (ADR 0055)
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: Self.storeKey)
         }
@@ -469,13 +621,41 @@ final class AppSettings: ObservableObject, Codable {
     /// defaults the owner never chose. Surfaced rather than silently accepted: the defaults
     /// include PIN-pad scrambling **off** and the Sound and Vision tripwires **off** (Guided
     /// Access enforcement is on by default since 1.3), so a silent reset can quietly reduce protection — the one thing
-    /// this app's settings must never do without saying so. Written only by `load()` at
-    /// launch, before any screen reads it (item 97: Swift 6 asks for the promise in words).
+    /// this app's settings must never do without saying so. Written only by the load, at launch
+    /// before any screen reads it, or at the unlock a sealed store waits for (ADR 0055; item 97: Swift 6 asks for the
+    /// promise in words).
     nonisolated(unsafe) static private(set) var loadWasReset = false
 
-    static func load() -> AppSettings {
+    /// The settings at launch: the stored ones, the defaults for a fresh install, or, before the first unlock after a
+    /// restart, the defaults flagged as waiting (`awaitingUnlock`, ADR 0055) and loaded for real at the unlock.
+    @MainActor static func load() -> AppSettings {
+        let stored = UserDefaults.standard.data(forKey: storeKey)
+        switch storeReading(canary: canaryState(), stored: stored) {
+        case .sealed:
+            // Before the first unlock after a restart (a silent push, iOS's prewarming): the store reads as empty,
+            // and the empty read is not a fresh install. The defaults stand in, flagged, until the unlock.
+            Log.store.info("Settings unreadable before the first unlock; deferring the load")
+            let waiting = AppSettings()
+            waiting.waitForUnlock()
+            return waiting
+        case .fresh:
+            finishLoad()
+            return AppSettings()
+        case .stored(let data):
+            let loaded = decodeOrReset(data)
+            finishLoad()
+            return loaded
+        }
+    }
+
+    /// After a launch that read the settings: the canary written, the stale corrupt-settings stashes reaped.
+    private static func finishLoad() {
+        writeCanary()
         reapStaleCorruptStashes()
-        guard let data = UserDefaults.standard.data(forKey: storeKey) else { return AppSettings() }
+    }
+
+    /// The stored settings decoded, or, when they cannot be, set aside and reset (announced on Home).
+    private static func decodeOrReset(_ data: Data) -> AppSettings {
         do {
             return try JSONDecoder().decode(AppSettings.self, from: data)
         } catch {
@@ -497,6 +677,9 @@ final class AppSettings: ObservableObject, Codable {
             let kept = Self.readableICloudChoices(in: data)
             reset.cloudBackup = kept.backup ?? false
             if let alerts = kept.alerts { reset.notifyOtherDevices = alerts }
+            // Retention falls back to Keep forever, not the 12-month default: nothing in iCloud is deleted on the
+            // strength of a setting the owner never chose (item 152's hardening note (a), ADR 0055).
+            reset.cloudRetention = .forever
             // Stored at once over the damaged settings (set aside above), not left to the 0.4-second autosave:
             // the damaged settings used to be removed first, so a relaunch inside that window found none and
             // started from the defaults, iCloud backup on (Codex's V1, BACKLOG 128).

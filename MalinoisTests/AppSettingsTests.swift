@@ -265,12 +265,11 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(s.hasActiveTripwire(pro: false), "motion still protects the free tier")
     }
 
-    /// Cloud backup and cross-device push are Pro-only, regardless of the saved toggle.
-    func testCloudAndCrossDeviceAreProOnly() {
+    /// Cross-device alerts are Pro-only, whatever the saved switch says. (iCloud backup's Pro rule
+    /// is the engine's `cloudAllowed`.)
+    func testCrossDeviceAlertsAreProOnly() {
         let s = AppSettings()
         s.notifyOtherDevices = true
-        XCTAssertFalse(s.cloudEnabled(pro: false))
-        XCTAssertTrue(s.cloudEnabled(pro: true))
         XCTAssertFalse(s.notifyOtherDevicesEffective(pro: false), "no cross-device push on free")
         XCTAssertTrue(s.notifyOtherDevicesEffective(pro: true))
     }
@@ -416,6 +415,7 @@ final class AppSettingsTests: XCTestCase {
     /// are on, the response mode. All of those default to the *less* protective value, so a
     /// silent reset quietly reduces protection, which is the one thing this app's settings must
     /// never do without saying so.
+    @MainActor   // `AppSettings.load()` runs on the main actor since 1.8.1 (ADR 0055)
     func testACorruptSettingsBlobIsPreservedAndAnnounced() throws {
         let key = "com.malinois.settings"
         let saved = UserDefaults.standard.data(forKey: key)
@@ -469,6 +469,7 @@ final class AppSettingsTests: XCTestCase {
 
     /// Seventh-review #6, the settings half: corrupt-load stashes accumulated in
     /// UserDefaults forever. load() now reaps aged ones through the shared tombstone rule.
+    @MainActor   // `AppSettings.load()` runs on the main actor since 1.8.1 (ADR 0055)
     func testLoadReapsAgedCorruptStashes() {
         let defaults = UserDefaults.standard
         let prefix = "com.malinois.settings.corrupt-"

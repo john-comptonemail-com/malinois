@@ -3,7 +3,7 @@ import XCTest
 
 /// Item 140's A1 (gpt6-astra-1 in the top-down review of 1.8 (73)): the byte-limit cleanup takes a snapshot of each
 /// event's media, measures the files off the main actor, then deletes. A late capture that attached to a synced event
-/// while the files were measured (`EvidenceCapturePipeline.preserveLate`: the file, `update`, `reopenForReupload`) was
+/// while the files were measured (`EvidenceCapturePipeline.preserveLate`: the file, `updateAndReopenForReupload`) was
 /// deleted with the event's other media, and its loss went unmarked: the snapshot still said the event was synced.
 /// The first test is gpt6-astra's probe, adapted.
 @MainActor
@@ -35,15 +35,15 @@ final class Item140CleanupRaceTests: XCTestCase {
         return event
     }
 
-    /// What `preserveLate` does when the rear camera's capture lands late: the file, `update`, `reopenForReupload`.
+    /// What `preserveLate` does when the rear camera's capture lands late: the file, then `updateAndReopenForReupload`
+    /// (one write since item 155's S1).
     private func attachLateRear(to id: UUID, in store: EventStore) throws -> String {
         let name = UUID().uuidString + ".jpg"
         try Data(count: 100).write(to: store.mediaDirectory.appendingPathComponent(name))
         var current = try XCTUnwrap(store.events.first { $0.id == id })
         current.secondaryMediaFilename = name
         current.secondaryCamera = "rear"
-        store.update(current)
-        store.reopenForReupload(id)
+        store.updateAndReopenForReupload(current)
         return name
     }
 

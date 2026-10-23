@@ -4,7 +4,7 @@ These are the project's architecture decision records: one file per decision, wr
 made and amended in place when it changed, as the source cites them ("ADR 0039"). A record that was later
 superseded, suspended or rejected stays here with its status, because the code and later records refer to it.
 The records cite a private findings ledger by item number; those entries are not published, and
-the numbers are kept so the records read as written. Taken from the private repository at commit 4ee8ca0;
+the numbers are kept so the records read as written. Taken from the private repository at commit 360602f;
 published with each release from 1.8 on, as the source is.
 
 | Record | Status |
@@ -53,3 +53,7 @@ published with each release from 1.8 on, as the source is.
 | [ADR 0051: The watch sums up old relayed alerts, and every relayed alert names its event's time](0051-the-watch-sums-up-old-relayed-alerts-and-names-every-alerts-time.md) | accepted |
 | [ADR 0052: The watch pairs iCloud's copy of its iPhone's alert with the relay's](0052-the-watch-pairs-icloud-and-relayed-copies-of-an-alert.md) | accepted |
 | [ADR 0053: The countdown warns when the siren would play away from the iPhone](0053-the-countdown-warns-when-the-siren-would-play-elsewhere.md) | accepted |
+| [ADR 0054: The ARM tap asks for the PIN when it has not been entered correctly for 14 days](0054-the-arm-tap-asks-for-the-pin-after-14-days-without-one.md) | accepted |
+| [ADR 0055: Settings that cannot be read yet are not the owner's choices](0055-settings-read-before-the-first-unlock-wait-for-it.md) | accepted |
+| [ADR 0056: Face ID or Touch ID unlock is bound to the faces or fingers enrolled when it is turned on](0056-face-id-unlock-is-bound-to-the-enrolled-biometrics.md) | accepted |
+| [ADR 0057: The log records a PIN change and Guided Access ending during a watch](0057-the-log-records-a-pin-change-and-guided-access-ending-during-a-watch.md) | accepted |

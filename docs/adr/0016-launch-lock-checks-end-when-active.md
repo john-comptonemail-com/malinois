@@ -74,3 +74,6 @@ Malinois. Ruling: option 1 ("Check when on screen").
   pass cleared the "lapse already logged" flag first, and the recovery then recorded the same
   lapse twice. The foreground pass now runs a still-waiting recovery first, and the entitlement
   hook leaves an owed re-arm to it.
+- 1.8.1 gives the settings the same wait (ADR 0055): a canary file with first-unlock protection tells
+  a sealed preferences store from a fresh install, and the stored settings load at the unlock notice
+  or the app becoming active, whichever comes first.

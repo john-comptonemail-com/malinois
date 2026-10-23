@@ -322,8 +322,7 @@ final class EvidenceCapturePipeline {
             var issues = current.captureFailuresByCamera ?? [:]
             issues[capture.camera.rawValue] = (capture.issue ?? (token.sessionCancelled ? .disarmed : .captureTimedOut)).rawValue
             current.captureFailuresByCamera = issues
-            destination.store.update(current)
-            destination.store.reopenForReupload(current.id)
+            destination.store.updateAndReopenForReupload(current)   // one write (item 155's S1)
             storedAny = true
         }
     }

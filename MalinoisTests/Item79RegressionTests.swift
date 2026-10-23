@@ -362,6 +362,9 @@ final class Item79RegressionTests: XCTestCase {
         cloud.noteTransientFailure(.init(retryAfter: 30))
         cloud.noteTransientFailure(.init(retryAfter: nil))
         XCTAssertEqual(cloud.lastTransientFailure, CloudExfiltrator.TransientFailure(retryAfter: 30))
+        cloud.noteTransientFailure(.init(retryAfter: 5))   // a shorter wait after the longest
+        XCTAssertEqual(cloud.lastTransientFailure, CloudExfiltrator.TransientFailure(retryAfter: 30),
+                       "the longest wait, not the latest (in rising order the two agree; test-suite audit, I7915)")
         cloud.clearTransientFailure()
         XCTAssertNil(cloud.lastTransientFailure)
         cloud.noteTransientFailure(.init(retryAfter: nil))

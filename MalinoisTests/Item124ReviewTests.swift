@@ -257,6 +257,7 @@ final class Item124ReviewTests: XCTestCase {
 
     /// The usual reset: one field this build cannot read (an older build, after a newer one stored a
     /// value it does not know). The owner's iCloud choices are still readable, so they stand.
+    @MainActor   // `AppSettings.load()` runs on the main actor since 1.8.1 (ADR 0055)
     func testASettingsResetKeepsTheOwnersICloudChoicesWhereTheyCanBeRead() {
         withStoredSettings(#"{"gracePeriodSeconds":"not a number","cloudBackup":false,"notifyOtherDevices":false}"#) {
             let loaded = AppSettings.load()
@@ -274,6 +275,7 @@ final class Item124ReviewTests: XCTestCase {
     /// Real damage: the switch cannot be read (not JSON, missing, or not a yes or no). Backup is off,
     /// failing closed: nothing uploads that the owner may have chosen to keep. Home's backup-off notice
     /// says so. Cross-device alerts keep their default.
+    @MainActor   // `AppSettings.load()` runs on the main actor since 1.8.1 (ADR 0055)
     func testASettingsResetTurnsBackupOffWhereItsChoiceCannotBeRead() {
         for blob in ["not json at all", #"{"gracePeriodSeconds":"x"}"#, #"{"gracePeriodSeconds":"x","cloudBackup":1}"#,
                      #"{"gracePeriodSeconds":"x","cloudBackup":"yes"}"#] {
@@ -288,6 +290,7 @@ final class Item124ReviewTests: XCTestCase {
 
     /// Guard: settings that decode load as they are, with no reset (and older settings without the
     /// switch keep uploading, as since item 115).
+    @MainActor   // `AppSettings.load()` runs on the main actor since 1.8.1 (ADR 0055)
     func testSettingsThatDecodeLoadAsTheyAre() throws {
         let settings = AppSettings()
         settings.cloudBackup = false
@@ -340,5 +343,22 @@ final class Item124ReviewTests: XCTestCase {
             await refresh.value
             XCTAssertEqual(entitlements.status, purchase ? .pro : .earlyAccess, "after StoreKit answered")
         }
+    }
+
+    // MARK: - Item 155's A8 (step 23): the Early-Access marker precedes the purchase return
+
+    /// Codex's P8. An install with a verified purchase and no Early-Access marker, while the program is open, becomes a
+    /// member too: the marker is written before the purchase makes the status Pro. Red at the step's red commit: the
+    /// refresh returned on the purchase first, and the marker was never written.
+    @MainActor func testAPurchasedInstallBecomesAnEarlyAccessMember() async throws {
+        KeychainService.clearEarlyAccessMemberForTesting()
+        try XCTSkipUnless(KeychainService.markEarlyAccessMember(), "the Keychain is unavailable on this build")
+        KeychainService.clearEarlyAccessMemberForTesting()
+        defer { KeychainService.clearEarlyAccessMemberForTesting() }
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        entitlements.purchaseCheckForTesting = { true }
+        await entitlements.refresh()
+        XCTAssertEqual(entitlements.status, .pro)
+        XCTAssertTrue(KeychainService.earlyAccessMember, "a purchaser is a member too")
     }
 }

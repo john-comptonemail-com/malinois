@@ -162,43 +162,11 @@ final class Item76AlertRewriteTests: XCTestCase {
         }
     }
 
-    /// An account's existing subscriptions are upgraded in place: the same IDs, saved again when
-    /// they do not send mutable pushes, so a device still on 1.3.x (which only creates missing
-    /// IDs) never adds a second copy and a second alert.
-    func testSubscriptionsAreUpgradedInPlace() {
-        let tamperID = CloudExfiltrator.makeTamperSubscription().subscriptionID
-        let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [:]).map(\.subscriptionID), [tamperID, disarmID])
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: false, disarmID: true]).map(\.subscriptionID),
-                       [tamperID], "a 1.3.x subscription is saved again, under its own ID")
-        XCTAssertTrue(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true, disarmID: true]).isEmpty)
-    }
+    // The upgrade in place (an existing subscription without mutable pushes is saved again under
+    // its own ID) is checked with ensure's other cases in
+    // CloudExfiltratorTests.testEnsureFillsOnlyTheGapsAndRemoveNamesEveryIDEverCreated.
 
-    // MARK: - The project
-
-    /// The extension ships the app's version and build number: App Store validation rejects an
-    /// upload whose extension disagrees, and nothing else ties the two targets' settings together.
-    func testTheExtensionShipsTheAppsVersionAndBuild() throws {
-        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Malinois.xcodeproj/project.pbxproj")
-        guard let text = try? String(contentsOf: project, encoding: .utf8) else {
-            throw XCTSkip("the project file is not readable from this test run")
-        }
-        func setting(_ key: String, inConfig id: String) -> String? {
-            guard let start = text.range(of: "\t\t\(id) /* ") else { return nil }
-            let rest = text[start.upperBound...]
-            guard let end = rest.range(of: "\t\t\tname = ") else { return nil }
-            let block = rest[..<end.lowerBound]
-            guard let line = block.split(separator: "\n").first(where: { $0.contains("\(key) = ") }) else { return nil }
-            return line.split(separator: "=").last?.trimmingCharacters(in: CharacterSet(charactersIn: " ;"))
-        }
-        let pairs = [("C1C2C3D4E5F6000000000109", "71B2C3D4E5F6000000000051"),   // Debug: app, extension
-                     ("C1C2C3D4E5F600000000010A", "71B2C3D4E5F6000000000052")]   // Release
-        for (app, ext) in pairs {
-            for key in ["MARKETING_VERSION", "CURRENT_PROJECT_VERSION"] {
-                let appValue = try XCTUnwrap(setting(key, inConfig: app), "\(key) in the app's \(app)")
-                XCTAssertEqual(setting(key, inConfig: ext), appValue, "\(key): the extension must match the app")
-            }
-        }
-    }
+    // The extension's version and build number must match the app's (App Store validation rejects
+    // an upload where they differ): Item57WatchAlertsTests.testEveryAppTargetSharesOneVersion checks
+    // every app target, the extension included.
 }

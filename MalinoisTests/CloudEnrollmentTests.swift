@@ -50,6 +50,33 @@ final class CloudEnrollmentTests: XCTestCase {
         XCTAssertFalse(gate.isCurrent(lease))
         XCTAssertFalse(gate.verified)
     }
+    /// A lease is good only for the account lookup it came from: once the account is looked up
+    /// again, an operation still holding the old lease is refused, even for the same account.
+    /// Checked before the new lookup only, the old lease was refused for being unverified
+    /// (test-suite audit, CE04).
+    func testALeaseFromAnEarlierLookupIsRefusedAfterTheNext() async throws {
+        let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
+        _ = await gate.enroll(account: "account-a", resolve: { "account-a" })
+        let first = try XCTUnwrap(gate.authorize(account: "account-a"))
+        gate.invalidateAccount()   // the account notification: the account is looked up again
+        let second = try XCTUnwrap(gate.authorize(account: "account-a"))
+        XCTAssertTrue(gate.isCurrent(second))
+        XCTAssertFalse(gate.isCurrent(first), "the old lease does not outlive the new lookup")
+    }
+    /// A grant written by a newer version is neither read nor overwritten: this version cannot
+    /// know what it means, and writing its own over it would lose it (test-suite audit, CE17).
+    func testAGrantFromANewerVersionIsNeitherReadNorOverwritten() async throws {
+        let path = file()
+        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let newer = Data((#"{"version":2,"installation":"8D7C6F1A-0000-4000-8000-000000000017","account":"account-a","#
+                          + #""owners":{},"remoteOwners":{},"migrationSeeded":false}"#).utf8)
+        try CloudEnrollment.write(newer, to: path)
+        let gate = CloudEnrollment(file: path, authenticate: { _ in true })
+        XCTAssertNil(gate.authorize(account: "account-a"), "not read")
+        let enrolled = await gate.enroll(account: "account-a", resolve: { "account-a" })
+        XCTAssertFalse(enrolled)
+        XCTAssertEqual(try Data(contentsOf: path), newer, "not overwritten")
+    }
     func testAuthenticationCannotEnrollAccountThatChangedDuringPrompt() async {
         let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
         let enrolled = await gate.enroll(account: "account-a", resolve: { "account-b" })

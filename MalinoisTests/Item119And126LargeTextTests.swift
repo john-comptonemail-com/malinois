@@ -24,14 +24,16 @@ import XCTest
 
 @MainActor
 final class Item119And126LargeTextTests: XCTestCase {
+    // XCTest's hooks are nonisolated; they run on the main thread for a @MainActor class, and the wipe lives on the
+    // main actor since item 144 (a).
     override func setUp() {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "Item119And126LargeTextTests")
-        KeychainService.wipeStalePINData()
+        MainActor.assumeIsolated { KeychainService.wipeStalePINData() }
     }
 
     override func tearDown() {
-        KeychainService.wipeStalePINData()
+        MainActor.assumeIsolated { KeychainService.wipeStalePINData() }
         TestIsolation.tearDown()
         super.tearDown()
     }

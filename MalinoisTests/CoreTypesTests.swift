@@ -73,12 +73,6 @@ final class CoreTypesTests: XCTestCase {
 
     // MARK: - Trigger correlation (the central "should we fire?" logic)
 
-    func testAnyModeFiresOnAnySingleSensor() {
-        XCTAssertFalse(TriggerMode.any.shouldFire(for: []))
-        XCTAssertTrue(TriggerMode.any.shouldFire(for: [.motion]))
-        XCTAssertTrue(TriggerMode.any.shouldFire(for: [.audio]))
-    }
-
     /// Every tripwire fires on its own now that "Motion-confirmed" is gone — no sensor
     /// requires corroboration.
     func testEverySensorFiresSoloInAnyMode() {
@@ -117,6 +111,13 @@ final class CoreTypesTests: XCTestCase {
         XCTAssertEqual(AudioMonitor.clampedRolling(-10, baseline: -50, maxDrift: 12), -38)
         // Exactly at the cap.
         XCTAssertEqual(AudioMonitor.clampedRolling(-38, baseline: -50, maxDrift: 12), -38)
+    }
+
+    /// The median of an even number of samples is the mean of the middle two; every other test
+    /// used an odd number (test-suite audit, CT13).
+    func testTheAudioMedianOfAnEvenCountAveragesTheMiddleTwo() {
+        XCTAssertEqual(AudioMonitor.median([-30, -10, -20, -40]), -25)
+        XCTAssertNil(AudioMonitor.median([]))
     }
 
     /// F-07: the WARM-UP baseline is now clamped too, so a noisy warm-up window (or the
@@ -265,14 +266,18 @@ final class CoreTypesTests: XCTestCase {
 
     /// Anti-ratchet: creeping into frame below the per-frame threshold must not walk the
     /// rolling baseline along with you — the session anchor catches the cumulative change.
+    /// The creep must be slow enough that the rolling baseline (5% of the way a frame) never
+    /// falls a pixel threshold behind, and stop before the drift limit lets the rolling
+    /// comparison see it: at 2 luma a frame that comparison tripped too and hid the anchor
+    /// (test-suite audit, CT22).
     func testVisionSessionAnchorCatchesSlowRatchet() {
         var d = calibrated(on: flat(100))
         var tripped = false
-        // Raise 40% of the view by 2 luma per frame: each step is far below the pixel threshold
-        // (>= 12), so the rolling comparison never sees motion — but after enough steps the
-        // region differs from the calibrated anchor by more than the threshold.
-        for step in 1...40 {
-            let f = blob(base: 100, value: UInt8(100 + 2 * step), fraction: 0.40)
+        // Raise 40% of the view by 1 luma every other frame up to 30, then hold. The raised
+        // region moves 0.6 of that against the frame's mean, and the rolling baseline trails it
+        // by about 6, well inside the threshold (12): only the anchor sees the region pass 12.
+        for frame in 1...80 {
+            let f = blob(base: 100, value: UInt8(100 + min(frame / 2, 30)), fraction: 0.40)
             if case .trip = d.evaluate(f, tripFraction: 0.05) { tripped = true; break }
         }
         XCTAssertTrue(tripped, "sub-threshold creep over 40% of the view must eventually trip via the session anchor")
@@ -565,6 +570,10 @@ final class CoreTypesTests: XCTestCase {
                        .terminated, "the tolerance itself is not a restart")
         XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 9_100, takenAt: 9_200)),
                        .rebooted, "the boot time jumped past the tolerance — the device restarted")
+        // A restart found after a longer uptime than at arm: only the boot-time jump can tell
+        // (the case above also shrank the uptime, which the other rule catches; test-suite audit, ME73).
+        XCTAssertEqual(BootStamp.classify(armed: armed, current: BootStamp(bootTime: 9_100, takenAt: 20_000)),
+                       .rebooted, "up 10,900 s now against 4,000 at arm, but the boot time jumped: a restart")
     }
 
     /// Winding the clock back after a restart can hide the boot-time jump; uptime cannot

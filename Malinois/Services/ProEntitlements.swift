@@ -188,6 +188,10 @@ final class ProEntitlements: ObservableObject {
             status = .earlyAccess
             hasResolved = true
         }
+        // A purchase found below returns before the Early-Access membership is written: mark it first, idempotently, so
+        // a purchaser without the marker keeps Pro if the purchase is later revoked after the program closes (item 155's
+        // A8). The ordinary path below marks it too, as before.
+        if !KeychainService.earlyAccessMember && Self.earlyAccessProgramOpen { _ = KeychainService.markEarlyAccessMember() }   // item 155's A8
         if await hasPurchased() {
             status = .pro
             hasResolved = true
@@ -428,8 +432,8 @@ extension AppSettings {
     }
     func effectiveCaptureMode(pro: Bool) -> CaptureMode { Self.effectiveCapture(captureMode, pro: pro) }
 
-    /// Cloud backup and cross-device push are Pro-only.
-    func cloudEnabled(pro: Bool) -> Bool { pro }
+    /// Cross-device alerts are Pro-only, whatever the saved switch says. (iCloud backup's Pro rule
+    /// is the engine's: `MonitoringEngine.cloudAllowed` and its `proActive` checks.)
     func notifyOtherDevicesEffective(pro: Bool) -> Bool { pro && notifyOtherDevices }
 
     /// Pro-aware version of `hasActiveTripwire`: with the audio sensor Pro-locked, a free user

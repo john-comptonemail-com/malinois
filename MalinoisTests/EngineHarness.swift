@@ -134,6 +134,28 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     }
     var shutDowns: Int { lock.withLock { _shutDowns } }
     var micDrops: Int { lock.withLock { _micDrops } }
+
+    // MARK: Holding the microphone's release
+
+    private var _holdMicDrop = false
+    private var micDropWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// While true, every `dropMicAndWait` suspends until `releaseMicDrop()`: a camera session queue that does not
+    /// answer (item 152's lead 6).
+    var holdMicDrop: Bool {
+        get { lock.withLock { _holdMicDrop } }
+        set { lock.withLock { _holdMicDrop = newValue } }
+    }
+
+    func releaseMicDrop() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            _holdMicDrop = false
+            let w = micDropWaiters
+            micDropWaiters = []
+            return w
+        }
+        waiting.forEach { $0.resume() }
+    }
     var visionTapRequests: [Bool] { lock.withLock { _visionTapRequests } }
 
     // MARK: EvidenceCamera
@@ -167,7 +189,16 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         guard Date() < deadline else { throw CameraController.CameraError.timedOut }
         return try await warmUp(forClips: true, camera: camera)
     }
-    func dropMicAndWait() async { lock.withLock { _micDrops += 1 } }
+    func dropMicAndWait() async {
+        lock.withLock { _micDrops += 1 }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                if _holdMicDrop { micDropWaiters.append(cont); return false }
+                return true
+            }
+            if resumeNow { cont.resume() }
+        }
+    }
     func isLowLight() async -> Bool {
         if let probe = lowLightProbeForTesting { return await probe() }
         return lowLight
@@ -280,9 +311,10 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 /// What one test leaves behind must not reach the next (item 84). Every test class that builds
 /// an engine or a store calls `setUp(folderPrefix:)` and `tearDown()` (or, off the main actor,
 /// `tearDownFolderAndFlags()`) from its own, and wraps each engine it builds in `track`: the
-/// test gets a store folder of its own, its engines are disarmed afterwards, and the flags
-/// engines keep in UserDefaults are cleared on both sides — every engine in the process shares
-/// them, the test host's own included, and a flag left behind changes the next test's recovery.
+/// test gets a store folder of its own, its engines are disarmed afterwards (once what they
+/// queued for the main run loop has landed), and the flags engines keep in UserDefaults are
+/// cleared on both sides — every engine in the process shares them, the test host's own
+/// included, and a flag left behind changes the next test's recovery.
 enum TestIsolation {
     /// Every key an engine keeps about a session and its recovery, matched by prefix so a flag
     /// added later is covered without editing a list: the armed marker and boot stamp, the
@@ -307,23 +339,45 @@ enum TestIsolation {
             }
         }
         clearRecoveryFlags()
+        // No PIN recovery pending for this test's engines (item 152's lead 18): the Keychain and the test host's own
+        // log are shared by every test in the process, so the real answer depends on what ran before.
+        MonitoringEngine.recoveryPendingForTesting = false
     }
 
-    /// The test's engines disarmed, then its flags cleared and its folder removed. Called from
-    /// XCTest's `tearDown`, which is not main-actor isolated but runs on the main thread (item 97).
-    /// Keep the callers' setUp and tearDown synchronous: XCTest runs the async forms on another
-    /// thread, where `MainActor.assumeIsolated` would stop the test.
+    /// What the test's engines queued landed, the engines disarmed, then the test's flags cleared
+    /// and its folder removed. Called from XCTest's `tearDown`, which is not main-actor isolated
+    /// but runs on the main thread (item 97). Keep the callers' setUp and tearDown synchronous:
+    /// XCTest runs the async forms on another thread, where `MainActor.assumeIsolated` would stop
+    /// the test.
     nonisolated static func tearDown() {
-        MainActor.assumeIsolated { disarmTrackedEngines() }
+        MainActor.assumeIsolated {
+            letQueuedWorkLand()
+            disarmTrackedEngines()
+        }
         tearDownFolderAndFlags()
+    }
+
+    /// Turns the main run loop briefly after a test that built engines, so what they queued for
+    /// it lands in that test, before they are disarmed and its flags cleared. An engine hears its
+    /// Pro check through the loop (`.receive(on: RunLoop.main)`), and many tests never turn it:
+    /// the answer used to wait for the next test that did, where the engine acted on that test's
+    /// flags and took the re-arm owed to that test's own engine (the test-suite audit's ME206).
+    @MainActor static func letQueuedWorkLand() {
+        guard !engines.isEmpty else { return }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
 
     /// The flags cleared and the folder removed — for a class that builds stores but no engines.
     nonisolated static func tearDownFolderAndFlags() {
         clearRecoveryFlags()
+        MonitoringEngine.recoveryPendingForTesting = nil
         if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
         EventStore.rootOverrideForTesting = nil
-        MainActor.assumeIsolated { CloudEnrollment.sharedForTesting = nil }
+        EventStore.checkpointObserverForTesting = nil   // item 155's S1: no test's observer outlives it
+        MainActor.assumeIsolated {
+            CloudEnrollment.sharedForTesting = nil
+            BackgroundAssertion.providerForTesting = nil   // item 153's MAL-01: UIKit's assertions again
+        }
     }
 
     /// Keeps `engine` for the tearDown's disarm, and returns it, so a rig can wrap its constructor.
@@ -395,4 +449,25 @@ func shownOnScreen<V: View>(_ view: V, in size: CGSize = CGSize(width: 402, heig
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     controller.view.layoutIfNeeded()
     return (recorder.shown, recorder.frames)
+}
+
+/// What Settings shows, laid out with a test's own services in a window tall enough for every row
+/// (the test-suite audit's P4: these checks read the screen's source before). `configure` sets the
+/// settings first; the Pro check answers `status` (Pro by default: the iCloud rows show only with it).
+@MainActor
+func settingsShownOnScreen(status: ProEntitlements.Status = .trial,
+                           _ configure: (AppSettings) -> Void = { _ in }) throws -> [String] {
+    let settings = AppSettings()
+    configure(settings)
+    let entitlements = ProEntitlements(resolvedAs: status)
+    let cloud = CloudExfiltrator()
+    let store = EventStore()
+    let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: cloud,
+                                                      camera: FakeCamera(), entitlements: entitlements,
+                                                      timing: EngineCharacterizationTests.fastTiming))
+    let screen = SettingsView()
+        .environmentObject(settings).environmentObject(cloud)
+        .environmentObject(entitlements).environmentObject(engine)
+        .environmentObject(store).environmentObject(CameraController())   // the Debug rows read the log
+    return try shownOnScreen(screen, in: CGSize(width: 402, height: 12_000)).shown
 }

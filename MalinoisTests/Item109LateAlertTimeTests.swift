@@ -20,20 +20,6 @@ import UserNotifications
 
 final class Item109LateAlertTimeTests: XCTestCase {
 
-    private static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-
-    private func text(_ relativePath: String) throws -> String {
-        try String(contentsOf: Self.root.appendingPathComponent(relativePath), encoding: .utf8)
-    }
-
-    /// The source between `start` and the next `end` marker, for checks on one function.
-    private func section(_ source: String, from start: String, to end: String) throws -> Substring {
-        let begin = try XCTUnwrap(source.range(of: start), start)
-        let rest = source[begin.upperBound...]
-        let stop = rest.range(of: end)?.lowerBound ?? rest.endIndex
-        return rest[..<stop]
-    }
-
     private let occurred = Date(timeIntervalSince1970: 1_760_380_920)
     private let tamperText = "Tamper detected on your device."
     private let disarmText = "Malinois was disarmed on one of your devices."
@@ -97,13 +83,6 @@ final class Item109LateAlertTimeTests: XCTestCase {
         XCTAssertEqual(disarm.interruptionLevel, .active)
     }
 
-    /// The Pro welcome says Apple can't read the data only with Advanced Data Protection on (65 said
-    /// event details were always end-to-end encrypted, which SECURITY.md contradicts), with no time clause.
-    func testTheProWelcomeKeepsTheEncryptionCorrection() throws {
-        let onboarding = try text("Malinois/Views/OnboardingViews.swift")
-        let note = try section(onboarding, from: "private var closingNote: String {", to: "case .earlyAccess:")
-        XCTAssertTrue(note.contains("the developer can't read them, and with Advanced Data Protection on, neither can Apple."))
-        XCTAssertFalse(note.contains("end-to-end encrypted"))
-        XCTAssertFalse(note.contains("apart from when each happened"))
-    }
+    // The Pro welcome's encryption correction is checked on the laid-out screen, with item 108's
+    // check of the same paragraph: Item108ReviewTests.testTheProWelcomeSaysWhoCanReadTheData.
 }

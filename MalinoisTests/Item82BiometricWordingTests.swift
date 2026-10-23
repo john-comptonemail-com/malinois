@@ -40,7 +40,9 @@ final class Item82BiometricWordingTests: XCTestCase {
         XCTAssertEqual(kind.unlockToggleTitle, "Touch ID unlock")
         XCTAssertEqual(kind.unlockToggleCaption,
                        "Open the Event Log and Test Sensors with Touch ID instead of the PIN. Settings, disarming, "
-                       + "and changing the PIN always require the PIN: a finger can be presented; a PIN has to be given.")
+                       + "and changing the PIN always require the PIN: a finger can be presented; a PIN has to be given. "
+                       + "Tied to the fingers enrolled now: if one is added or removed, this turns off until you turn it "
+                       + "on again.")   // ADR 0056
         XCTAssertEqual(kind.recoveryNeedsPasscode,
                        "Recovery requires a device passcode. Set one in iOS Settings → Touch ID & Passcode, then tap Try Again.")
         XCTAssertEqual(kind.guidedAccessCaption, "Touch ID is unavailable during Guided Access - enter your PIN.")
@@ -52,7 +54,9 @@ final class Item82BiometricWordingTests: XCTestCase {
         XCTAssertEqual(kind.unlockToggleTitle, "Face ID unlock")
         XCTAssertEqual(kind.unlockToggleCaption,
                        "Open the Event Log and Test Sensors with Face ID instead of the PIN. Settings, disarming, "
-                       + "and changing the PIN always require the PIN: a face can be presented; a PIN has to be given.")
+                       + "and changing the PIN always require the PIN: a face can be presented; a PIN has to be given. "
+                       + "Tied to the faces enrolled now: if one is added or removed, this turns off until you turn it "
+                       + "on again.")   // ADR 0056
         XCTAssertEqual(kind.recoveryNeedsPasscode,
                        "Recovery requires a device passcode. Set one in iOS Settings → Face ID & Passcode, then tap Try Again.")
         XCTAssertEqual(kind.guidedAccessCaption, "Face ID is unavailable during Guided Access - enter your PIN.")

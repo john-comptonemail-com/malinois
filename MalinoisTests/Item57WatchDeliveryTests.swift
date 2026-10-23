@@ -80,27 +80,7 @@ final class Item57WatchDeliveryTests: XCTestCase {
         XCTAssertTrue(delegate.contains("WatchAlertStatus.source(ofNotification:"))
     }
 
-    // MARK: - Late alerts
-
-    /// Late, the iCloud alert's fixed text with the event's time. Since 1.8 (73) on time too: every
-    /// relayed alert names its event's time (BACKLOG 134, ADR 0051). Alert text: no em-dash (B16).
-    func testALateRelayedAlertSaysWhenItHappened() throws {
-        let at = Date(timeIntervalSinceReferenceDate: 800_000_000)
-        for kind in [WatchAlertMessage.Kind.tamper, .disarm] {
-            let message = WatchAlertMessage(kind: kind, eventID: UUID(), at: at)
-            XCTAssertEqual(message.body(deliveredAt: at.addingTimeInterval(30)),
-                           "\(message.body.dropLast()) at \(at.formatted(date: .omitted, time: .shortened)).",
-                           "on time: with the time too")
-            let late = message.body(deliveredAt: at.addingTimeInterval(600))
-            XCTAssertNotEqual(late, message.body)
-            XCTAssertTrue(late.hasPrefix(String(message.body.dropLast())), late)
-            XCTAssertTrue(late.contains(" at "), late)
-            XCTAssertTrue(late.hasSuffix("."), late)
-            XCTAssertFalse(late.contains("\u{2014}"), late)
-        }
-        // Since 1.8 (73) the watch's `WatchRelayInbox` builds the alert (ADR 0051): asked here directly.
-        let message = WatchAlertMessage(kind: .tamper, eventID: UUID(), at: at)
-        XCTAssertEqual(WatchRelayInbox.request(for: message, now: at.addingTimeInterval(600)).content.body,
-                       message.body(deliveredAt: at.addingTimeInterval(600)), "the watch shows that form")
-    }
+    // The late alert's wording (every relayed alert names its event's time, BACKLOG 134) is
+    // Item134WatchSummaryTests.testEveryRelayedAlertNamesItsEventsTime's: the exact words, both
+    // kinds, the date across midnight, and the watch's inbox showing that text.
 }

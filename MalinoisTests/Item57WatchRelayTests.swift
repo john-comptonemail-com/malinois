@@ -96,13 +96,18 @@ final class Item57WatchRelayTests: XCTestCase {
     }
 
     /// The app starts the relay with its services, before the engine, so a record the engine writes
-    /// at launch (an interruption) is relayed too.
+    /// at launch is relayed too: here the interruption record of an armed session the app never
+    /// ended. Run through the launch's own construction; read from the app's source, this passed
+    /// with the relay built but never started (the test-suite audit's probe W340; P4).
     func testTheAppStartsTheRelayBeforeTheEngine() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let app = try String(contentsOf: root.appendingPathComponent("Malinois/MalinoisApp.swift"), encoding: .utf8)
-        let relay = try XCTUnwrap(app.range(of: "WatchAlertRelay("), "the app builds the relay")
-        let engine = try XCTUnwrap(app.range(of: "MonitoringEngine(settings:"))
-        XCTAssertLessThan(relay.lowerBound, engine.lowerBound)
-        XCTAssertTrue(app.contains(".start()"))
+        UserDefaults.standard.set(0.5, forKey: "com.malinois.armedSession.brightness")   // armed, never disarmed
+        var sent: [WatchAlertMessage] = []
+        let services = MalinoisApp.makeServices(settings: AppSettings(), entitlements: ProEntitlements(resolvedAs: .trial),
+                                                relaySend: { sent.append($0) })
+        TestIsolation.track(services.engine)
+        let interruption = try XCTUnwrap(services.eventStore.events.first { $0.interrupted == true },
+                                         "the engine records the interruption at launch")
+        XCTAssertTrue(sent.contains { $0.eventID == interruption.id && $0.kind == .tamper },
+                      "and the relay, already listening, sends it to the watch")
     }
 }

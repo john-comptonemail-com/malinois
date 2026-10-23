@@ -238,8 +238,9 @@ final class Item116ReviewTests: XCTestCase {
     /// The owner's ruling: the paired watch keeps getting this iPhone's alerts directly while
     /// backup is off, and the switch's text says so instead of "no alerts".
     func testTheSwitchSaysThePairedWatchStillGetsAlerts() throws {
-        // Since 1.8 (76) the caption is `SettingsView.backupCaption`, which the switch shows (Item141WordingTests).
-        let caption = SettingsView.backupCaption
+        // As Settings shows it (laid out; it read the screen's source before: the test-suite audit's P4).
+        let shown = try settingsShownOnScreen()
+        let caption = try XCTUnwrap(shown.first { $0.hasPrefix("Uploads this iPhone's events") }, "\(shown)")
         XCTAssertTrue(caption.contains("paired Apple Watch"), caption)
         XCTAssertFalse(caption.contains("your other devices get no alerts from this iPhone."), caption)
     }

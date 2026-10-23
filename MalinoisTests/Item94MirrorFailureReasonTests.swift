@@ -33,8 +33,13 @@ final class Item94MirrorFailureReasonTests: XCTestCase {
     }
 
     /// A copy without the reason never replaces one that has it: a replay of the fact, arriving late.
+    /// Even when its flood count grew: with equal counts the copy is refused for changing nothing,
+    /// so only a grown count leaves the reason rule to decide (test-suite audit, WB41).
     func testACopyThatLostTheReasonIsRefused() {
         XCTAssertFalse(EventStore.supersedes(incoming: mirror(failure: nil), existing: mirror(failure: reason)))
+        XCTAssertFalse(EventStore.supersedes(incoming: mirror(failure: nil, floods: 5),
+                                             existing: mirror(failure: reason, floods: 3)),
+                       "a higher count does not buy losing the reason")
     }
 
     /// The same copy again changes nothing.

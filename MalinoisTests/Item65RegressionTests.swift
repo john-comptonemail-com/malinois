@@ -199,15 +199,20 @@ final class Item65RegressionTests: XCTestCase {
     }
 
     /// The real controller clears the clip latch on a new attempt — the reason a clip's
-    /// interruption planted no longer answers for a later still.
+    /// interruption planted no longer answers for a later still. The flag and the reason are
+    /// cleared separately, so both are checked (test-suite audit, WB10).
     func testTheControllerForgetsAClipInterruptionWhenANewAttemptBegins() async {
         let controller = CameraController()
         controller.latchClipInterruptionForTesting(.background)
         let before = await controller.interruptionReason()
         XCTAssertEqual(before, .background, "the latch answers until a new attempt begins")
+        let latched = await controller.clipWasInterrupted()
+        XCTAssertTrue(latched)
         controller.beginCaptureAttempt()
         let after = await controller.interruptionReason()
         XCTAssertNil(after, "a new attempt starts with no inherited reason")
+        let interrupted = await controller.clipWasInterrupted()
+        XCTAssertFalse(interrupted, "nor with the last clip's interruption flag")
     }
 
     // MARK: - Finding 2, the rules themselves

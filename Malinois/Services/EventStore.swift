@@ -116,6 +116,11 @@ final class EventStore: ObservableObject {
     nonisolated(unsafe) static var rootOverrideForTesting: URL?
     /// Observes the crash window after committed media, before the caller can attach it.
     var attachmentPublishedForTesting: ((UUID, String) -> Void)?
+    /// Observes every snapshot the store writes, on the I/O queue, after the write and its attachment checkpoint
+    /// (item 155's S1, Codex's second look): the store's root, the snapshot and the bytes on disk, so a test can keep
+    /// the disk as a kill right after that write would leave it. Static like `rootOverrideForTesting`: set before the
+    /// store under test writes, cleared by the isolation's tearDown. Compiled out of Release.
+    nonisolated(unsafe) static var checkpointObserverForTesting: (@Sendable (URL, [Event], Data) -> Void)?
     /// Drains queued disk writes before a test removes a crash-snapshot directory.
     func drainIOForTesting() { ioQueue.sync {} }
     /// A smaller media budget than the shipped 2 GB, for one store (item 116).
@@ -124,6 +129,9 @@ final class EventStore: ObservableObject {
     var mediaMeasuredForTesting: (@MainActor () async -> Void)?
     /// Whether no byte-limit pass is running or owed: a test waits on it before a step that must not race one.
     var byteCapPruneIdleForTesting: Bool { !byteCapPruneRunning }
+    /// Called on the I/O queue with the staged copy, before its size is checked against the
+    /// record: a test shortens it there, as a short write would.
+    nonisolated(unsafe) static var stagedCopyForTesting: ((URL) -> Void)?
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -1192,6 +1200,23 @@ final class EventStore: ObservableObject {
         persist()
     }
 
+    /// `update` and `reopenForReupload` as ONE write (item 155's S1, Codex's second look): a capture's completion
+    /// writes the event's final state, media attached, and reopens it if a sparse upload during the capture marked
+    /// it synced, in the same persisted snapshot. As two calls they were two queued writes, and the first put the
+    /// media beside the synced state on disk: a kill between them left an event the sweep skipped and whose photo
+    /// the byte cap deleted as a cloud-backed copy, unmarked. The monotonic rule applies as in `update`; the walk
+    /// back from synced is the one `reopenForReupload` sanctions, for the same reason. Local captures only: a
+    /// mirrored download is never reopened.
+    func updateAndReopenForReupload(_ event: Event) {
+        guard let idx = events.firstIndex(where: { $0.id == event.id }) else { return }
+        let before = events[idx]
+        var merged = Self.preservingMonotonicFields(current: before, incoming: event)
+        if merged.cloudSyncState == .synced { merged.cloudSyncState = .pending }
+        events[idx] = merged
+        persist()
+        if Self.attachesMedia(before: before, after: merged) { scheduleByteCapPrune() }   // as `update` does
+    }
+
     /// Requeues every synced event for re-upload after an iCloud encrypted-data reset
     /// (34.H13): Apple purged the cloud copies, so "synced" is no longer true of any of
     /// them. This is the one sanctioned path around the monotonic sync-state guard — the
@@ -1440,6 +1465,9 @@ final class EventStore: ObservableObject {
                 try fm.moveItem(at: url, to: staged)
                 try Self.applyClipProtectionOrRemove(at: staged)
             }
+            #if DEBUG
+            Self.stagedCopyForTesting?(staged)
+            #endif
             guard Self.regularSize(staged) == intent.byteCount else { throw CocoaError(.fileReadCorruptFile) }
             try Self.syncFile(staged)
             let data = try JSONEncoder().encode(intent)
@@ -1633,6 +1661,9 @@ final class EventStore: ObservableObject {
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: url, options: options)
                 self.checkpointAttachments(persistedSnapshot: snapshot, cleanLoad: cleanLoad, logURL: url)
+                #if DEBUG
+                Self.checkpointObserverForTesting?(self.root, snapshot, data)
+                #endif
                 if self.persistFailedOnQueue {
                     self.persistFailedOnQueue = false
                     Task { @MainActor in self.persistDegraded = false }

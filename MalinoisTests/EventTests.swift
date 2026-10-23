@@ -241,6 +241,14 @@ final class EventTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: clip.path))
         let invalid = await store.store(.still(Data([1])), ext: "../jpg", attachingTo: event, camera: "front")
         XCTAssertNil(invalid)
+        // The cases above also fail later on (an infinite length cannot be written as JSON; "../jpg"
+        // has no folder to move into), so each check gets a case only it refuses (test-suite audit,
+        // EV84 and EV85): a finite negative length, and a plain wrong extension.
+        let negative = await store.store(.clip(clip), ext: "mov", attachingTo: event, camera: "front", duration: -3)
+        XCTAssertNil(negative, "a negative length is refused")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: clip.path), "before the clip is moved")
+        let png = await store.store(.still(Data([1])), ext: "png", attachingTo: event, camera: "front")
+        XCTAssertNil(png, "a still is a .jpg")
     }
 
     @MainActor
@@ -292,10 +300,65 @@ final class EventTests: XCTestCase {
         changed = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
         changed["version"] = 99
         cases.append(try JSONSerialization.data(withJSONObject: changed))
+        // Oversized but otherwise valid: the spaces above are not JSON either, so only a valid
+        // record over the limit shows the size check working (test-suite audit, EV90).
+        changed = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        changed["padding"] = String(repeating: "a", count: 512_001)
+        cases.append(try JSONSerialization.data(withJSONObject: changed))
         for data in cases {
             try data.write(to: manifest, options: .atomic)
             XCTAssertNil(EventStore().events.first?.mediaFilename)
         }
+    }
+
+    /// A media file with a second name (a hard link) is refused at recovery: it could be another
+    /// file under this name. EventStore's own check had no test; the camera's copy of the rule did
+    /// (test-suite audit, EV87).
+    @MainActor
+    func testRecoveryRejectsHardLinkedMedia() async throws {
+        let (store, _, media, _) = try await pendingRecovery()
+        let file = store.mediaDirectory.appendingPathComponent(media.filename)
+        let secondName = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("second-name.jpg")
+        try FileManager.default.linkItem(at: file, to: secondName)
+        XCTAssertNil(EventStore().events.first?.mediaFilename)
+    }
+
+    /// One camera cannot fill both slots of a capture: a second file from the camera that holds
+    /// the first slot is refused, and the other camera's is taken. No test attached two files from
+    /// one camera (test-suite audit, EV83).
+    @MainActor
+    func testTheSecondSlotRefusesTheFirstSlotsCamera() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        let first = await store.store(.still(Data([1, 2, 3])), ext: "jpg", attachingTo: event, camera: "front")
+        var attached = try XCTUnwrap(store.events.first { $0.id == event.id })
+        attached.mediaFilename = try XCTUnwrap(first).filename
+        attached.primaryCamera = "front"
+        store.update(attached)
+        let sameCamera = await store.store(.still(Data([4, 5, 6])), ext: "jpg", attachingTo: attached,
+                                           secondary: true, camera: "front")
+        XCTAssertNil(sameCamera, "the front camera already holds the first slot")
+        let rear = await store.store(.still(Data([4, 5, 6])), ext: "jpg", attachingTo: attached,
+                                     secondary: true, camera: "rear")
+        XCTAssertNotNil(rear, "the other camera fills the second")
+    }
+
+    /// A staged copy shorter than its record says is not published: the record would name a file
+    /// that is not the capture. No test shortened the staged copy (test-suite audit, EV94).
+    @MainActor
+    func testAShortStagedCopyIsNotPublished() async throws {
+        let event = logEntry(10)
+        let store = try recoveryFixture([event])
+        EventStore.stagedCopyForTesting = { staged in
+            guard let handle = try? FileHandle(forWritingTo: staged) else { return }
+            try? handle.truncate(atOffset: 1)
+            try? handle.close()
+        }
+        defer { EventStore.stagedCopyForTesting = nil }
+        let saved = await store.store(.still(Data([1, 2, 3])), ext: "jpg", attachingTo: event, camera: "front")
+        XCTAssertNil(saved, "refused")
+        let published = (try? FileManager.default.contentsOfDirectory(atPath: store.mediaDirectory.path)) ?? []
+        XCTAssertTrue(published.isEmpty, "nothing published: \(published)")
     }
 
     @MainActor
@@ -455,6 +518,9 @@ final class EventTests: XCTestCase {
         var second = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
         let next = UUID().uuidString
         second["filename"] = next + ".jpg"
+        // The other camera: two records on one camera are refused by the one-per-camera rule as
+        // well, so only a second camera leaves the slot rule to decide (test-suite audit, EV95).
+        second["camera"] = "rear"
         try JSONSerialization.data(withJSONObject: second)
             .write(to: manifest.deletingLastPathComponent().appendingPathComponent(next + ".json"))
         try FileManager.default.copyItem(at: store.mediaDirectory.appendingPathComponent(media.filename),
@@ -881,19 +947,21 @@ final class EventTests: XCTestCase {
 
     /// F-17: the byte-cap eviction drops coalesced flood media before genuine media, so
     /// a burst of synthetic clips can't evict a real event's photo to stay under budget.
+    /// The flood file is the newest: "oldest first" alone would pick the other two, so only
+    /// the flood rule takes it (test-suite audit, EV37).
     func testByteCapEvictsFloodMediaBeforeGenuine() {
-        let genuineOld = UUID(), floodNewer = UUID(), genuineNewest = UUID()
+        let genuineOld = UUID(), genuineNewer = UUID(), floodNewest = UUID()
         // Newest-first, each 100 bytes; budget 150 forces freeing ~2 files.
         let sizes: [(id: UUID, isFlood: Bool, isSynced: Bool, bytes: Int64)] = [
-            (genuineNewest, false, false, 100),
-            (floodNewer,    true,  false, 100),
-            (genuineOld,    false, false, 100),
+            (floodNewest,  true,  false, 100),
+            (genuineNewer, false, false, 100),
+            (genuineOld,   false, false, 100),
         ]
         let evict = EventStore.mediaEvictionOrder(sizes: sizes, budget: 150).evict
-        XCTAssertTrue(evict.contains(floodNewer), "flood media goes first")
+        XCTAssertTrue(evict.contains(floodNewest), "flood media goes first, even the newest")
         XCTAssertTrue(evict.contains(genuineOld), "then the oldest genuine, to get under budget")
-        XCTAssertFalse(evict.contains(genuineNewest),
-                       "the newest genuine event's media is preserved even though flood media was newer")
+        XCTAssertFalse(evict.contains(genuineNewer),
+                       "the newer genuine event's media is preserved although it is older than the flood media")
     }
 
     func testByteCapNoEvictionWhenUnderBudget() {
@@ -933,23 +1001,25 @@ final class EventTests: XCTestCase {
     /// The byte cap treats synced media as a local cache (the cloud holds it; B1 can bring
     /// it back) and pending media as evidence: synced goes first, pending only in a genuine
     /// storage emergency — and every pending discard is reported so the event can record
-    /// that its capture was lost BEFORE upload, not silently read as synced later.
+    /// that its capture was lost BEFORE upload, not silently read as synced later. The synced
+    /// file is the newest: "oldest first" alone would take the pending one, so only the
+    /// synced-first rule spares it (test-suite audit, EV38).
     func testByteCapEvictsSyncedMediaBeforePendingAndReportsDiscards() {
-        let pendingNewest = UUID(), syncedMid = UUID(), floodOld = UUID()
+        let syncedNewest = UUID(), pendingMid = UUID(), floodOld = UUID()
         let sizes: [(id: UUID, isFlood: Bool, isSynced: Bool, bytes: Int64)] = [
-            (pendingNewest, false, false, 100),
-            (syncedMid,     false, true,  100),
-            (floodOld,      true,  false, 100),
+            (syncedNewest, false, true,  100),
+            (pendingMid,   false, false, 100),
+            (floodOld,     true,  false, 100),
         ]
         // Budget 100: flood + synced free enough — the pending capture survives.
         let mild = EventStore.mediaEvictionOrder(sizes: sizes, budget: 100)
-        XCTAssertEqual(mild.evict, [floodOld, syncedMid])
+        XCTAssertEqual(mild.evict, [floodOld, syncedNewest], "the cloud holds the synced media; the pending capture stays")
         XCTAssertTrue(mild.discardedBeforeUpload.isEmpty,
                       "nothing pending was lost, so nothing is reported")
         // Budget 0: storage emergency — pending goes too, and IS reported.
         let emergency = EventStore.mediaEvictionOrder(sizes: sizes, budget: 0)
-        XCTAssertEqual(emergency.evict, [floodOld, syncedMid, pendingNewest])
-        XCTAssertEqual(emergency.discardedBeforeUpload, [pendingNewest],
+        XCTAssertEqual(emergency.evict, [floodOld, syncedNewest, pendingMid])
+        XCTAssertEqual(emergency.discardedBeforeUpload, [pendingMid],
                        "only the pending genuine capture is an evidentiary loss")
     }
 
@@ -994,6 +1064,17 @@ final class EventTests: XCTestCase {
         rows.removeAll { afterDisarm.contains($0.id) }
         XCTAssertEqual(Set(rows.filter { !$0.isAudit }.map(\.id)), Set(incidents),
                        "the disarm audit must not erase this watch's incident history")
+        // More routine entries after the incidents than both limits together: a pool the two
+        // kinds shared would now take the incidents as its oldest rows; the separate pools keep
+        // them, and the routine entries keep to their own limit (test-suite audit, EV35).
+        for _ in 0...(EventStore.maxIncidentEvents + 100) {
+            rows.insert(.init(id: UUID(), isSynced: true, isAudit: true), at: 0)
+            let evicted = Set(EventStore.countEvictionOrder(events: rows, incidentCap: EventStore.maxIncidentEvents, auditCap: 100))
+            rows.removeAll { evicted.contains($0.id) }
+        }
+        XCTAssertEqual(Set(rows.filter { !$0.isAudit }.map(\.id)), Set(incidents),
+                       "a long run of routine entries never takes incident capacity")
+        XCTAssertEqual(rows.filter(\.isAudit).count, 100, "routine entries keep to their own limit")
     }
 
     /// 39.R1.6: the count cap must never evict the event being added. At cap with no older

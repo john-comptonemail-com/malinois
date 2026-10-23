@@ -115,6 +115,12 @@ final class SirenPlayer {
     func setActivationExhaustedForTesting() { activationExhausted = true }
     /// Test-only: the playing player's volume, nil when none plays.
     var volumeForTesting: Float? { player?.volume }
+    /// Test-only (item 152's lead 6): how many times the alarm was asked to sound (`start`, `goFullVolume`, and
+    /// `ensureSounding` when it re-attempts). The test host plays nothing, so `isPlaying` cannot stand in for it.
+    private(set) var soundRequestsForTesting = 0
+    /// Test-only (item 152's lead 6): stops the player as the capture session's deactivation would, with the alarm
+    /// still owed (`shouldBeSounding` stays), so a test can check that a late release makes it sound again.
+    func silenceForTesting() { player?.stop() }
 
     /// Under the test runner the siren plays at zero volume (owner, 2026-10-13): the suite reaches
     /// the real player (suspected jamming sounds it whatever the response mode), and the Simulator
@@ -144,7 +150,15 @@ final class SirenPlayer {
     /// not a ramp — by the time an extension arrives, the entry-delay window is long gone.
     func ensureSounding() {
         guard Self.reattemptNeeded(shouldBeSounding: shouldBeSounding, isPlaying: isPlaying) else { return }
+        noteSoundRequest()
         beginPlayback(rampUp: false)
+    }
+
+    /// Counts a request to sound, for the tests; nothing in Release.
+    private func noteSoundRequest() {
+        #if DEBUG
+        soundRequestsForTesting += 1
+        #endif
     }
 
     /// Volume the ramped siren opens at — audible enough to be noticed (and to tell the
@@ -167,6 +181,7 @@ final class SirenPlayer {
     ///   evidence may not escape, so they go loud immediately.
     func start(rampUp: Bool = false) {
         shouldBeSounding = true
+        noteSoundRequest()
         if let p = player, p.isPlaying { return }   // already sounding (incl. mid-ramp) — leave it
         beginPlayback(rampUp: rampUp)
     }
@@ -176,6 +191,7 @@ final class SirenPlayer {
     /// ramping quietly, or stopped by an interruption.
     func goFullVolume() {
         shouldBeSounding = true
+        noteSoundRequest()
         rampTimer?.invalidate(); rampTimer = nil
         if let p = player, p.isPlaying {
             p.setVolume(Self.audible(1.0), fadeDuration: 0)

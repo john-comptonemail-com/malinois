@@ -106,11 +106,36 @@ struct WatchLinkOutbox: Equatable {
     }
 }
 
+/// What the link uses of a WatchConnectivity session: `WCSession` itself, or a test's stand-in, so
+/// the link's holding and sending run in a test (the test-suite audit's P4).
+protocol WatchSessionPort: AnyObject {
+    var activationState: WCSessionActivationState { get }
+    var isPaired: Bool { get }
+    var isWatchAppInstalled: Bool { get }
+    var isReachable: Bool { get }
+    /// Sends at once to the open watch app (`sendMessage`, no reply).
+    func sendNow(_ userInfo: [String: Any])
+    /// Queues for delivery, which watchOS makes by waking the watch app (`transferUserInfo`).
+    func queue(_ userInfo: [String: Any])
+}
+
+extension WCSession: WatchSessionPort {
+    func sendNow(_ userInfo: [String: Any]) { sendMessage(userInfo, replyHandler: nil, errorHandler: nil) }
+    func queue(_ userInfo: [String: Any]) { transferUserInfo(userInfo) }
+}
+
 /// The iPhone's end of the WatchConnectivity session (item 57, ADR 0043).
 final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     static let shared = WatchLink()
     /// Alerts waiting for the link to activate; the relay and the session's own queue both reach it.
     private let outbox = OSAllocatedUnfairLock(initialState: WatchLinkOutbox())
+    /// The session alerts go to: WatchConnectivity's own, nil where it is unsupported; a test's stand-in.
+    private let session: () -> WatchSessionPort?
+
+    init(session: @escaping () -> WatchSessionPort? = { WCSession.isSupported() ? WCSession.default : nil }) {
+        self.session = session
+        super.init()
+    }
 
     func activate() {
         guard WCSession.isSupported() else { return }
@@ -121,19 +146,19 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     /// Sends the alert, or holds it until the link has activated (`WatchLinkOutbox`). The watch
     /// shows each event once.
     func send(_ message: WatchAlertMessage) {
-        guard WCSession.isSupported() else { return }
+        guard let session = session() else { return }
         guard !outbox.withLock({ $0.holdIfActivating(message) }) else { return }
-        deliver(message, on: WCSession.default)
+        deliver(message, on: session)
     }
 
     /// Delivers to a paired watch running Malinois: at once while the watch app is open, and queued
     /// in every case, which watchOS delivers by waking the watch app in the background.
-    private func deliver(_ message: WatchAlertMessage, on session: WCSession) {
+    private func deliver(_ message: WatchAlertMessage, on session: WatchSessionPort) {
         guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
         if session.isReachable {
-            session.sendMessage(message.userInfo, replyHandler: nil, errorHandler: nil)
+            session.sendNow(message.userInfo)
         }
-        session.transferUserInfo(message.userInfo)
+        session.queue(message.userInfo)
     }
 
     /// Activation completed: the alerts that waited go out, or are dropped without a watch.
@@ -142,6 +167,12 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
         if let error {
             Log.app.error("Watch link activation failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
         }
+        activationCompleted(activationState, on: session)
+    }
+
+    /// The delegate's answer, for any session: the alerts that waited go to a watch that can take
+    /// them, and are dropped otherwise.
+    func activationCompleted(_ activationState: WCSessionActivationState, on session: WatchSessionPort) {
         let watchReady = activationState == .activated && session.isPaired && session.isWatchAppInstalled
         let waiting = outbox.withLock { $0.activationCompleted(watchReady: watchReady) }
         waiting.forEach { deliver($0, on: session) }
@@ -149,6 +180,11 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
 
     /// The owner is switching watches: alerts wait for the next activation.
     func sessionDidBecomeInactive(_ session: WCSession) {
+        becameInactive()
+    }
+
+    /// The delegate's inactive notice, for any session.
+    func becameInactive() {
         outbox.withLock { $0.sessionBecameInactive() }
     }
 

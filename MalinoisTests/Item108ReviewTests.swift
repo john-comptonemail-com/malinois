@@ -240,22 +240,9 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertEqual(full.shown.last, "new")
     }
 
-    /// The watch posts first and records the alert only when the post succeeded. Since 1.8 (73) the
-    /// watch's `WatchRelayInbox` posts and remembers (ADR 0051; a failed post is driven through it in
-    /// Item134WatchSummaryTests), and the watch app records what the inbox says it posted.
-    func testTheWatchPostsBeforeRememberingOrRecording() throws {
-        let inbox = try text("MalinoisWatch/WatchRelayInbox.swift")
-        let handle = try section(inbox, from: "private func handle(", to: "\n    }\n")
-        let post = try XCTUnwrap(handle.range(of: "try await post(request)"))
-        let remember = try XCTUnwrap(handle.range(of: "ledger.finish("))
-        XCTAssertLessThan(post.lowerBound, remember.lowerBound)
-        XCTAssertTrue(handle.contains("ledger.begin("))
-        let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
-        let show = try section(delegate, from: "private func showRelayed(", to: "\n    }\n")
-        let posted = try XCTUnwrap(show.range(of: "relayInbox.receive(message)"))
-        let record = try XCTUnwrap(show.range(of: "recordAlert(source: .iPhoneLink)"))
-        XCTAssertLessThan(posted.lowerBound, record.lowerBound)
-    }
+    // The watch posts first and records only what was posted: since 1.8 (73) the inbox does both
+    // and is run for real (Item134WatchSummaryTests.testAFailedPostIsNeitherRememberedNorCounted),
+    // and the watch app's order is testTheWatchAppHandsEveryRelayedAlertToTheInbox's first check.
 
     // MARK: - F8: the torch waits for storage; orphaned clips are reaped
 
@@ -294,10 +281,26 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path), "only this app's own clips")
     }
 
-    /// The app reaps them at launch, beside the legacy temporary-clip sweep.
+    /// The app reaps them at launch, beside the legacy temporary-clip sweep: a month-old orphan in
+    /// the pending-clip folder is gone soon after the launch's construction runs. Read from the app's
+    /// source, this passed with the sweep inside a branch that never runs (the test-suite audit's
+    /// probe W342; P4).
     func testTheAppReapsOrphanedPendingClipsAtLaunch() throws {
-        let app = try text("Malinois/MalinoisApp.swift")
-        XCTAssertTrue(app.contains("CameraController.sweepOrphanedPendingClips()"))
+        let folder = CameraController.pendingClipsFolder
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let orphan = folder.appendingPathComponent(UUID().uuidString + ".mov")
+        try Data([0]).write(to: orphan)
+        defer { try? FileManager.default.removeItem(at: orphan) }
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-31 * 86_400)],
+                                              ofItemAtPath: orphan.path)
+        let services = MalinoisApp.makeServices(settings: AppSettings(), entitlements: ProEntitlements(resolvedAs: .free),
+                                                relaySend: { _ in })   // no WatchConnectivity in a test
+        TestIsolation.track(services.engine)
+        let deadline = Date().addingTimeInterval(5)
+        while FileManager.default.fileExists(atPath: orphan.path), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path), "a month-old orphan is reaped at launch")
     }
 
     // MARK: - D-07: no made-up price
@@ -310,21 +313,31 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertEqual(PaywallView.oneTimeCaption(displayPrice: "€9,99"), "One-time €9,99.")
     }
 
-    /// The paywall and Settings use them, and no "$9.99" fallback is left.
+    /// The paywall and Settings use them: before StoreKit has answered, neither shows a price, made-up
+    /// or otherwise. Laid out; this read the screens' source for a "$9.99" fallback before (the
+    /// test-suite audit's P4).
     func testNoScreenFallsBackToAFixedPrice() throws {
-        for file in ["Malinois/Views/PaywallView.swift", "Malinois/Views/SettingsView.swift"] {
-            XCTAssertFalse(try text(file).contains("?? \"$9.99\""), file)
+        for status in [ProEntitlements.Status.free, .trial, .earlyAccess] {
+            let entitlements = ProEntitlements(resolvedAs: status)
+            XCTAssertNil(entitlements.product, "StoreKit has not answered")
+            let paywall = try shownOnScreen(PaywallView().environmentObject(entitlements)).shown
+            XCTAssertTrue(paywall.contains(status == .earlyAccess ? "Support Malinois" : "Unlock Pro"), "\(status): \(paywall)")
+            let settings = try settingsShownOnScreen(status: status)
+            let offer = try XCTUnwrap(settings.first { $0.hasSuffix(PaywallView.oneTimeCaption(displayPrice: nil)) },
+                                      "\(status): \(settings)")
+            for text in paywall + [offer] { XCTAssertFalse(text.contains("$"), "\(status): \(text)") }
         }
     }
 
     // MARK: - F6, F10, 8, 3: app text and the PIN pad
 
-    /// Stealth's caption names the recording indicator instead of promising nothing is shown.
+    /// Stealth's caption names the recording indicator instead of promising nothing is shown, as
+    /// Settings shows it (laid out; it read the screen's source before: the test-suite audit's P4).
     func testTheStealthCaptionMentionsTheRecordingIndicator() throws {
-        let settings = try text("Malinois/Views/SettingsView.swift")
-        let stealth = try section(settings, from: "case .stealth: return \"", to: "\n")
-        XCTAssertFalse(stealth.contains("nothing is shown"))
-        XCTAssertTrue(stealth.contains("recording indicator"))
+        let shown = try settingsShownOnScreen { $0.responseMode = .stealth }
+        let caption = try XCTUnwrap(shown.first { $0.hasPrefix("Covert:") }, "\(shown)")
+        XCTAssertFalse(caption.contains("nothing is shown"))
+        XCTAssertTrue(caption.contains("recording indicator"))
     }
 
     /// After a wrong entry submitted at the confirmed length, the pad shows ✓ for the rest of that
@@ -337,21 +350,27 @@ final class Item108ReviewTests: XCTestCase {
         XCTAssertTrue(PINPad.showsSubmitKey(conceal: true, autoSubmitLength: nil))
     }
 
-    /// The Pro welcome says the developer cannot read the data, and how far the encryption goes.
+    /// The Pro welcome says the developer cannot read the data, and that Apple cannot only with
+    /// Advanced Data Protection on (1.5 (65) said event details were always end-to-end encrypted,
+    /// which SECURITY.md contradicts), with no time clause. One test laying out the welcome screen,
+    /// where item 108's and item 109's each read the same paragraph of its source (the test-suite
+    /// audit's P4 and P2).
     func testTheProWelcomeSaysWhoCanReadTheData() throws {
-        let onboarding = try text("Malinois/Views/OnboardingViews.swift")
-        // The closing note's own case: the file's first "case .pro:" is the headline's.
-        let pro = try section(onboarding, from: "private var closingNote: String {", to: "case .earlyAccess:")
-        XCTAssertFalse(pro.contains("nobody else can read it"))
-        XCTAssertTrue(pro.contains("the developer can't read"))
-        XCTAssertTrue(pro.contains("Advanced Data Protection"))
+        let welcome = TrialWelcomeView(onDismiss: {}).environmentObject(ProEntitlements(resolvedAs: .pro))
+        let shown = try shownOnScreen(welcome).shown
+        let note = try XCTUnwrap(shown.first { $0.hasPrefix("Nothing expires") }, "\(shown)")
+        XCTAssertTrue(note.contains("the developer can't read them, and with Advanced Data Protection on, neither can Apple."))
+        XCTAssertFalse(note.contains("nobody else can read it"))
+        XCTAssertFalse(note.contains("end-to-end encrypted"))
+        XCTAssertFalse(note.contains("apart from when each happened"))
     }
 
-    /// Creating a PIN advises a code different from the iPhone's and Guided Access's.
+    /// Creating a PIN advises a code different from the iPhone's and Guided Access's, as the setup
+    /// screen shows it (laid out; it read the screen's source before: the test-suite audit's P4).
     func testPINSetupAdvisesADifferentCode() throws {
-        let pins = try text("Malinois/Views/PINViews.swift")
-        let setup = try section(pins, from: "struct PINSetupView: View {", to: "private func advance()")
-        XCTAssertTrue(setup.contains("different from your iPhone passcode and your Guided Access passcode"))
+        let shown = try shownOnScreen(PINSetupView(savePIN: { _ in false }, onDone: {})).shown
+        let advice = try XCTUnwrap(shown.first { $0.hasPrefix("\(PINSetupView.defaultLength) digits.") }, "\(shown)")
+        XCTAssertTrue(advice.contains("different from your iPhone passcode and your Guided Access passcode"))
     }
 
     // MARK: - 2A: an arm without Guided Access says what that means

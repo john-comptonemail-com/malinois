@@ -13,7 +13,7 @@ It is designed for that to hold even when the person who handles your phone know
 
 Once armed, if the phone is moved, tilted, unplugged, handled, touched, or approached, Malinois logs a tripwire event, tries to capture a photo or clip, and writes it to a PIN-gated Event Log. Arms, disarms and tripwire events are logged with no way to delete a single entry, not even with your PIN.
 
-**Before you rely on it:** turn on Guided Access with its Side Button option off, give Guided Access and Malinois codes of their own rather than your iPhone passcode, turn Voice Control off if you use it, and set iOS to ask before new wired accessories connect. Malinois can check that Guided Access is on, but iOS doesn't let it see the other settings: those are up to you.
+**Before you rely on it:** turn on Guided Access with its Side Button option off, give Guided Access and Malinois codes of their own rather than your iPhone passcode, with Face ID and Touch ID off for ending Guided Access, turn Voice Control off if you use it, and set iOS to ask before new wired accessories connect. Malinois can check that Guided Access is on, but iOS doesn't let it see the other settings: those are up to you.
 
 **What you'll find afterwards**
 
@@ -31,7 +31,7 @@ Once armed, if the phone is moved, tilted, unplugged, handled, touched, or appro
 
 **When you come back:** before typing your PIN, look at "Armed for" above the pad: it should match how long ago you armed. After disarming, Home's "Last armed" line should start at the time you armed; if it starts later, your session ended and another began. Then open the Event Log and read every entry since you armed, not just the newest: a disarm you didn't make, "Monitoring interrupted" or a wrong PIN means someone tried, even if the phone looks untouched.
 
-Without Pro (free for every install during Early-Access), Malinois sends nothing off the phone, so a wiped or destroyed phone takes its record with it; only an earlier iOS backup might hold a copy. Sensors have thresholds and iOS can stop any app: [SECURITY.md](SECURITY.md) lists the known gaps. You can check all of this against the code: this repository holds the source of every shipped release, with no third-party code ([what this repository is](#what-this-repository-is), and what it can't prove).
+Without Pro (free for every install during Early-Access), Malinois sends nothing off the phone, so a wiped or destroyed phone takes its record with it; only an earlier iOS backup might hold a copy. Sensors have thresholds and iOS can stop any app: [SECURITY.md](SECURITY.md) lists the known gaps. You can check all of this against the code: this repository holds the source of every release since 1.2, with no third-party code ([what this repository is](#what-this-repository-is), and what it can't prove).
 
 ## Try it out
 
@@ -41,22 +41,22 @@ Without Pro (free for every install during Early-Access), Malinois sends nothing
 4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes dark.
 5. **To disarm:** press and hold the screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
 
-**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. Using a PIN instead of Face ID for Guided Access is recommended due to the open "Guided Access is not available" iOS bug. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode. Voice Control is off unless you've turned it on; if you use it, turn it off before arming, because its "Close application" command can close Malinois even under Guided Access. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
+**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. In Guided Access's Passcode Settings, give it a passcode of its own and leave Face ID (or Touch ID) off: anyone who knows your iPhone passcode can add their own face or fingerprint and end Guided Access with it, and Face ID there also seems to make the open "Guided Access is not available" iOS bug more likely. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode, or Face ID or Touch ID if you allowed them in Guided Access's settings. Voice Control is off unless you've turned it on; if you use it, turn it off before arming, because its "Close application" command can close Malinois even under Guided Access. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
 
 ## AI Disclosure
 
-**I am a data engineer who wanted an app that didn't exist, but I am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable 5. Rounds of adversarial reviews are performed with multiple passes from different models (5.6 Sol, Kimi K3, GLM 5.2, Deepseek V4 Pro/Flash, etc.) until a release-ready consensus is reached, and I test on 3 modern iOS devices. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
+**I am a data engineer who wanted an app that didn't exist, but I am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable 5, with Opus 5.5 and Fable 5.1 currently used. Rounds of adversarial reviews are performed with multiple passes from different models (currently GPT-6, Fable 5.1, GLM-5.3, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Nemotron 3.5 Super VL, etc.) until a release-ready consensus is reached, and I test on an iPhone 17 Pro, an iPhone Air and an Apple Watch Ultra 3. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
 
 This is ultimately a personal project, but it's a project I think others might find a use for, and it would not have happened without AI. As such, please poke holes in the code, the assumptions and decisions I made, threat model thinking, anything and everything: I'm relying on it too.
 
-**What you can check rather than take on trust.** The rules in SECURITY.md are each pinned by a unit test. Every release goes through adversarial reviews by other models and, lately, by outside readers of this repository; each finding and what was done about it is tracked in a numbered ledger before the fix ships. Builds are tested on two iPhones and an Apple Watch. The full test run for each release is in its GitHub Release notes.
+**What you can check rather than take on trust.** Most rules in SECURITY.md are pinned by a unit test. Every release goes through adversarial reviews by other models and, lately, by outside readers of this repository; each finding and what was done about it is tracked in a numbered ledger before the fix ships. Builds are tested on two iPhones and an Apple Watch. The full test run for each release is in its GitHub Release notes.
 
 ## How this is engineered
 
-- About 24,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 1,079 unit tests in 73 files, about as many lines of tests as of app. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 196 of them, each tested on its own.
-- 44 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 25,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 1,223 unit tests in 90 files, about as many lines of tests as of app. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 210 of them, each tested on its own.
+- 48 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
@@ -65,24 +65,23 @@ This is ultimately a personal project, but it's a project I think others might f
 
 A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (each event's record reaches iCloud within moments, then its photo or clip, so a phone destroyed seconds later can still leave its record behind), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
 
+With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copies readable only on your own devices.
+
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
-## What's new in 1.8
+## What's new in 1.8.1
 
-- A one-time screen before your first arm shows how to disarm, and how to end Guided Access.
-- In Siren mode, the countdown now warns when the siren would play in connected headphones or a Bluetooth device instead of out loud.
-- If Malinois is closed again within 90 seconds of re-arming itself, Home now says it did not re-arm.
-- Home, the PIN screens and the calibration card now fit the largest text sizes.
-- A tap on the REC badge's corner, or on the screen during the "Calibrated" card, now counts as a touch.
-- On Apple Watch, alerts from your iPhone now show when they happened, and alerts that waited more than an hour arrive as one summary.
-- On Apple Watch, alerts from your iPhone that also arrive through iCloud are now paired, to cut down on duplicates.
-- A cancelled countdown now reaches your Apple Watch too.
-- Verify iCloud access now says why it is unavailable while Guided Access is on.
-- "Download full evidence" is offered only where a copy can be in iCloud, and sharing a status entry no longer calls it tampering.
-- If Malinois's settings can't be read, your iCloud backup choice is kept, or backup is turned off.
-- A photo or clip that arrives during a storage clean-up is now checked again before it can be removed.
-- Clearer words in the app about what iCloud backup, alerts and the Vision tripwire do.
-- Fixes from independent reviews, including which event a sensor trip is recorded on and how storage limits apply to downloads.
+- ARM asks for your PIN when it has not been entered for 14 days.
+- The one-time screen before your first arm also asks you to turn Voice Control off, and the arm is cancelled after a minute without a touch.
+- On a second device, Home offers "Allow notifications" right after you verify iCloud access.
+- The log now records a stalled motion tripwire, a reinstall, a PIN change, and Guided Access ending during a watch.
+- Face ID unlock for the Event Log is tied to the faces or fingers enrolled when you turn it on; if they change, it turns off until you turn it on again.
+- If Malinois opens before your iPhone's first unlock after a restart, it waits for your settings instead of using defaults.
+- A clip that keeps uploading is no longer cut off; only an upload that has stalled is.
+- A momentary failure to look up your iCloud account no longer pauses uploads or clears your verification.
+- In Siren mode the alarm sounds even if the camera is slow to give up the microphone, and Malinois does not re-arm itself while a PIN recovery is pending.
+- Evidence pushes ask iOS for extra running time from their first step, so a lock right after a trip is less likely to cut them off.
+- Two rare fixes: a damaged lockout value can no longer lock the PIN pad for good, and an interruption at the moment the app leaves the screen can no longer go unrecorded.
 
 Earlier releases are listed under [Roadmap](#roadmap), at the end of this file.
 
@@ -90,9 +89,9 @@ Earlier releases are listed under [Roadmap](#roadmap), at the end of this file.
 
 ## What this repository is
 
-This is the **source of each shipped release**, published so the app's privacy
+This is the **source of each release since 1.2**, published so the app's privacy
 and security claims can be checked against the code rather than taken on
-trust. Each commit here corresponds to one App Store release. The app source
+trust. Each commit here corresponds to one App Store release (1.3 has a second commit, which corrects its build number). The app source
 is byte-identical to what was submitted, with exactly one change: the developer
 team ID is removed from the project file. (This README and the licence files
 exist only in this mirror. SECURITY.md is published as written from 1.6 on;
@@ -110,7 +109,7 @@ against this source.
 
 ## Where to look
 
-- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 1,700
+- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 1,800
   lines: every defense mechanism, the attacks the app explicitly does *not* defend against, and how to
   report a vulnerability. If you read one file, read this one.
 - **`Malinois/`** — the app. No third-party dependencies, by design: what you
@@ -130,12 +129,12 @@ against this source.
 
 **Invariants**, each checkable against the code and its tests:
 
-- The record is written and synced to disk before anything responds: before the alarm, before the camera.
+- The record is written and synced to disk before anything responds: before the alarm, before the camera. If that write fails, the response still goes ahead and Home reports the failure.
 - There is no delete control for records; only the log's size limits remove them, and SECURITY.md says which removals the log reports.
 - A Keychain that cannot be read is never taken for "no PIN": setup is never offered over a sealed one.
 - Monitoring continues during PIN entry; only the proximity sensor pauses, and PIN keys are not touch trips.
 - Detection, capture and the local log are free, and stay free.
-- Without Pro nothing leaves the phone; with it, copies and alerts go only to your own iCloud account and your own devices.
+- Without Pro, Malinois itself sends nothing off the phone (the phone's own iCloud or computer backups are separate); with it, copies and alerts go only to your own iCloud account and your own devices.
 
 Building requires Xcode and your own signing settings; the project file ships
 with no development team set.
@@ -239,6 +238,19 @@ Fixes for two rare timing problems found in a review.
 
 - Entering your PIN to stop an automatic re-arm at the very moment calibration ended could leave the sensors, and with some settings the camera, running, and make Malinois re-arm itself the next time it opened. It now stops cleanly.
 
-**Exploring**
+**Shipped in 1.8**
 
-- **Hardware-key disarm** — disarm with a YubiKey-class security key over NFC or USB-C. Proven on our test devices; whether it ships depends on whether people ask for it — support@ is how you ask.
+- A one-time screen before your first arm shows how to disarm, and how to end Guided Access.
+- In Siren mode, the countdown now warns when the siren would play in connected headphones or a Bluetooth device instead of out loud.
+- If Malinois is closed again within 90 seconds of re-arming itself, Home now says it did not re-arm.
+- Home, the PIN screens and the calibration card now fit the largest text sizes.
+- A tap on the REC badge's corner, or on the screen during the "Calibrated" card, now counts as a touch.
+- On Apple Watch, alerts from your iPhone now show when they happened, and alerts that waited more than an hour arrive as one summary.
+- On Apple Watch, alerts from your iPhone that also arrive through iCloud are now paired, to cut down on duplicates.
+- A cancelled countdown now reaches your Apple Watch too.
+- Verify iCloud access now says why it is unavailable while Guided Access is on.
+- "Download full evidence" is offered only where a copy can be in iCloud, and sharing a status entry no longer calls it tampering.
+- If Malinois's settings can't be read, your iCloud backup choice is kept, or backup is turned off.
+- A photo or clip that arrives during a storage clean-up is now checked again before it can be removed.
+- Clearer words in the app about what iCloud backup, alerts and the Vision tripwire do.
+- Fixes from independent reviews, including which event a sensor trip is recorded on and how storage limits apply to downloads.

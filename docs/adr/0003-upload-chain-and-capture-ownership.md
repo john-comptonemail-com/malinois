@@ -86,3 +86,85 @@ the first: the upload ran on after the spinner stopped, so each pull showed more
 green. The follow-up passes stay as the guard for a throttle when one happens (Apple
 documents `requestRateLimited` with a Retry-After, which the 4 s cap ignored), but they are
 pinned by unit tests and have not yet been seen working on a device.
+
+## Amendment (2026-10-22, 1.8.1): a stall deadline for a record carrying an asset
+
+Every save attempt raced a fixed 20 s deadline (`saveAttemptDeadline`), the clip's `CKAsset`
+included, with no progress observed, so a clip that needs more than 20 s to send was cut off on
+every attempt and every pass, and only its meta record and thumbnail reached iCloud (the security
+audit's lead 2, BACKLOG 152: a 30 s Until clear clip at the high preset is tens of MB, and a
+10 Mbps uplink moves about 1.25 MB/s). A record carrying an asset (`carriesAsset`, pure: a photo, a
+clip, a thumbnail) now races a stall deadline (`awaitWithStallDeadline`): the 20 s restart whenever
+CloudKit's per-record progress block reports movement, within an overall cap of `assetSaveCap`,
+ten minutes. Silence past the stall still cancels the attempt as a network-class failure, with the
+same retries, the same count for the sweep and the same escalation classification; the cap cuts
+off a transfer that never ends. A record without an asset keeps the fixed 20 s. The chain, the
+sweep and their rules above are unchanged: a clip that keeps moving simply takes its time on its
+own chain, and a stalled one fails as it did. Device check: a 60 s Until clear clip on a slowed
+uplink (Network Link Conditioner, a 3G profile) lands in iCloud in one attempt where it was cut
+off before.
+
+## Amendment (2026-10-22, 1.8.1): the background-task assertion covers a push from its first step
+
+Every push held its background-task assertion only inside its per-event queue, after the identity
+lookup (`fetchUserRecordID`, under a 10 s deadline) and the queue wait, and the engine spawned its
+push tasks with none, so the lapse record written as the phone was locked, and a trip's fact pushed
+just before a lock or a kill, ran unprotected through their first step: milliseconds with a warm
+CloudKit cache, up to the lookup's deadline cold or offline, against the few seconds iOS allows an
+app after its scene leaves the foreground (the second independent audit's MAL-01, BACKLOG 153). Now
+`pushFact`, `exfiltrate` and `pushStateChange` begin their assertion (`BackgroundAssertion`) before
+the lookup and end it on every return, a declined or denied lease included, and the engine holds
+one from before it spawns a push task (`pushFactIfCloud`, `logStateChange`), so a lock or a kill in
+the same instant finds it held; UIKit allows the two at once. The expiry handler ends an assertion
+once, and the event stays pending for the next sweep, as before. The chain, its deadlines and the
+sweep are unchanged. Not taken: caching the account identity to skip the lookup (ADR 0039 resolves
+it fresh and invalidates through the generation). Device check (TestFlight 78): armed on Pro with
+Guided Access's Side Button on, one press; the "locked" record and its alert reach the second
+device.
+
+## Amendment (2026-10-22, 1.8.1): a sweep during a capture is not the event's last word
+
+The fresh review of 1.8.1 (BACKLOG 155, Codex's codex-1) reproduced an ordering the chain did not cover. The
+retry sweep hands out every record not yet synced, a capture still running included; the sparse upload of an
+event without media lands as synced; the completion applies because the stored event still equals its snapshot
+before the attachment; and synced is terminal by the monotonic rule above, so the media push that follows the
+capture cannot reopen it, the sweep never retries it, and the byte cap evicts synced media first without the loss
+mark it keeps for pending media. Two conditions had to meet: a sweep pass started between the trip and the
+attachment (a reconnect, a foreground, the log opened, a verification), and a later failed media upload; when
+they did, the log showed green over a lost photo. Now every attachment site, the trigger response, the blackout
+still and the flood capture, reopens the event for upload (`reopenForReupload`, the late-evidence path's own
+tool) after storing the media and before its push, so a sparse upload that landed during the capture is not the
+event's final word: the media push's outcome applies, a failed one is retried by the sweep, and the cap treats
+the media as pending. A sparse completion that lands after the attachment is still rejected by the snapshot
+rule, and mirrored media is never reopened. The monotonic rule itself is unchanged: late duplicates' failures
+still cannot walk a synced event back.
+
+## Amendment (2026-10-23, 1.8.1): the attachment and its reopen are one write
+
+Codex's second look at the amendment above (BACKLOG 155, codex-1 of the second look) found the ordering right
+while the process lives and the disk one write behind it: `update` persisted the event with its media attached
+and the state still synced, then `reopenForReupload` persisted it again as pending, two queued writes on the
+store's serial I/O queue. A kill between them left the first on disk, media beside the synced state, which the
+sweep skips and the byte cap deletes as a cloud-backed copy without the loss mark; the same pair stood at the
+interrupted retry and the late capture, which had used it since item 65. Now every attachment site, the trigger
+response, the blackout still, the flood capture, the interrupted retry and the late capture, calls
+`updateAndReopenForReupload`, which merges the final state under the monotonic rule, walks synced back to pending
+and persists once, so the first snapshot that carries the media already carries the upload obligation: a kill
+after any write leaves an event the sweep retries and the cap marks. Pinned by a test that keeps that first
+snapshot with its media, its intents and its journal, and opens them as a new store. `update` and
+`reopenForReupload` stay for their other callers; mirrored downloads are never reopened.
+
+## Amendment (2026-10-23, after 1.8.1's submission): two limits the full review found, for the next update
+
+The full review of 1.8.1 (BACKLOG 162's A10 and A11) found two limits of this record's guarantees; SECURITY.md states
+them until their fixes ship:
+
+- Each push resolves the iCloud identity before it joins the event's chain, so the chain orders writes by when their
+  lookups finish, not by when they started. For an event without a photo or clip, the first record and the fuller one
+  carry the same revision, which `mayWrite` lets through, so the first can land last and replace, in the iCloud copy,
+  the details added after the trip. The first Consequence ("structurally impossible within a process") holds only for
+  writes that join the chain in the order they started. The fix resolves the identity inside the chain and writes the
+  event as stored when its turn comes.
+- The stall deadline of the 2026-10-22 amendment is timed with `Date()`, and since that amendment every save waits
+  through it, so a clock change during a stalled save moves it: set back, the wait lengthens by up to the change; set
+  forward, the save is cut short. The fix times both instants on a monotonic clock.

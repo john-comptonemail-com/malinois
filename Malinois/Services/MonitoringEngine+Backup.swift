@@ -25,21 +25,25 @@ extension MonitoringEngine {
     /// Whether iCloud backup lets this record upload. While backup is off nothing does, except the
     /// entry recording that it was turned off, so the cloud log shows it even when its first upload
     /// fails. An event recorded while backup was off never uploads, even once it is back on (the
-    /// owner's ruling); the store marks it when it is added.
+    /// owner's ruling); the store marks it when it is added. While the settings wait for the unlock
+    /// (ADR 0055) nothing uploads either: the switch is not known yet, and the pending sweep reads
+    /// the answer again once it is.
     func backupAllows(_ event: Event) -> Bool {
+        guard !settings.awaitingUnlock else { return false }   // the upload waits with the settings
         guard settings.cloudBackup else { return event.stateChange == Event.backupOffKind }
         if event.keptLocal == true { return false }
         return eventStore.events.first { $0.id == event.id }?.keptLocal != true
     }
 
-    /// Turns iCloud backup on or off, only while disarmed; returns whether it did. The Settings
-    /// switch asks for device authentication before turning it off; this records the change. Off
-    /// is recorded before uploads stop, in the one entry that still uploads; on is recorded after,
-    /// and a pending sweep then carries up what waited while backup was off (events recorded
-    /// before it was turned off), once any sweep already running has ended (item 116, R4).
+    /// Turns iCloud backup on or off, only while disarmed and only once the settings are the owner's
+    /// (ADR 0055); returns whether it did. The Settings switch asks for device authentication before
+    /// turning it off; this records the change. Off is recorded before uploads stop, in the one
+    /// entry that still uploads; on is recorded after, and a pending sweep then carries up what
+    /// waited while backup was off (events recorded before it was turned off), once any sweep
+    /// already running has ended (item 116, R4).
     @discardableResult
     func setCloudBackup(_ on: Bool) -> Bool {
-        guard state == .disarmed else { return false }   // the screen's rule, kept here too (item 116)
+        guard state == .disarmed, !settings.awaitingUnlock else { return false }   // the screen's rule, kept here too (item 116)
         guard on != settings.cloudBackup else { return true }
         if !on { logStateChange(Event.backupOffKind) }
         settings.cloudBackup = on
@@ -54,11 +58,12 @@ extension MonitoringEngine {
     /// Wires the switch into the three places that apply it (at init): the store marks an event
     /// recorded while backup is off; the enrollment registers it to no account, which older
     /// versions honour too (item 116, R3); and the uploader reads the rule before every step
-    /// (R2).
+    /// (R2). Each reads the switch as known (`cloudBackupKnownOff`, `cloudBackupKnownOn`): while the
+    /// settings wait for the unlock nothing is marked, held or sent on the strength of a default (ADR 0055).
     func watchBackupSetting() {
-        eventStore.keepsNewEventsLocal = { [weak self] in self?.settings.cloudBackup == false }
-        cloud.enrollment.holdsNewEventsLocal = { [weak self] in self?.settings.cloudBackup == false }
+        eventStore.keepsNewEventsLocal = { [weak self] in self?.settings.cloudBackupKnownOff == true }
+        cloud.enrollment.holdsNewEventsLocal = { [weak self] in self?.settings.cloudBackupKnownOff == true }
         cloud.backupPermits = { [weak self] event in self?.backupAllows(event) ?? false }
-        cloud.backupOn = { [weak self] in self?.settings.cloudBackup ?? false }
+        cloud.backupOn = { [weak self] in self?.settings.cloudBackupKnownOn ?? false }
     }
 }

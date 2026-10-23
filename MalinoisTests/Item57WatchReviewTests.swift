@@ -13,6 +13,7 @@
 //  Written before the fixes, red at that commit (against compile-only stubs).
 //
 
+import WatchConnectivity
 import XCTest
 @testable import Malinois
 
@@ -136,12 +137,40 @@ final class Item57WatchReviewTests: XCTestCase {
         XCTAssertEqual(outbox.activationCompleted(watchReady: true), [waiting])
     }
 
-    /// The link holds through the outbox and releases it when activation completes.
-    func testTheLinkHoldsAlertsUntilActivationCompletes() throws {
-        let relay = try text("Malinois/Services/WatchAlertRelay.swift")
-        XCTAssertTrue(relay.contains("holdIfActivating(message)"))
-        XCTAssertTrue(relay.contains("activationCompleted(watchReady:"))
-        XCTAssertTrue(relay.contains("sessionBecameInactive()"))
+    /// The link holds an alert sent while it activates and sends it once activation completes with a
+    /// watch ready; later alerts go at once; while the owner switches watches they wait again. Run
+    /// through the link with a stand-in session: reading the source, this passed with a held alert
+    /// also sent at once (the test-suite audit's probe W341; P4).
+    func testTheLinkHoldsAlertsUntilActivationCompletes() {
+        let session = StandInWatchSession()
+        let link = WatchLink(session: { session })
+        func alert() -> WatchAlertMessage { WatchAlertMessage(kind: .tamper, eventID: UUID(), at: Date()) }
+        let early = alert()
+        link.send(early)
+        XCTAssertTrue(session.queued.isEmpty, "held while the link activates")
+        session.ready = true
+        link.activationCompleted(.activated, on: session)
+        XCTAssertEqual(session.queued, [early.eventID], "sent when activation completes")
+        let next = alert()
+        link.send(next)
+        XCTAssertEqual(session.queued, [early.eventID, next.eventID], "sent at once from then on")
+        link.becameInactive()   // the owner switches watches
+        let during = alert()
+        link.send(during)
+        XCTAssertEqual(session.queued.count, 2, "held again")
+        link.activationCompleted(.activated, on: session)
+        XCTAssertEqual(session.queued.last, during.eventID)
+    }
+
+    /// With no watch ready when activation completes, what waited is dropped, not sent later.
+    func testAlertsThatWaitedForNoWatchAreDropped() {
+        let session = StandInWatchSession()
+        let link = WatchLink(session: { session })
+        link.send(WatchAlertMessage(kind: .tamper, eventID: UUID(), at: Date()))
+        link.activationCompleted(.activated, on: session)   // not paired
+        session.ready = true
+        link.activationCompleted(.activated, on: session)
+        XCTAssertTrue(session.queued.isEmpty)
     }
 
     // MARK: - Finding 5: once per event across restarts
@@ -159,19 +188,9 @@ final class Item57WatchReviewTests: XCTestCase {
         XCTAssertEqual(WatchAlertStatus.remembering(ids[3], in: ids), ids, "one already remembered changes nothing")
     }
 
-    /// The memory is kept on the watch across launches and consulted before an alert is shown.
-    /// Since 1.6 (65) it lives in `WatchAlertStatus.RelayLedger`, which remembers an alert only once
-    /// posted (item 108, CE-03; its rule is tested in Item108ReviewTests). Since 1.8 (73) the watch's
-    /// `WatchRelayInbox` holds it (ADR 0051), and a relaunch is driven through the inbox in
-    /// Item134WatchSummaryTests.
-    func testTheWatchKeepsThatMemoryAcrossLaunches() throws {
-        let inbox = try text("MalinoisWatch/WatchRelayInbox.swift")
-        XCTAssertTrue(inbox.contains("stringArray(forKey: Self.shownRelayIDsKey)"), "read at launch")
-        XCTAssertTrue(inbox.contains("defaults.set(ledger.shown, forKey: Self.shownRelayIDsKey)"), "kept after a post")
-        XCTAssertTrue(inbox.contains("ledger.begin("), "consulted before an alert is shown")
-        XCTAssertTrue(try text("MalinoisWatch/WatchAppDelegate.swift").contains("relayInbox.receive(message)"),
-                      "the watch app hands each relayed alert to the inbox")
-    }
+    // The memory across launches: since 1.8 (73) the watch's `WatchRelayInbox` holds it (ADR 0051),
+    // and relaunches are run through the inbox (Item134WatchSummaryTests
+    // .testASummaryCarriesOnAcrossWakesAndRelaunches, .testTheRecordTakesTheAlertsAnEarlierBuildRemembered).
 
     // MARK: - Finding 6: a held wake always ends
 
@@ -188,5 +207,23 @@ final class Item57WatchReviewTests: XCTestCase {
         let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
         XCTAssertTrue(delegate.contains("linkTask.expirationHandler"))
         XCTAssertTrue(delegate.contains("activationFailed:"))
+    }
+}
+
+/// A WatchConnectivity session for tests (the test-suite audit's P4): `ready` means a paired watch
+/// with the app installed; `queued` and `sentNow` are what the link handed it, by event.
+final class StandInWatchSession: WatchSessionPort {
+    var ready = false
+    private(set) var queued: [UUID] = []
+    private(set) var sentNow: [UUID] = []
+    var activationState: WCSessionActivationState { .activated }
+    var isPaired: Bool { ready }
+    var isWatchAppInstalled: Bool { ready }
+    var isReachable: Bool { ready }
+    func sendNow(_ userInfo: [String: Any]) {
+        if let message = WatchAlertMessage(userInfo: userInfo) { sentNow.append(message.eventID) }
+    }
+    func queue(_ userInfo: [String: Any]) {
+        if let message = WatchAlertMessage(userInfo: userInfo) { queued.append(message.eventID) }
     }
 }

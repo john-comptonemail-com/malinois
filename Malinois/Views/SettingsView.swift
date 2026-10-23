@@ -97,8 +97,10 @@ struct SettingsView: View {
                             Spacer()
                             Text("Active").foregroundStyle(.green)
                         }
-                        Text("Free and permanent for Early-Access installs. Tap to support the project; it adds nothing you don't already have. \(PaywallView.oneTimeCaption(displayPrice: entitlements.product?.displayPrice))")
+                        let support = "Free and permanent for Early-Access installs. Tap to support the project; it adds nothing you don't already have. \(PaywallView.oneTimeCaption(displayPrice: entitlements.product?.displayPrice))"
+                        Text(support)
                             .font(.caption).foregroundStyle(.secondary)
+                            .reportedOnScreen(support)
                     }
                 }
             } else {
@@ -118,10 +120,12 @@ struct SettingsView: View {
                             }
                         }
                         let price = PaywallView.oneTimeCaption(displayPrice: entitlements.product?.displayPrice)
-                        Text(entitlements.status == .trial
-                             ? "Everything's unlocked during your trial. Buy now to keep it. \(price)"
-                             : "iCloud backup, cross-device alerts, both cameras, longer clips, and the sound tripwire. \(price)")
+                        let offer = entitlements.status == .trial
+                            ? "Everything's unlocked during your trial. Buy now to keep it. \(price)"
+                            : "iCloud backup, cross-device alerts, both cameras, longer clips, and the sound tripwire. \(price)"
+                        Text(offer)
                             .font(.caption).foregroundStyle(.secondary)
+                            .reportedOnScreen(offer)
                     }
                 }
             }
@@ -273,6 +277,7 @@ struct SettingsView: View {
             }
             Text(responseHint)
                 .font(.caption).foregroundStyle(.secondary)
+                .reportedOnScreen(responseHint)
 
             if settings.responseMode == .siren {
                 Toggle(isOn: Binding(
@@ -437,7 +442,7 @@ struct SettingsView: View {
             }
             Toggle(isOn: Binding(
                 get: { settings.biometricUnlock },
-                set: { settings.biometricUnlock = $0 })) {
+                set: { BiometricBinding.setUnlock($0, settings: settings) })) {   // bound to the enrolled set (ADR 0056)
                 VStack(alignment: .leading) {
                     Text(BiometricKind.current.unlockToggleTitle)
                     Text(BiometricKind.current.unlockToggleCaption)
@@ -462,9 +467,10 @@ struct SettingsView: View {
                         Button(enrollmentBusy ? "Verifying…" : "Verify iCloud access") {
                             enrollmentBusy = true
                             Task {
+                                // Verified: run what a relaunch would (item 143), so the log fills from iCloud and
+                                // Home's notifications line can show at once.
                                 if await cloud.enrollCloudAccess() {
-                                    await engine.retryPendingSync()
-                                    _ = await engine.syncFromCloud(limit: EventStore.maxEvents)
+                                    await engine.cloudAccessVerified()
                                 }
                                 enrollmentBusy = false
                             }
@@ -503,6 +509,7 @@ struct SettingsView: View {
                         HStack { Text("iCloud backup"); proMark }
                         Text(Self.backupCaption)
                             .font(.caption).foregroundStyle(.secondary)
+                            .reportedOnScreen(Self.backupCaption)
                     }
                 }
                 .disabled(backupControlBusy || engine.state != .disarmed)
@@ -751,7 +758,10 @@ struct ChangePINView: View {
                     stage = .setNew
                 } onCancel: { dismiss() }
             case .setNew:
-                PINSetupView { dismiss() }
+                PINSetupView {
+                    engine.notePINChanged()   // the change on the record, before the view goes (item 153's MAL-03)
+                    dismiss()
+                }
             }
         }
     }

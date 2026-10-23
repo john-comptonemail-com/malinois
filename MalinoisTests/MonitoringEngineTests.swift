@@ -220,8 +220,7 @@ final class MonitoringEngineTests: XCTestCase {
         attached.primaryDuration = 0.4
         attached.thumbnailData = saved.thumbnail
         attached.captureFailuresByCamera = ["front": "captureTimedOut"]
-        store.update(attached)
-        store.reopenForReupload(event.id)
+        store.updateAndReopenForReupload(attached)   // as the late-evidence path does, in one write (item 155's S1)
         XCTAssertEqual(store.events.first { $0.id == event.id }?.cloudSyncState, .pending)
         if completeNewerFirst {
             let newer = try XCTUnwrap(store.events.first { $0.id == event.id })
@@ -257,11 +256,16 @@ final class MonitoringEngineTests: XCTestCase {
         engine.disarm()
     }
 
+    /// A tap on ARM is ignored unless the watch is off. The second tap comes during the
+    /// countdown, where a restart would show: a second tap at the check lands in the same
+    /// state either way (test-suite audit, ME60).
     func testBeginArmingIgnoredUnlessDisarmed() {
-        let engine = makeEngine()
+        let engine = makeEngine { $0.requireGuidedAccess = false }
         engine.beginArming()
+        engine.confirmGuidedAccessAndStartGrace()
+        XCTAssertEqual(engine.state, .arming, "the countdown is running")
         engine.beginArming()   // no-op — already past .disarmed
-        XCTAssertEqual(engine.state, .guidedAccessCheck)
+        XCTAssertEqual(engine.state, .arming, "a tap during the countdown must not send it back to the check")
         engine.disarm()
     }
 
@@ -301,7 +305,9 @@ final class MonitoringEngineTests: XCTestCase {
 
     /// A latched sensor stays "in play" during the correlation window, then becomes
     /// due for re-arm once its trip ages out without firing — so a stray early trip
-    /// can't latch a one-shot monitor forever (which made motionCorroborated deaf).
+    /// can't latch a one-shot monitor forever (which made motionCorroborated deaf): a
+    /// stray bump latches Motion, and by the time the phone is really picked up, well
+    /// after the window, the refractory pass has freed Motion to trip again.
     func testRefractoryFreesLatchedSensorOnlyAfterWindow() {
         let t0 = Date()
         let latched: Set<SensorType> = [.motion]
@@ -316,9 +322,6 @@ final class MonitoringEngineTests: XCTestCase {
             latched: latched, trips: trips, now: t0.addingTimeInterval(2.1), window: 2), [.motion])
     }
 
-    /// The "stray bump, then real pick-up" sequence: a motion bump latches motion;
-    /// by the time the thief actually lifts the phone (well after the window), the
-    /// refractory pass has freed motion so it — plus audio — can corroborate.
     /// F-02: the flood threshold must sit well above a plausible human tamper rate
     /// (~6/min) so ordinary sustained handling isn't misread as a synthetic attack.
     func testFloodThresholdIsAboveHumanTamperRate() {
@@ -331,10 +334,14 @@ final class MonitoringEngineTests: XCTestCase {
 
     /// N-01: a running alert/siren must never be silenced by a screen touch. A trigger
     /// while it's active always extends it (even in the disarm flow); only STARTING a
-    /// fresh alert is gated on not being in the owner's disarm.
+    /// fresh alert is gated on not being in the owner's disarm. F1: that gate is the PIN
+    /// pad genuinely open (a deliberate 5-second hold), never a bare touch. The disarm-
+    /// candidate window opens on any touch-down (for owner attribution), so gating on it
+    /// would let a snoop tapping and swiping the screen keep the siren from ever starting.
     func testAlertActionNeverLetsAScreenTouchStarveARunningSiren() {
         // Start fresh unless the PIN pad is actually open.
-        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: false), .present)
+        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: false), .present,
+                       "a touch alone must never hold off the first alert")
         XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: true), .none,
                        "the owner's own disarm stays quiet once the pad is up")
         // A running alarm is kept alive regardless of a screen touch — the N-01 fix.
@@ -509,11 +516,12 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertEqual(e.sensorSummary, "Guided Access requirement lifted for one arm")
     }
 
-    /// Crash recovery must re-arm even with the requirement on and Guided Access off — a
-    /// crash can end Guided Access, and refusing there would leave the device unprotected,
-    /// which is the exact failure the auto re-arm exists to prevent (F-12).
+    /// An ordinary arm is refused while Guided Access is required and off: the gated entry point
+    /// stays at the check. (Crash recovery re-arms in that state all the same — a crash can end
+    /// Guided Access, and refusing there would leave the device unprotected, F-12 — which
+    /// testAnOwedReArmFiresOnceTheEntitlementCheckResolves runs; this test's old name claimed it.)
     @MainActor
-    func testCrashRecoveryReArmsEvenWhenGuidedAccessIsRequiredAndOff() {
+    func testAnOrdinaryArmIsRefusedWhileGuidedAccessIsRequiredAndOff() {
         let engine = makeEngine { $0.requireGuidedAccess = true }
         XCTAssertTrue(engine.armingBlockedByGuidedAccess,
                       "a user-initiated arm would be refused in this state")
@@ -590,28 +598,6 @@ final class MonitoringEngineTests: XCTestCase {
         ramped.start(rampUp: true)
         defer { ramped.stop() }
         XCTAssertEqual(ramped.volumeForTesting, 0)
-    }
-
-    /// F1: a bare touch must NOT be able to hold the alarm off. The disarm-*candidate*
-    /// window opens on any touch-down (for owner attribution), so if presentation were
-    /// gated on it, a snoop tapping and swiping the screen — exactly what snooping is —
-    /// would keep the siren from ever starting. Only the PIN pad genuinely being open
-    /// (a deliberate 5-second hold) may suppress a fresh alert.
-    func testTouchAloneCannotSuppressTheFirstAlert() {
-        // The snoop case: screen being touched, no pad open yet → the alarm still fires.
-        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: false), .present,
-                       "a touch alone must never hold off the first alert")
-        // Only an open pad — which costs a deliberate 5s hold — stays quiet.
-        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: true), .none)
-    }
-
-    func testStrayBumpDoesNotPermanentlyLatchMotion() {
-        let bump = Date()
-        // Motion tripped once and is still latched; its trip has long since aged out.
-        let due = MonitoringEngine.refractoryDueSensors(
-            latched: [.motion], trips: [.motion: bump],
-            now: bump.addingTimeInterval(30), window: 2)
-        XCTAssertEqual(due, [.motion], "motion must be re-armable, not latched forever")
     }
 
     /// A sensor still latched but already pruned from the trip window is due at once.
@@ -792,7 +778,10 @@ final class MonitoringEngineTests: XCTestCase {
     /// F4: in Siren mode the FIRST capture must already be a still — the old gate collapsed
     /// clips only once the alarm was sounding, so the first trigger of a Siren + until-clear
     /// session recorded up to 120 s of clip (extended by the tampering itself) before the
-    /// alarm ever started, and the quiet ramp began only after that.
+    /// alarm ever started, and the quiet ramp began only after that. It is also why the mic can
+    /// go without losing evidence: an alarm that is sounding, or that this trigger is about to
+    /// sound, already forces stills, so the movie output is idle. If that ever stopped being
+    /// true, dropping the mic would start producing silent clips.
     func testSirenModeCapturesStillsFromTheFirstTrigger() {
         XCTAssertEqual(MonitoringEngine.captureModeForNow(configured: .untilClear, sirenResponse: true,
                                                           sirenSounding: false, escalationForcesSiren: false),
@@ -904,18 +893,6 @@ final class MonitoringEngineTests: XCTestCase {
                        "an unknown destination is not permission to destroy evidence")
     }
 
-    /// The reason the mic can go without losing evidence: an alarm that is sounding — or that
-    /// this trigger is about to sound — already forces stills, so the movie output is idle.
-    /// If this ever stopped being true, dropping the mic would start producing silent clips.
-    func testAnAlarmAlreadyMeansStillsSoTheMovieOutputIsIdle() {
-        XCTAssertEqual(MonitoringEngine.captureModeForNow(configured: .clip5, sirenResponse: true,
-                                                          sirenSounding: false, escalationForcesSiren: false),
-                       .photo, "siren mode collapses clips from the first trigger")
-        XCTAssertEqual(MonitoringEngine.captureModeForNow(configured: .clip5, sirenResponse: false,
-                                                          sirenSounding: true, escalationForcesSiren: false),
-                       .photo, "and while one is already sounding")
-    }
-
     /// The device failure of 2026-08-26, pinned as the invariant it broke: the shape the
     /// session is *warmed* to and the shape a capture *uses* must agree, or every trigger
     /// rebuilds the session twice. That rebuild attaches a mic, attaching a mic seizes the
@@ -980,12 +957,20 @@ final class MonitoringEngineTests: XCTestCase {
         XCTAssertFalse(MonitoringEngine.armingBlockedByEntitlementCheck(entitlementResolved: true))
     }
 
-    /// The two arming gates are independent: Guided Access enforcement is the owner's own
-    /// requirement, the entitlement check is a race. Neither should mask the other.
-    func testTheGuidedAccessGateIsUnaffectedByTheEntitlementGate() {
-        XCTAssertTrue(MonitoringEngine.armingBlocked(requireGuidedAccess: true, guidedAccessOn: false))
-        XCTAssertFalse(MonitoringEngine.armingBlocked(requireGuidedAccess: true, guidedAccessOn: true))
-        XCTAssertFalse(MonitoringEngine.armingBlocked(requireGuidedAccess: false, guidedAccessOn: false))
+    /// The same rule on the real path: a tap on ARM before the Pro check answers is refused, and
+    /// once it answers the same tap arms. The rule was tested; no test tapped ARM with the check
+    /// unanswered (test-suite audit, ME61).
+    func testATapOnArmBeforeTheProCheckAnswersIsRefused() {
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
+                                                          cloud: CloudExfiltrator(), camera: CameraController(),
+                                                          entitlements: entitlements))
+        engine.beginArming()
+        XCTAssertEqual(engine.state, .disarmed, "refused while the check is unanswered")
+        entitlements.resolveForTesting(as: .free)
+        engine.beginArming()
+        XCTAssertEqual(engine.state, .guidedAccessCheck, "the same tap arms once it answers")
+        engine.disarm()
     }
 
     // MARK: - Background push reports what actually happened (review finding 6)
@@ -1468,8 +1453,61 @@ final class MonitoringEngineTests: XCTestCase {
                                                           cloud: CloudExfiltrator(), camera: CameraController(),
                                                           entitlements: entitlements))
         entitlements.resolveForTesting(as: .free)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         XCTAssertEqual(engine.state, .disarmed, "no owed re-arm — resolution alone must not arm")
+        // Every attempt stamps its time before the crash-loop guard reads the last one, so the
+        // stamp also shows an attempt the guard held back, which leaves the state alone. (With the
+        // owed check removed, an engine an earlier test left behind once re-armed first, and its
+        // stamp held this engine's attempt back: the state check alone passed. Test-suite audit,
+        // ME206; the shared tearDown now lets such an answer land in its own test.)
+        XCTAssertEqual(UserDefaults.standard.double(forKey: Self.recoveryTimeKey), 0, "no re-arm was even attempted")
+    }
+
+    /// An engine whose Pro check resolves at once, with a re-arm owed.
+    private func engineWithOwedReArm(lastAttemptSecondsAgo: TimeInterval? = nil) -> MonitoringEngine {
+        UserDefaults.standard.set(true, forKey: Self.pendingReArmKey)
+        if let ago = lastAttemptSecondsAgo {
+            UserDefaults.standard.set(Date().timeIntervalSince1970 - ago, forKey: Self.recoveryTimeKey)
+        }
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: EventStore(),
+                                                          cloud: CloudExfiltrator(), camera: CameraController(),
+                                                          entitlements: entitlements))
+        entitlements.resolveForTesting(as: .free)
+        let deadline = Date().addingTimeInterval(1)
+        while engine.state == .disarmed && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        return engine
+    }
+
+    /// R-04 on the real path: a crash-recovery arm is not the owner's, so Cancel must not end it
+    /// (a thief who crashed the app would just tap it); only a disarm, behind the PIN, does. No
+    /// test cancelled an automatic re-arm before (test-suite audit, ME64).
+    func testAnAutomaticReArmCannotBeCancelledWithoutThePIN() {
+        clearRecoveryDefaults()
+        defer { clearRecoveryDefaults() }
+        let engine = engineWithOwedReArm()
+        XCTAssertEqual(engine.state, .arming, "the owed re-arm runs")
+        XCTAssertTrue(engine.armWasAutoRecovered)
+        engine.cancelArming()
+        XCTAssertEqual(engine.state, .arming, "Cancel does not end an automatic re-arm")
+        XCTAssertFalse(engine.eventStore.events.contains { $0.stateChange == "armingCancelled" }, "and records no cancel")
+        engine.disarm()
+        XCTAssertEqual(engine.state, .disarmed)
+    }
+
+    /// The crash-loop guard on the real path: a re-arm owed ten seconds after the last attempt
+    /// is held back (the armed state itself is crashing the app), and the owed flag is spent,
+    /// so it does not loop. The rule is testCrashLoopGuardOnlyTripsOnRapidRepeatAttempts's; this
+    /// is the re-arm's use of it (test-suite audit, ME77).
+    func testAReArmMomentsAfterTheLastOneIsHeldBackAsACrashLoop() {
+        clearRecoveryDefaults()
+        defer { clearRecoveryDefaults() }
+        let engine = engineWithOwedReArm(lastAttemptSecondsAgo: 10)
+        XCTAssertEqual(engine.state, .disarmed, "a second re-arm inside the window stays put")
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: Self.pendingReArmKey), "and the owed flag is spent")
+        engine.disarm()
     }
 
     // MARK: - Covert black must not reach the arming countdown (device pass, 2026-08-29)

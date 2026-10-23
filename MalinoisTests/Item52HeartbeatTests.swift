@@ -42,7 +42,7 @@ final class Item52HeartbeatTests: XCTestCase {
     }
 
     /// `thermal`: iOS's answer, injected so a hot Mac cannot flake the beat's temperature (item 38's rig).
-    private func makeRig(pro: Bool = true,
+    private func makeRig(pro: Bool = true, timing: EngineTiming = Item52HeartbeatTests.beatTiming,
                          thermal: @escaping @MainActor () -> ProcessInfo.ThermalState = { .nominal }) -> Rig {
         let settings = AppSettings()
         settings.gracePeriodSeconds = 0
@@ -52,7 +52,7 @@ final class Item52HeartbeatTests: XCTestCase {
         let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
                                                           camera: FakeCamera(),
                                                           entitlements: ProEntitlements(resolvedAs: pro ? .trial : .free),
-                                                          timing: Self.beatTiming, thermalState: thermal))
+                                                          timing: timing, thermalState: thermal))
         engine.simulateConnectivityForTesting(online: true)
         return Rig(engine: engine, store: store)
     }
@@ -141,8 +141,20 @@ final class Item52HeartbeatTests: XCTestCase {
     // MARK: - The engine
 
     /// Going live sends the first beat at once, for the session of the watch's "armed" record;
-    /// the rest follow the interval, numbered upward from 1.
+    /// the rest follow the interval, numbered upward from 1. "At once" is checked with a
+    /// minute-long interval, where only the beat sent at going live arrives in time: at the
+    /// tests' fifth of a second the timer's beats arrive either way (test-suite audit, HB10).
     func testGoingLiveSendsTheFirstBeatAndTheRestFollow() {
+        var slow = Self.beatTiming
+        slow.heartbeatInterval = 60
+        let first = makeRig(timing: slow)
+        var firstBeats: [HeartbeatBeat] = []
+        first.engine.beatSendForTesting = { beat in firstBeats.append(beat); return true }
+        arm(first)
+        XCTAssertTrue(pump(until: { !firstBeats.isEmpty }, timeout: 3),
+                      "the first beat goes out at going live, not an interval later")
+        first.engine.disarm()
+
         let rig = makeRig()
         var beats: [HeartbeatBeat] = []
         rig.engine.beatSendForTesting = { beat in beats.append(beat); return true }

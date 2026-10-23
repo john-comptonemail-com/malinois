@@ -112,10 +112,12 @@ struct PaywallView: View {
             } label: {
                 HStack {
                     if working { ProgressView().tint(.white) }
-                    Text(working ? "…"
-                         : Self.priced(entitlements.status == .earlyAccess ? "Support Malinois" : "Unlock Pro",
-                                       displayPrice: entitlements.product?.displayPrice))
+                    let label = working ? "…"
+                        : Self.priced(entitlements.status == .earlyAccess ? "Support Malinois" : "Unlock Pro",
+                                      displayPrice: entitlements.product?.displayPrice)
+                    Text(label)
                         .font(.headline)
+                        .reportedOnScreen(label)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)

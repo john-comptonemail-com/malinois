@@ -2,8 +2,8 @@
 //  FirstArmBriefingView.swift
 //  Malinois
 //
-//  The one-time screen before the first arm (BACKLOG 131): how to disarm and, when Guided Access is on for the
-//  arm, how to end it. Shown over the Guided Access step once Start countdown has asked for it; its one button
+//  The one-time screen before the first arm (BACKLOG 131): how to disarm, when Guided Access is on for the arm how
+//  to end it, and turning Voice Control off (item 144 (e), once for every install). Shown over the Guided Access step once Start countdown has asked for it; its one button
 //  acknowledges what it showed and starts the countdown.
 //
 
@@ -20,6 +20,8 @@ struct FirstArmBriefingView: View {
     let recording: AnyPublisher<Bool, Never>
     /// The button: acknowledges the parts shown and starts the countdown.
     let onAcknowledge: () -> Void
+    /// A touch on the screen, a scroll or a tap: the engine's minute without one starts afresh (ADR 0050's decision 8).
+    var onActivity: () -> Void = {}
 
     var body: some View {
         ScrollView {
@@ -34,12 +36,17 @@ struct FirstArmBriefingView: View {
                     section(FirstArmBriefing.guidedAccessHeading,
                             [FirstArmBriefing.guidedAccessText, FirstArmBriefing.forgotPasscodeText])
                 }
+                if parts.voiceControl {
+                    section(FirstArmBriefing.voiceControlHeading, [FirstArmBriefing.voiceControlText])
+                }
                 line(FirstArmBriefing.footnote, font: .footnote, color: .secondary)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize)
+        // Every touch, a scroll or the button's tap included, alongside what the touch does (ADR 0050's decision 8).
+        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in onActivity() })
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Button(action: onAcknowledge) {
                 Text(FirstArmBriefing.button)

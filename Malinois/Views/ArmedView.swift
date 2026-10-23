@@ -42,8 +42,7 @@ struct ArmedView: View {
 
             if engine.disarmEntryActive {
                 PINEntryView(title: "Enter PIN to disarm", onSuccess: {
-                    OnboardingState.hasDisarmedOnce = true   // the hold is learned: the warning drops its tip (item 107)
-                    engine.disarm()   // restores brightness + returns to Home
+                    engine.disarm()   // restores brightness + returns to Home; records the first disarm (item 107)
                 }, onCancel: {
                     engine.endDisarmEntry()   // back to covert black
                 }, onActivity: { engine.noteDisarmActivity() },

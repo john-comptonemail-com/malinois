@@ -1,7 +1,8 @@
 # ADR 0040: Preserve a surviving PIN across reinstall
 
 - **Status:** accepted (owner's Option B ruling); shipped in 1.5.1 (58), released 2026-10-12. Reinstall and PIN-recovery phone
-  checks passed on build 56.
+  checks passed on build 56. Amended for 1.8.1 (BACKLOG 148's 5): a recognised reinstall leaves one status entry in
+  the new log (Consequences).
 - **Date:** 2026-10-11
 
 ## Context
@@ -43,3 +44,24 @@ device's owner authentication can reset the PIN. Keychain persistence after unin
 is not guaranteed, so the independent cloud policy remains necessary. Old installed
 versions retain their prior behavior. Real reinstall/authentication checks remain owed;
 Simulator tests cannot establish the OS's uninstall or biometric behavior.
+
+Amended for 1.8.1: a recognised reinstall (a surviving PIN, no setup marker, no earlier
+local evidence) leaves one status entry in the new log, "Malinois was reinstalled on this
+iPhone: the log it kept before is gone". It is written at the first successful iCloud
+verification, tied to that account so that with Pro and iCloud backup on it uploads, or at
+the first watch if that comes first, when it is tied to no account and stays on the phone.
+A damaged credential leaves none. It raises no alert, and the recovery screens are unchanged.
+
+Amended 2026-10-22 (1.8.1, BACKLOG 152's lead 18): while a recovery is pending (a usable PIN
+has to be entered or set first), the automatic re-arm after a crash does not run. A backup
+restored onto another iPhone carries the recovery markers and the owed re-arm but not the
+PIN items, which are this device only, so without this a watch could start behind the
+recovery screen with no PIN to stop it. The re-arm stays owed and runs when the recovery
+finishes, with its usual guards.
+
+Amended 2026-10-23 (1.8.1, BACKLOG 155's A5): a sealed Keychain counts as a pending recovery for
+the automatic re-arm. "Not now" from the Keychain says nothing about the PIN, and the re-arm used
+to read it as "no recovery pending" and start the watch; now it waits, the re-arm stays owed, and
+the next foreground asks the Keychain again. On a phone the re-arm runs only on an active scene
+and the launch recovery already waits while the phone is locked, so this closes a rule gap rather
+than a path a phone takes every day.

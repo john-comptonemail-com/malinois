@@ -45,17 +45,19 @@ struct HomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
 
-    /// PIN-gated areas. Both the event log and Settings require the PIN.
+    /// PIN-gated areas: the event log, Settings and Test Sensors, and the ARM tap when the PIN
+    /// has not been entered correctly for 14 days (ADR 0054).
     enum Gate: Identifiable {
-        case log, settings, test
+        case log, settings, test, arm
         var id: Int {
-            switch self { case .log: 0; case .settings: 1; case .test: 2 }
+            switch self { case .log: 0; case .settings: 1; case .test: 2; case .arm: 3 }
         }
         var prompt: String {
             switch self {
             case .log:      "Enter PIN to view log"
             case .settings: "Enter PIN for Settings"
             case .test:     "Enter PIN to test sensors"
+            case .arm:      "Enter PIN to arm"
             }
         }
         /// Which gates may ALSO open by Face ID when the owner opts in (item 30 option A,
@@ -66,10 +68,14 @@ struct HomeView: View {
         var allowsBiometrics: Bool {
             switch self {
             case .log, .test: true
-            case .settings:   false
+            case .settings, .arm: false
             }
         }
     }
+
+    /// Pure (unit-tested; ADR 0054): the gate the ARM tap opens first, if any: the PIN pad when the check is due
+    /// (`MonitoringEngine.armPINCheckIsDue`), otherwise none and the tap arms at once.
+    static func armTapGate(pinCheckDue: Bool) -> Gate? { pinCheckDue ? .arm : nil }
 
     @State private var pinGate: Gate?      // PIN prompt currently showing
     @State private var unlocked: Gate?     // area to open once the PIN clears
@@ -187,10 +193,17 @@ struct HomeView: View {
     /// request if any PIN gate happened to be up, losing the one notification the owner
     /// most wants). Already-open log: nothing to do. A different gate mid-prompt: retarget
     /// it to the log — the tapped alert's intent wins; the PIN still gates as always.
-    /// The camera permission is asked on the first ARM tap (item 69): before the arming
-    /// screen, and so before Guided Access could be on. A denial still arms, with the existing
-    /// "Camera access is denied" notice; Vision needs the camera as much as capture does.
     private func armTapped() {
+        // ADR 0054: after 14 days without a correct PIN, or with none on record, the PIN first; Cancel stays on Home.
+        if let gate = Self.armTapGate(pinCheckDue: engine.armPINCheckIsDue) { pinGate = gate; return }
+        armAfterChecks()
+    }
+
+    /// The ARM tap's work once the PIN check, when it was due, has passed. The camera permission
+    /// is asked on the first ARM tap (item 69): before the arming screen, and so before Guided
+    /// Access could be on. A denial still arms, with the existing "Camera access is denied"
+    /// notice; Vision needs the camera as much as capture does.
+    private func armAfterChecks() {
         Task {
             if CameraController.cameraPromptIsDue(cameraNeeded: settings.isEnabled(.camera) || settings.isEnabled(.vision),
                                                   undetermined: CameraController.cameraIsUndetermined,
@@ -232,6 +245,7 @@ struct HomeView: View {
         case .log:      eventLogPresentation.wrappedValue = true
         case .settings: showSettings = true
         case .test:     showTest = true
+        case .arm:      armAfterChecks()   // the PIN was remembered: on to the arming screen (ADR 0054)
         }
     }
 

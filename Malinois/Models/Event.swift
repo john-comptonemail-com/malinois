@@ -346,6 +346,10 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "thermalCritical":   return "Phone overheating while armed: iOS may shut it down"
         case "soundUnavailable":  return "Sound tripwire unavailable while armed: the microphone could not be restarted"   // item 105, F-09
         case "soundRestored":     return "Sound tripwire working again"
+        case "motionStalled":     return "Motion tripwire stalled and was restarted: a few seconds were not watched"   // item 144 (g)
+        case "reinstalled":       return "Malinois was reinstalled on this iPhone: the log it kept before is gone"   // item 148's 5
+        case "pinChanged":        return "Malinois PIN changed in Settings; the current PIN was entered first"   // item 153's MAL-03
+        case "guidedAccessEnded": return "Guided Access ended while armed; the watch kept running"   // item 153's MAL-05; item 155's A7
         case "unsyncedRemoved":   return "Events not fully backed up to iCloud were removed to make room (log full)"   // items 114, 116
         case "backupOff":         return "iCloud backup turned off: events recorded while it is off stay on this iPhone"   // item 115
         case "backupOn":          return "iCloud backup turned on"

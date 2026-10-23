@@ -177,6 +177,24 @@ final class Item86RegressionTests: XCTestCase {
         XCTAssertEqual(try backups().count, 1)
     }
 
+    /// After a log that waited for the unlock turns out broken and is set aside, records are
+    /// written again: the set-aside ends the wait, or every write stays refused for the rest of
+    /// the process with nothing on Home saying so (32.R4). The damaged-at-launch test above never
+    /// waited, so it could not show this (test-suite audit, WB32).
+    func testRecordsAfterADeferredLogWasSetAsideAreWritten() throws {
+        try plantLog([motionEvent(secondsAgo: 60)])
+        try seal()
+        let phone = LockState()
+        let store = EventStore(protectedDataAvailable: { phone.unlocked })
+        phone.unlocked = true   // unlocked, and the file still cannot be read: broken
+        NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        XCTAssertTrue(pump(until: { store.logWasQuarantined }, timeout: 3), "set aside")
+        let recorded = motionEvent()
+        store.add(recorded)
+        XCTAssertTrue(pump(until: { self.idsOnDisk()?.contains(recorded.id) == true }, timeout: 3),
+                      "the record is written to the new log")
+    }
+
     /// An upgrade may first read its old log at unlock, with a new record queued.
     /// Status migration must preserve watch IDs and retire all obsolete journal lines.
     func testLegacyRetentionMigrationAfterUnlockKeepsQueuedIncidentAndWatchRegistry() throws {

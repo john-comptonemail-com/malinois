@@ -169,7 +169,8 @@ final class Item134WatchSummaryTests: XCTestCase {
     // MARK: - The texts (the owner's approved wording, 2026-10-18)
 
     /// Every relayed alert shown on its own names its event's time, tamper and disarm alike, on time
-    /// or late; with the date when the event was on another day. Alert text: no em-dash (B16).
+    /// or late; with the date when the event was on another day; and the watch's inbox shows that
+    /// text. Alert text: no em-dash (B16).
     func testEveryRelayedAlertNamesItsEventsTime() throws {
         let at = try local(10, 19, 8, 59)
         for (kind, words) in [(WatchAlertMessage.Kind.tamper, "Tamper detected on your device"),
@@ -177,6 +178,8 @@ final class Item134WatchSummaryTests: XCTestCase {
             let message = alert(kind, at: at)
             XCTAssertEqual(message.body(deliveredAt: at.addingTimeInterval(20)), "\(words) at \(time(at)).", "on time, with the time")
             XCTAssertEqual(message.body(deliveredAt: at.addingTimeInterval(1800)), "\(words) at \(time(at)).", "late, the same day")
+            XCTAssertEqual(WatchRelayInbox.request(for: message, now: at.addingTimeInterval(1800)).content.body,
+                           "\(words) at \(time(at)).", "the watch's inbox shows that text")
         }
         let lateEvening = try local(10, 18, 23, 50)
         let overMidnight = alert(.disarm, at: lateEvening).body(deliveredAt: lateEvening.addingTimeInterval(20 * 60))
