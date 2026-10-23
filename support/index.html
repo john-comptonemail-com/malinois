@@ -144,6 +144,12 @@
   wait, up to an hour. The right PIN resets it. On the armed screen, every wrong PIN is recorded in
   the Event Log, and Malinois tries to take a photo.</p>
 
+  <h3>Why did Malinois ask for my PIN when I tapped ARM?</h3>
+  <p>When your PIN has not been entered for 14 days, Malinois asks for it before arming, so you find
+  out whether you still remember it before Guided Access keeps the phone in Malinois. Disarming, or
+  entering it anywhere else in the app, starts the 14 days again. After updating to version 1.8.1,
+  your first ARM asks once.</p>
+
   <h3>I have forgotten my PIN.</h3>
   <p>Malinois never stores your PIN, only a scrambled check of it, so nobody can look it up. To
   choose a new one:</p>
@@ -298,6 +304,14 @@
   then rises over the next 10, so you can disarm your own iPhone without a blast. To switch that
   off, turn off <strong>Start quiet, then ramp up</strong> under <strong>Settings → Tripwire
   Response</strong>.</p>
+
+  <h3>Face ID unlock turned itself off.</h3>
+  <p>Opening the Event Log with Face ID or Touch ID (off by default; <strong>Settings → Security</strong>) is
+  tied to the faces or fingers enrolled on your iPhone when you turn it on. If one is added or removed
+  afterwards, Malinois turns the unlock off before offering it, and the PIN pad says so: someone who knows
+  your iPhone passcode could otherwise add their own face or finger. Enter your PIN; to use Face ID again,
+  turn the switch on again in Settings. Updating to 1.8.1 with the switch on asks you to turn it on again
+  once, too.</p>
 
   <h3>Why is the Vision tripwire off on battery?</h3>
   <p>Vision watches the camera’s view for movement, so it needs the camera running, which costs
