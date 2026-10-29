@@ -38,10 +38,11 @@ extension MonitoringEngine {
         logStateChange("unsyncedRemoved")
     }
 
-    /// Pure (unit-tested): the removed events this phone was meant to upload. First-hand incidents
-    /// not yet synced count, pending or waiting for iCloud verification; floods (expendable by
-    /// design), mirrors, status entries and events held for good (no verified account, a different
-    /// account, recorded while iCloud backup was off) do not.
+    /// Pure (unit-tested): the removed events this phone was meant to upload. First-hand records not
+    /// yet synced count, pending or waiting for iCloud verification, status entries and interruptions
+    /// included since 1.8.2 (item 169's codex-1); floods (expendable by design), mirrors and events
+    /// held for good (no verified account, a different account, recorded while iCloud backup was off)
+    /// do not.
     nonisolated static func missedUploads(in removed: [Event],
                                           holdReason: (Event) -> CloudEnrollment.UploadHoldReason?) -> [Event] {
         removed.filter { event in

@@ -6,6 +6,7 @@
 //  toggle, and PIN-gated access to the event log and settings.
 //
 
+import StoreKit
 import SwiftUI
 
 struct HomeView: View {
@@ -14,7 +15,7 @@ struct HomeView: View {
     /// Said when the crash-loop guard declined an automatic re-arm (fable-3 on Fable's review of 75; item 132).
     static let reArmSkippedNotice = "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming "
         + "itself. Arm it again when you're ready."
-    static let iCloudPausedNotice = "iCloud is paused. Verify iCloud access in Settings to back up new events; events recorded before then stay on this iPhone."
+    static let iCloudPausedNotice = "iCloud is paused. Verify iCloud access in Settings to back up new events; Malinois won't upload events recorded before then."
     /// The iCloud row while a verified installation waits for iCloud, offline or after a relaunch: what it records
     /// uploads once iCloud names the verified account again (item 140's codex-1).
     static let iCloudWaitingRow = "Waiting for iCloud"
@@ -43,6 +44,7 @@ struct HomeView: View {
     @EnvironmentObject private var entitlements: ProEntitlements
     @ObservedObject private var enrollment = CloudEnrollment.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.requestReview) private var requestReview   // Apple's rating request (item 137)
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// PIN-gated areas: the event log, Settings and Test Sensors, and the ARM tap when the PIN
@@ -73,9 +75,19 @@ struct HomeView: View {
         }
     }
 
-    /// Pure (unit-tested; ADR 0054): the gate the ARM tap opens first, if any: the PIN pad when the check is due
-    /// (`MonitoringEngine.armPINCheckIsDue`), otherwise none and the tap arms at once.
-    static func armTapGate(pinCheckDue: Bool) -> Gate? { pinCheckDue ? .arm : nil }
+    /// Pure (unit-tested; ADR 0054): the gate the ARM tap's outcome opens, if any: the PIN pad when the engine asks for
+    /// the PIN first (`MonitoringEngine.armTapped`), otherwise none, the arming having begun.
+    static func armTapGate(_ outcome: MonitoringEngine.ArmTapOutcome) -> Gate? { outcome == .askForPIN ? .arm : nil }
+
+    /// Pure (unit-tested; item 137, ADR 0058): whether Home makes Apple's rating request now. Only when a calm disarm has
+    /// Home's offer of notifications for cross-device alerts (item 69).
+    static let notificationAskLine = "Cross-device alerts need notifications on this device. You can also allow it later in Settings → iCloud."
+
+    /// asked for it (`MonitoringEngine.ratingRequestPending`), with no PIN pad up and Guided Access off; otherwise it
+    /// waits for the next chance on Home.
+    static func mayAskForRating(pending: Bool, pinGateOpen: Bool, guidedAccessOn: Bool) -> Bool {
+        pending && !pinGateOpen && !guidedAccessOn
+    }
 
     @State private var pinGate: Gate?      // PIN prompt currently showing
     @State private var unlocked: Gate?     // area to open once the PIN clears
@@ -184,8 +196,28 @@ struct HomeView: View {
             .onAppear {
                 if engine.eventLogOpenRequested { openLogFromNotification() }
                 Task { await engine.refreshNotificationHealth() }   // a pull-to-refresh or Settings may have changed the picture (item 69)
+                askForRatingIfDue()
             }
+            // Apple's rating request after a calm disarm (item 137): when Home is back, or once Guided Access ends or
+            // the PIN pad closes, whichever comes last.
+            .onChange(of: engine.ratingRequestPending) { _, _ in askForRatingIfDue() }
+            .onChange(of: engine.guidedAccessEnabled) { _, _ in askForRatingIfDue() }
+            .onChange(of: pinGate) { _, _ in askForRatingIfDue() }
         }
+    }
+
+    /// Apple's rating request at a calm moment (item 137, ADR 0058): iOS decides whether to show it.
+    private func askForRatingIfDue() {
+        guard Self.mayAskForRating(pending: engine.ratingRequestPending, pinGateOpen: pinGate != nil,
+                                   guidedAccessOn: engine.guidedAccessEnabled) else { return }
+        engine.ratingRequestHandled()
+        requestReview()
+    }
+
+    /// The ARM tap: the engine decides (ADR 0054; item 162's G1). After 14 days without a correct PIN, or with none on
+    /// record, the PIN first, Cancel staying on Home; otherwise the camera question when due, then the arming screen.
+    private func armTapped() {
+        if let gate = Self.armTapGate(engine.armTapped()) { pinGate = gate }
     }
 
     /// A tapped tamper alert wants the log: consume the request and act on it in EVERY
@@ -193,27 +225,6 @@ struct HomeView: View {
     /// request if any PIN gate happened to be up, losing the one notification the owner
     /// most wants). Already-open log: nothing to do. A different gate mid-prompt: retarget
     /// it to the log — the tapped alert's intent wins; the PIN still gates as always.
-    private func armTapped() {
-        // ADR 0054: after 14 days without a correct PIN, or with none on record, the PIN first; Cancel stays on Home.
-        if let gate = Self.armTapGate(pinCheckDue: engine.armPINCheckIsDue) { pinGate = gate; return }
-        armAfterChecks()
-    }
-
-    /// The ARM tap's work once the PIN check, when it was due, has passed. The camera permission
-    /// is asked on the first ARM tap (item 69): before the arming screen, and so before Guided
-    /// Access could be on. A denial still arms, with the existing "Camera access is denied"
-    /// notice; Vision needs the camera as much as capture does.
-    private func armAfterChecks() {
-        Task {
-            if CameraController.cameraPromptIsDue(cameraNeeded: settings.isEnabled(.camera) || settings.isEnabled(.vision),
-                                                  undetermined: CameraController.cameraIsUndetermined,
-                                                  guidedAccessOn: UIAccessibility.isGuidedAccessEnabled) {
-                _ = await CameraController.requestCameraAccessIfUndetermined()
-            }
-            engine.beginArming()
-        }
-    }
-
     private func openLogFromNotification() {
         engine.consumeEventLogOpenRequest()
         guard !showLog else { return }
@@ -245,7 +256,7 @@ struct HomeView: View {
         case .log:      eventLogPresentation.wrappedValue = true
         case .settings: showSettings = true
         case .test:     showTest = true
-        case .arm:      armAfterChecks()   // the PIN was remembered: on to the arming screen (ADR 0054)
+        case .arm:      engine.armAfterPINCheck()   // the PIN was remembered: on to the arming screen (ADR 0054)
         }
     }
 
@@ -315,7 +326,7 @@ struct HomeView: View {
                 // know yet rather than guessing a tier and correcting it a moment later.
                 statusRow(ready: false, text: "Checking Pro status…")
             } else if entitlements.proActive, !settings.cloudBackup {
-                // Item 120, F1: with iCloud backup off nothing new leaves this phone, and the
+                // Item 120, F1: with iCloud backup off Malinois uploads nothing new, and the
                 // green "iCloud ready" said the opposite. The arming screens say it too.
                 Label(MonitoringEngine.backupOffNotice, systemImage: "icloud.slash")
                     .font(.caption2)
@@ -328,7 +339,8 @@ struct HomeView: View {
                           text: Self.iCloudRow(cloud.accountState, verified: enrollment.verified,
                                                newEventsBound: enrollment.newEventsBindToVerifiedAccount))
             } else {
-                statusRow(ready: false, text: "iCloud backup is Pro - evidence stays on device")
+                // What Malinois does, not where the evidence stays: the iPhone's own backups can copy it (item 168's deepseek-2).
+                statusRow(ready: false, text: "iCloud backup is Pro - Malinois uploads no evidence")
             }
             statusRow(ready: engine.guidedAccessEnabled,
                       text: engine.guidedAccessEnabled ? "Guided Access ready" : "Guided Access off")
@@ -367,16 +379,19 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            if engine.notificationAskDue {
+            // Never under Guided Access, where iOS shows no permission question (ADR 0011: the camera's blocked
+            // question was taken as a refusal; Codex's note on 1.8.2): the line waits until it ends.
+            if engine.notificationAskDue && !engine.guidedAccessEnabled {
                 // Asked here, in context, on the device that would show the alert — and only
-                // once another device's evidence has arrived in this log (item 69). Hide keeps
-                // it out of the way; Settings → iCloud carries the same ask.
+                // once another device's evidence has arrived in this log (item 69) or this
+                // installation is verified for iCloud (item 155's A11). Hide keeps it out of
+                // the way; Settings → iCloud carries the same ask.
                 VStack(spacing: 4) {
-                    Label("Cross-device alerts need notifications on this device. You can also allow it later in Settings → iCloud.",
-                          systemImage: "bell.badge")
+                    Label(Self.notificationAskLine, systemImage: "bell.badge")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                        .reportedOnScreen(Self.notificationAskLine)
                     HStack(spacing: 10) {
                         Button("Allow notifications") {
                             Task {

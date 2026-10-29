@@ -479,15 +479,18 @@ struct PINEntryView: View {
     var onSuccess: () -> Void
     var onCancel: () -> Void
     var onActivity: (() -> Void)? = nil
-    /// A wrong PIN, after `KeychainService.verify` has counted it. The armed screen's pad hands
-    /// it to the engine, which records the attempt (item 49); every other pad leaves it nil and
-    /// stays lockout-only.
+    /// A wrong guess, after `KeychainService.verifyEntry` has counted it; never a refusal that compared no PIN
+    /// (item 153's MAL-14 (a)). The armed screen's pad hands it to the engine, which records the attempt (item 49);
+    /// every other pad leaves it nil and stays lockout-only.
     var onFailure: (() -> Void)? = nil
 
     @EnvironmentObject private var settings: AppSettings
+    @Environment(\.scenePhase) private var scenePhase
     @State private var digits = ""
     @State private var error = false
     @State private var shakes: CGFloat = 0   // bumped on a wrong PIN to shake the pad
+    /// The Face ID or Touch ID request this pad made, if one is out (item 153's MAL-12).
+    @State private var biometricRequest = BiometricRequest()
     @State private var lockoutRemaining: TimeInterval = KeychainService.lockoutRemaining()
     /// Item 106: read once per presentation; nil keeps the explicit submit.
     @State private var autoSubmitLength = KeychainService.confirmedPINLength
@@ -571,6 +574,10 @@ struct PINEntryView: View {
             tryBiometrics()
         }
         .onAppear(perform: tryBiometrics)
+        .onDisappear { biometricRequest.cancel() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { biometricRequest.cancel() }
+        }
     }
 
     /// Pure (unit-tested): whether the pad may offer Face ID / Touch ID. All four gates
@@ -590,6 +597,7 @@ struct PINEntryView: View {
     /// the unlock off until Settings turns it on again, and the pad says why. PIN counters are untouched either way —
     /// a biometric open neither spends nor resets attempts.
     private func tryBiometrics() {
+        biometricRequest.cancel()   // a new offer ends any earlier request (item 153's MAL-12)
         guard Self.shouldOfferBiometrics(allow: allowBiometrics,
                                          optedIn: settings.biometricUnlock,
                                          locked: isLocked,
@@ -599,19 +607,30 @@ struct PINEntryView: View {
         guard BiometricBinding.canEvaluateBiometrics(ctx) else { return }
         let verdict = BiometricBinding.checkBeforeOffer(context: ctx, settings: settings)
         guard verdict == .bound else { bindingLapse = verdict; return }
+        let request = biometricRequest.begin(ctx)
         ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
                            localizedReason: BiometricKind.unlockPromptReason) { ok, _ in
-            Task { @MainActor in if ok { onSuccess() } }
+            // Only the request still out opens the screen: a late answer to an earlier one, or one that came after
+            // the pad went away or the app went to the background, opens nothing (item 153's MAL-12).
+            Task { @MainActor in if biometricRequest.finish(request), ok { onSuccess() } }
         }
+    }
+
+    /// Pure (unit-tested): whether a refused entry goes on the armed pad's record (item 153's MAL-14 (a)): a real wrong
+    /// guess only. A refusal that compared no PIN (a lockout the ticker had not shown yet, a sealed Keychain) is no
+    /// attempt, and recording one put a false "Wrong PIN entered" in the log.
+    nonisolated static func recordsAttempt(_ result: KeychainService.PINEntryResult) -> Bool {
+        result == .wrong
     }
 
     private func check() {
         guard !isLocked else { digits = ""; return }
         // Fires on the explicit ✓ or, with a confirmed length, once that many digits are typed
-        // (item 106). Either way `verify` counts a wrong entry, and the armed pad's `onFailure`
+        // (item 106). Either way `verifyEntry` counts a wrong guess, and the armed pad's `onFailure`
         // records it: auto-submit gives no free guesses.
-        if KeychainService.verify(digits) {
-            // `verify` itself cleared the failure counter (the service owns BOTH halves of
+        let result = KeychainService.verifyEntry(digits)
+        if result == .correct {
+            // `verifyEntry` itself cleared the failure counter (the service owns BOTH halves of
             // the rate-limit contract — seventh review #1); nothing to reset here.
             onSuccess()
         } else {
@@ -622,12 +641,12 @@ struct PINEntryView: View {
             // enter the real PIN. The next presentation reads the length again.
             autoSubmitLength = nil
             withAnimation(.linear(duration: 0.4)) { shakes += 1 }   // shake + error haptic
-            // `verify` already counted this failure (F2 — the service owns rate limiting;
+            // `verifyEntry` already counted a wrong guess (F2 — the service owns rate limiting;
             // counting here too would escalate the lockout at double rate). Just read the
             // authoritative remaining time back from the Keychain (the ticker's source too)
             // so the display always reflects stored state, never a local copy that drifts.
             lockoutRemaining = KeychainService.lockoutRemaining()
-            onFailure?()   // the armed pad's attempt goes on the record (item 49)
+            if Self.recordsAttempt(result) { onFailure?() }   // the armed pad's attempt goes on the record (item 49)
         }
     }
 }
@@ -678,6 +697,12 @@ enum BiometricKind: Equatable, CaseIterable {
         case .opticID: return "Optic ID"
         case .none:    return "Face ID or Touch ID"
         }
+    }
+
+    /// The arming screen's line on an iPhone without a device passcode (1.8.2's step 34, item 155's F3): the owner's
+    /// wording (2026-10-23), naming this phone's Settings screen.
+    var noPasscodeWarning: String {
+        "This iPhone has no passcode, so a forced restart opens it and ends Guided Access. Set one in Settings → \(settingsScreen)."
     }
 
     /// The iOS Settings screen that holds the device passcode.

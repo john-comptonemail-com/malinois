@@ -6,7 +6,8 @@
 //  Keychain used to read as "not locked" (garbage) or could lock the pad for good (an absurd deadline): a stored value
 //  is now well-formed only in the two shapes the app writes, the remaining wait is bounded by the longest lockout, and
 //  the live read replaces a damaged value with a fresh deadline from the failure count. (b) The lockout's comment no
-//  longer claims an offline defence: it slows guessing on the phone itself.
+//  longer claims an offline defence: it slows guessing on the phone itself. Also item 162's A12 (1.8.2): a damaged
+//  failure count at its limit no longer crashes the next wrong PIN.
 //
 
 import XCTest
@@ -129,5 +130,32 @@ final class Item144LockoutValueTests: XCTestCase {
         let repaired = try XCTUnwrap(KeychainService.lockoutValueForTesting)
         XCTAssertEqual(KeychainService.lockoutRemaining(stored: repaired, uptime: ProcessInfo.processInfo.systemUptime + 3601,
                                                         wallNow: Date().timeIntervalSince1970 + 3601), 0, "and it ends")
+    }
+
+    // MARK: - Item 162's A12 (1.8.2's step 4): the failure count stops at its limit
+
+    /// One more failure is one more, up to the limit, where the count stays: no wrap to a negative count, which would
+    /// read as 0 and clear the protection.
+    func testTheFailureCountStopsAtItsLimit() {
+        XCTAssertEqual(KeychainService.nextFailureCount(after: 0), 1)
+        XCTAssertEqual(KeychainService.nextFailureCount(after: 4), 5, "the fifth failure, the first lockout")
+        XCTAssertEqual(KeychainService.nextFailureCount(after: Int.max - 1), Int.max)
+        XCTAssertEqual(KeychainService.nextFailureCount(after: Int.max), Int.max, "stays at the limit")
+        XCTAssertEqual(KeychainService.lockoutDelay(forFailures: Int.max), KeychainService.maxLockoutDelay,
+                       "the longest wait at the limit")
+    }
+
+    /// Codex's probe C (codex-6): a stored failure count at `Int.max`, which only damage could leave (Malinois counts up
+    /// from 0), made the next wrong PIN trap at `failedAttempts + 1`: a crash instead of a refusal. The wrong PIN is
+    /// refused, the count stays at its limit, and the pad is locked for the longest wait. Red at the step's red commit:
+    /// the test host crashed, so that run held this test alone.
+    func testAFailureCountAtItsLimitRefusesAWrongPINWithoutCrashing() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4821"), "Keychain unavailable in this build")
+        defer { KeychainService.resetAttempts(); KeychainService.wipeStalePINData() }
+        KeychainService.resetAttempts()
+        KeychainService.writeFailedAttemptsValueForTesting(String(Int.max))
+        XCTAssertFalse(KeychainService.verify("0000"))
+        XCTAssertEqual(KeychainService.failedAttemptsValueForTesting, String(Int.max), "the count stays at its limit")
+        XCTAssertEqual(KeychainService.lockoutRemaining(), KeychainService.maxLockoutDelay, accuracy: 1)
     }
 }

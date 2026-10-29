@@ -137,16 +137,19 @@ final class CloudEnrollmentTests: XCTestCase {
         XCTAssertFalse(enrolled)
     }
 
-    func testLegacyKnownAccountMigratesButUnknownHistoryIsHeld() async throws {
+    /// The rebuild when the bindings' file is missing holds every record it finds (codex-7, the owner's ruling (a)), runs
+    /// once, and never relabels a binding made since.
+    func testTheRebuildHoldsEveryRecordRunsOnceAndRelabelsNothing() async throws {
         let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
         let old = event()
-        gate.seedLegacyEvents([old], knownAccount: "account-a")
+        gate.holdRestoredEvents([old])
         _ = await gate.enroll(account: "account-a", resolve: { "account-a" })
         let lease = try XCTUnwrap(gate.authorize(account: "account-a"))
-        XCTAssertTrue(gate.authorizeUpload(event: old, lease: lease))
-        let unknown = event()
-        gate.seedLegacyEvents([unknown], knownAccount: "account-a")
-        XCTAssertFalse(gate.authorizeUpload(event: unknown, lease: lease), "seeding is not repeated after migration")
+        XCTAssertFalse(gate.authorizeUpload(event: old, lease: lease), "held: nothing proves which account it went to")
+        let fresh = event()
+        gate.registerLocalEvent(fresh)
+        gate.holdRestoredEvents([fresh])
+        XCTAssertTrue(gate.authorizeUpload(event: fresh, lease: lease), "the rebuild ran once; a binding is never relabelled")
     }
     func testRemoteRecordCannotAdoptAnUnboundLocalEvent() async throws {
         let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
@@ -399,13 +402,15 @@ extension CloudEnrollmentTests {
         XCTAssertFalse(gate.authorizeUpload(event: unverified, lease: lease))
     }
 
-    func testRetryPresentationExplainsMigrationVerificationRatherThanOfferingRetry() async {
+    /// A rebuilt record is explained as having no verified account, before and after a verification: Retry cannot
+    /// upload it, and the note says so rather than offering a retry (codex-7).
+    func testARebuiltRecordIsExplainedAsHeldBeforeAndAfterAVerification() async {
         let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
-        let legacy = event()
-        gate.seedLegacyEvents([legacy], knownAccount: "account-a")
-        XCTAssertEqual(gate.uploadHoldReason(for: legacy), .verificationRequired)
+        let restored = event()
+        gate.holdRestoredEvents([restored])
+        XCTAssertEqual(gate.uploadHoldReason(for: restored), .unknownAccount)
         _ = await gate.enroll(account: "account-a", resolve: { "account-a" })
-        XCTAssertNil(gate.uploadHoldReason(for: legacy))
+        XCTAssertEqual(gate.uploadHoldReason(for: restored), .unknownAccount)
     }
 
     func testRetryPresentationDoesNotTreatUnreadableStateAsPermission() throws {

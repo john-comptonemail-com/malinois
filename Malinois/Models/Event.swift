@@ -108,20 +108,46 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// uploaded** (34.H5, 1.2). Pruning *synced* media is silent — the cloud still holds it
     /// and it can be re-downloaded — but a pending capture that had to go is a real
     /// evidentiary loss, and a later meta-only retry must not read as "everything made it".
+    /// Set only when none of the capture's files reached iCloud (`uploadedMedia`, item 166's
+    /// codex-23): part of a capture there keeps its download, here and on the other devices. With no
+    /// record of a landed file, only once iCloud has been asked and holds none
+    /// (`mediaDiscardUnchecked`, codex-24); never at once for a capture whose upload history this
+    /// phone cannot know (`CloudEnrollment.uploadHistoryUnknown`, codex-29).
     var mediaDiscarded: Bool?
+
+    /// The byte cap discarded this capture's files with no record that any reached iCloud (item 166's
+    /// codex-24, the owner's option (b)): an older version keeps no record, and a file can land
+    /// unnoticed (a kill at that instant, a reply lost). The engine's sweep asks iCloud before the
+    /// capture is marked lost (`mediaDiscarded`); until then its download is offered, and, as with the
+    /// mark, the capture takes no late camera file. Kept on this phone only (no record carries it).
+    var mediaDiscardUnchecked: Bool?
+
+    /// The camera files of this phone's own capture that reached iCloud (item 166's codex-23, the
+    /// owner's option (a)): each file's camera token, noted as its upload lands, cleared only when
+    /// iCloud's copies are found deleted or reset (`receiptEpoch`, item 174's codex-1), so the byte
+    /// cap marks the capture lost only when none did. Nil until one lands, and on copies
+    /// from other devices; kept on this phone (no record carries the field, though the record's list of
+    /// its media names these files too: `mediaManifest`, deepseek-1 on ce4c949).
+    var uploadedMedia: [String]?
+
+    /// The generation of this phone's upload receipts (item 174's codex-1): raised when iCloud's copies are found deleted
+    /// or reset (`EventStore.requeuedForReupload`), which voids the receipts noted before (`uploadedMedia`), so the byte
+    /// cap asks iCloud again before it decides what was lost. An older copy of the event cannot bring them back, nor can a
+    /// file that an upload started before then reports as landed. Nil until the first such loss; kept on this phone (no
+    /// record carries it).
+    var receiptEpoch: Int?
 
     /// Recorded while iCloud backup was off (item 115): it never uploads, even once backup is back
     /// on (the owner's ruling). Set by the store when the event is added; nil otherwise.
     var keptLocal: Bool?
 
     /// Whether this record could be a missed upload if the event limit removed it: a first-hand
-    /// incident not fully backed up and not kept on this device by choice. Status entries,
-    /// interruption and flood records, other devices' copies and synced events never count. Whether
-    /// its account lets it upload is the engine's question (item 114's marker; the store keeps only
-    /// these for it, item 116's Q1).
+    /// record not fully backed up and not kept on this device by choice, since 1.8.2 status entries
+    /// and interruptions as well as incidents (item 169's codex-1). Flood records, other devices'
+    /// copies and synced events never count. Whether its account lets it upload is the engine's
+    /// question (item 114's marker; the store keeps only these for it, item 116's Q1).
     var mayBeAMissedUpload: Bool {
-        !isMirrored && !isStateChange && interrupted != true && sustainedCount == nil
-            && cloudSyncState != .synced && keptLocal != true
+        !isMirrored && sustainedCount == nil && cloudSyncState != .synced && keptLocal != true
     }
 
     /// Why this event has no capture — or why its first capture failed before the one
@@ -181,6 +207,11 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// Optional so older saved events decode fine.
     var wrongPINCount: Int?
 
+    /// On a cancelled countdown's record, how many countdowns were cancelled in a row on it, with no watch live between
+    /// and none more than ten minutes after the one before (item 169's codex-1); nil for one. Kept on this phone: the
+    /// record iCloud holds says the first. Optional so older saved events decode fine.
+    var cancelCount: Int?
+
     /// iOS's thermal state when the record was made, as `MonitoringEngine.thermalStateName`
     /// spells it ("nominal", "fair", "serious", "critical"; item 38, the owner's choice 3):
     /// context for a clip that stops early or a phone that went dark. `nil` on records from
@@ -194,15 +225,17 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// Whether this event's full capture can be in iCloud, so that "Download full evidence from
     /// iCloud" can find something (item 118): something was captured (a photo or clip, its thumbnail,
     /// either camera it used, or another device's list of the media it uploaded), and it was uploaded,
-    /// by another device (a mirrored copy) or by this iPhone (synced). Not after a capture that never
-    /// happened (the camera could not start, the camera tripwire was off), and not for this iPhone's
-    /// events that never uploaded (no verified account, iCloud backup off), where a tap could only
-    /// end in "Nothing came back".
+    /// by another device (a mirrored copy) or by this iPhone (synced, or a file of it this iPhone knows
+    /// landed though the rest did not: `uploadedMedia`, item 166's codex-25). Not after a capture that
+    /// never happened (the camera could not start, the camera tripwire was off), and not for this
+    /// iPhone's events that never uploaded (no verified account, iCloud backup off), where a tap could
+    /// only end in "Nothing came back".
     var fullCaptureMayBeInICloud: Bool {
         let captured = mediaFilename != nil || secondaryMediaFilename != nil || thumbnailData != nil
             || primaryCamera != nil || secondaryCamera != nil   // a Both capture's rear photo alone (Codex's V2)
             || !(cloudMediaManifest ?? []).isEmpty
-        return captured && (isMirrored || cloudSyncState == .synced)
+        return captured && (isMirrored || cloudSyncState == .synced || !(uploadedMedia ?? []).isEmpty
+                            || mediaDiscardUnchecked == true)   // iCloud not yet asked (codex-24)
     }
 
     /// The sentence Share sends with this event (item 124's F15): a status entry or an interruption
@@ -290,12 +323,64 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     var primaryMediaToken: String { primaryCamera ?? "primary" }
     var secondaryMediaToken: String { secondaryCamera ?? "secondary" }
 
-    /// Which full-media records this event's exfiltration uploads — the payload's manifest
-    /// (34's metadataJSON item + B1's robustness note). Empty when the event carries none.
+    /// The full-media record names a download asks iCloud for (1.8.2's step 32, item 152's lead 10). A copy from
+    /// another device: the names its record lists, or every name (nil) when it lists none. This iPhone's own record:
+    /// only the cameras it names, the names its own upload gave their captures (every capture this app has stored
+    /// since its first build names its camera), so none for a record that names no camera, which has none in iCloud.
+    /// A capture another writer saved under any other name cannot join this iPhone's record or give it a camera.
+    var downloadManifest: [String]? {
+        guard !isMirrored else { return cloudMediaManifest }
+        var cameras: [String] = []
+        for camera in [primaryCamera, secondaryCamera].compactMap({ $0 }) where !cameras.contains(camera) {
+            cameras.append(camera)
+        }
+        return cameras
+    }
+
+    /// Whether the record names a file this iPhone does not hold (item 167's A2): each name a download asks for
+    /// (`downloadManifest`) matched to the file it stands for (`holdsFile(named:)`), so another camera's file never
+    /// stands in for it (codex-7 on 073e5d2). A camera whose capture failed names none. A record holds two files at
+    /// most: with both here, a download can add nothing more, whatever it names. Keeps "Download full evidence from
+    /// iCloud" offered, on every visit, after a download that brought one camera's file of two, until the other is here
+    /// too. False when the record names none.
+    var namesMediaNotHeldHere: Bool {
+        guard let names = downloadManifest, !names.isEmpty else { return false }
+        guard mediaFilename == nil || secondaryMediaFilename == nil else { return false }   // both slots full
+        return names.contains { !holdsFile(named: $0) }
+    }
+
+    /// Whether the file a download names `token` is here (codex-7 on 073e5d2): a camera's in the slot labelled with that
+    /// camera, as a download places it (`MonitoringEngine.mediaPlacement`); a legacy position's ("primary", "secondary")
+    /// in that position. A camera no slot is labelled with has no file here.
+    private func holdsFile(named token: String) -> Bool {
+        switch token {
+        case "primary": return mediaFilename != nil
+        case "secondary": return secondaryMediaFilename != nil
+        default:
+            if primaryCamera == token { return mediaFilename != nil }
+            if secondaryCamera == token { return secondaryMediaFilename != nil }
+            return false
+        }
+    }
+
+    /// Whether a download could bring a file of the capture this iPhone does not hold (codex-5 on 0920241): by the names
+    /// a download asks for when the record has them (`namesMediaNotHeldHere`), so a capture whose only file is its
+    /// second (its front failed) offers nothing once that file is here; for a copy from a version before the list of
+    /// uploaded media, which names none, while its first file is not here, as before.
+    var mayLackAFileHere: Bool {
+        downloadManifest == nil ? mediaFilename == nil : namesMediaNotHeldHere
+    }
+
+    /// Which full-media records this event's record names, each once: the payload's manifest (34's metadataJSON item +
+    /// B1's robustness note). The files held here, and those this phone knows reached iCloud (`uploadedMedia`), so a file
+    /// the storage limit removed after it landed stays named, and another device, or this iPhone reinstalled, can still
+    /// ask iCloud for it (DeepSeek's deepseek-1 on ce4c949, the owner's option 1). A capture uploaded before 1.8.2 has no
+    /// such record of what landed: for it, the files held. Empty when the event carries none.
     var mediaManifest: [String] {
         var tokens: [String] = []
         if mediaFilename != nil { tokens.append(primaryMediaToken) }
         if secondaryMediaFilename != nil { tokens.append(secondaryMediaToken) }
+        for token in uploadedMedia ?? [] where !tokens.contains(token) { tokens.append(token) }
         return tokens
     }
 
@@ -340,7 +425,9 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "disarmed": return "Monitoring disarmed"
         case "gaLifted": return "Guided Access requirement lifted for one arm"
         case "cameraError": return "Camera session failed while armed"
-        case "armingCancelled":   return "Arming cancelled before going live"
+        case "armingCancelled":   // a run of them counts on one record (item 169's codex-1)
+            if let count = cancelCount, count > 1 { return "Arming cancelled before going live, \(count) times in a row" }
+            return "Arming cancelled before going live"
         case "armingInterrupted": return "Arming did not complete: the app ended during the countdown"
         case "thermalSerious":    return "Phone running hot while armed"                         // item 38
         case "thermalCritical":   return "Phone overheating while armed: iOS may shut it down"
@@ -351,12 +438,16 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "pinChanged":        return "Malinois PIN changed in Settings; the current PIN was entered first"   // item 153's MAL-03
         case "guidedAccessEnded": return "Guided Access ended while armed; the watch kept running"   // item 153's MAL-05; item 155's A7
         case "unsyncedRemoved":   return "Events not fully backed up to iCloud were removed to make room (log full)"   // items 114, 116
-        case "backupOff":         return "iCloud backup turned off: events recorded while it is off stay on this iPhone"   // item 115
+        case "reArmSkipped":      return "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming itself"   // item 153's MAL-10
+        case "settingsReset":     return "Settings couldn't be read and were reset to their defaults"   // codex-10
+        case "backupOff":         return "iCloud backup turned off: events recorded while it is off are never uploaded"   // item 115; item 168's deepseek-2
         case "backupOn":          return "iCloud backup turned on"
         default:         break
         }
         if let kind = stateChange, let words = Self.protectionChangeSummary(kind: kind) { return words }
         if let kind = stateChange, let words = Self.clockChangeSummary(kind: kind) { return words }   // item 113
+        if let kind = stateChange, let words = Self.resumedSummary(kind: kind) { return words }   // item 153's MAL-06
+        if let kind = stateChange, let words = Self.sirenElsewhereSummary(kind: kind) { return words }   // 1.8.2's step 26
         // A status entry this build does not know (a newer build's kind, or a damaged log) is
         // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
         // kinds; this covers the local log (item 105, F-09).
@@ -368,7 +459,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             case .rebooted:     return "Monitoring interrupted: the device restarted while armed"
             case .terminated:   return "Monitoring interrupted: the app was closed or crashed while armed"
             case .backgrounded: return "Monitoring interrupted: the app was sent to the background while armed"
-            case .locked:       return "Monitoring interrupted: the device was locked while armed"
+            case .locked:       // the usual way out under Guided Access, not the only one (item 153's MAL-06)
+                return "Monitoring interrupted: the device was locked, or Malinois otherwise left the screen, while armed"
             case .backgroundedDuringCountdown:
                 return "Monitoring interrupted: the app was sent to the background during the countdown"
             case nil:           return "Monitoring interrupted: the app closed before a clean disarm"
@@ -395,9 +487,12 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// The jump a clock-change kind records; nil for any other kind, a malformed one, no jump, or
     /// one beyond a century. The bound uses the magnitude, which cannot trap: `abs` of the
     /// smallest Int does, and a damaged record from iCloud or the log can hold it (item 116, R10).
+    /// Only the number as `clockChangeKind` writes it (1.8.2's step 32): padded with zeros or
+    /// signed with a plus it reads as the same number, so a record could carry a megabyte of zeros.
     static func clockChangeSeconds(kind: String) -> Int? {
         let prefix = "clockChanged."
-        guard kind.hasPrefix(prefix), let seconds = Int(kind.dropFirst(prefix.count)),
+        let digits = kind.dropFirst(prefix.count)
+        guard kind.hasPrefix(prefix), let seconds = Int(digits), String(seconds) == digits,
               seconds != 0, seconds.magnitude <= 100 * 365 * 86_400 else { return nil }
         return seconds
     }
@@ -416,6 +511,89 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         return "\(max(minutes, 1)) min"
     }
 
+    // MARK: - A watch resumed after a lapse (item 153's MAL-06)
+
+    /// The status kind for a live watch back on screen after a lapse: "resumed.252" for 4 min 12 s not watched. The
+    /// length rides in the kind, as a clock change's does, so the cloud record needs no new field.
+    static func resumedKind(seconds: Int) -> String { "resumed." + String(max(1, seconds)) }
+
+    /// The lapse a resumed kind records, in seconds; nil for any other kind, a malformed one, or one beyond a century
+    /// (a damaged record from iCloud or the log). Only the number as `resumedKind` writes it, as for a clock change.
+    static func resumedSeconds(kind: String) -> Int? {
+        let prefix = "resumed."
+        let digits = kind.dropFirst(prefix.count)
+        guard kind.hasPrefix(prefix), let seconds = Int(digits), String(seconds) == digits,
+              seconds > 0, seconds <= 100 * 365 * 86_400 else { return nil }
+        return seconds
+    }
+
+    /// The canonical form of a clock-change or resume kind written with its number padded, by zeros or a plus sign,
+    /// which an older version's decoder read as the same number (codex-13 on 1.8.2: a copy it saved kept the padding);
+    /// any other kind is returned as it is.
+    static func canonicalStatusKind(_ kind: String) -> String {
+        let clock = "clockChanged.", resume = "resumed."
+        if kind.hasPrefix(clock), clockChangeSeconds(kind: kind) == nil, let seconds = Int(kind.dropFirst(clock.count)),
+           seconds != 0, seconds.magnitude <= 100 * 365 * 86_400 {
+            return clockChangeKind(seconds: seconds)
+        }
+        if kind.hasPrefix(resume), resumedSeconds(kind: kind) == nil, let seconds = Int(kind.dropFirst(resume.count)),
+           seconds > 0, seconds <= 100 * 365 * 86_400 {
+            return resumedKind(seconds: seconds)
+        }
+        return kind
+    }
+
+    /// "Monitoring resumed after 4 min 12 s not watched"; nil unless `kind` is a resume.
+    static func resumedSummary(kind: String) -> String? {
+        guard let seconds = resumedSeconds(kind: kind) else { return nil }
+        return "Monitoring resumed after \(lapseWords(seconds)) not watched"
+    }
+
+    /// A lapse to the second under an hour ("45 s", "4 min 12 s"), then as a clock jump reads ("2 h 14 min").
+    static func lapseWords(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds) s" }
+        guard seconds < 3_600 else { return clockJumpWords(seconds) }
+        let minutes = seconds / 60, rest = seconds % 60
+        return rest > 0 ? "\(minutes) min \(rest) s" : "\(minutes) min"
+    }
+
+    // MARK: - The siren played away from this iPhone's speaker (1.8.2's step 26; ADR 0062)
+
+    private static let sirenElsewherePrefix = "sirenElsewhere."
+
+    /// The status kind for an alarm that played through `device`, the name iOS gives the output, kept as
+    /// `sirenOutputName` keeps it: "sirenElsewhere.Owner's AirPods Pro".
+    static func sirenElsewhereKind(device: String) -> String { sirenElsewherePrefix + sirenOutputName(device) }
+
+    /// An output's name as the log keeps it, as a device label is kept: no whitespace at either end, no control or
+    /// direction characters, at most 40 characters and 160 bytes; empty when iOS gave none. It rides inside the entry's
+    /// kind, through iCloud too, so it is bounded here.
+    static func sirenOutputName(_ raw: String) -> String {
+        let scalars = raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        var kept = "", bytes = 0
+        for character in String(String.UnicodeScalarView(scalars)).prefix(40) {
+            bytes += character.utf8.count
+            guard bytes <= 160 else { break }
+            kept.append(character)
+        }
+        return kept.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The device a siren-elsewhere kind names, "" when iOS gave none; nil for any other kind, or one whose name is not
+    /// as `sirenElsewhereKind` writes it (a damaged record from iCloud or the log).
+    static func sirenElsewhereDevice(kind: String) -> String? {
+        guard kind.hasPrefix(sirenElsewherePrefix) else { return nil }
+        let name = String(kind.dropFirst(sirenElsewherePrefix.count))
+        return sirenOutputName(name) == name ? name : nil
+    }
+
+    /// "The siren played through Owner's AirPods Pro, not this iPhone's speaker"; nil unless `kind` is a siren-elsewhere
+    /// kind.
+    static func sirenElsewhereSummary(kind: String) -> String? {
+        guard let device = sirenElsewhereDevice(kind: kind) else { return nil }
+        return "The siren played through \(device.isEmpty ? "headphones or another device" : device), not this iPhone's speaker"
+    }
+
     // MARK: - iCloud backup (item 115)
 
     /// The status entry written just before backup turns off; the one record that still uploads.
@@ -431,18 +609,40 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         (on ? "settingOn." : "settingOff.") + setting
     }
 
-    /// The protection settings a change record can name: the switchable tripwires, by their
-    /// stored names, and three settings by name.
-    static let protectionSettingNames: [String] = SensorType.allCases.filter { $0 != .touch }.map(\.rawValue)
-        + ["requireGuidedAccess", "otherDeviceAlerts", "jammingResponse"]
+    /// The audit kind that records a setting set to a value (1.8.2's step 22; item 153's MAL-09):
+    /// "settingSet.responseMode.stealth", "settingSet.gracePeriod.60", "settingSet.sensitivity.motion.low".
+    static func settingValueKind(_ setting: String, _ value: String) -> String {
+        "settingSet.\(setting).\(value)"
+    }
 
-    /// Every kind a change record can carry: the iCloud decoder's allow-list for them.
-    static let protectionChangeKinds: Set<String> = Set(protectionSettingNames.flatMap {
-        [protectionChangeKind($0, on: false), protectionChangeKind($0, on: true)]
-    })
+    /// The protection settings a change record can name switched off or on: the switchable
+    /// tripwires, by their stored names, and four settings by name (Face ID unlock since 1.8.2).
+    static let protectionSettingNames: [String] = SensorType.allCases.filter { $0 != .touch }.map(\.rawValue)
+        + ["requireGuidedAccess", "otherDeviceAlerts", "jammingResponse", "biometricUnlock"]
+
+    /// Every switched kind, and every value kind of the settings with a fixed set of values (the grace period's are
+    /// numbers: `isProtectionChangeKind` reads those).
+    static let protectionChangeKinds: Set<String> = {
+        var kinds = Set(protectionSettingNames.flatMap {
+            [protectionChangeKind($0, on: false), protectionChangeKind($0, on: true)]
+        })
+        kinds.formUnion(ResponseMode.allCases.map { settingValueKind("responseMode", $0.rawValue) })
+        for tripwire in SensorType.sensitivityTripwires {
+            kinds.formUnion(Sensitivity.allCases.map { settingValueKind("sensitivity." + tripwire.rawValue, $0.rawValue) })
+        }
+        kinds.formUnion(CameraReadiness.allCases.map { settingValueKind("cameraReadiness", $0.rawValue) })
+        kinds.formUnion(IlluminationMode.allCases.map { settingValueKind("illumination", $0.rawValue) })
+        kinds.formUnion(CloudRetention.allCases.map { settingValueKind("cloudRetention", $0.rawValue) })
+        return kinds
+    }()
+
+    /// Whether `kind` is a settings change record (item 91; 1.8.2's step 22): the iCloud decoder's allow-list, and the
+    /// log's icon, read it. A malformed or unknown one is not.
+    static func isProtectionChangeKind(_ kind: String) -> Bool { protectionChangeSummary(kind: kind) != nil }
 
     /// Pure (unit-tested): the log's words for a change record, or nil for any other kind.
     static func protectionChangeSummary(kind: String) -> String? {
+        if kind.hasPrefix("settingSet.") { return settingValueSummary(kind: kind) }
         guard protectionChangeKinds.contains(kind) else { return nil }
         let on = kind.hasPrefix("settingOn.")
         let name = String(kind.drop { $0 != "." }.dropFirst())
@@ -452,10 +652,39 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             return on ? "Guided Access required again, in Settings" : "Guided Access no longer required, in Settings"
         case "otherDeviceAlerts": return "Alerts to your other devices switched \(state) in Settings"
         case "jammingResponse":   return "Jamming response switched \(state) in Settings"
+        // Off without "in Settings": it also switches off by itself when the enrolled faces or fingers change (ADR 0056).
+        case "biometricUnlock":
+            return on ? "Face ID or Touch ID unlock switched on in Settings" : "Face ID or Touch ID unlock switched off"
         case SensorType.camera.rawValue: return "Camera switched \(state) in Settings"
         default:
             guard let tripwire = SensorType(rawValue: name) else { return nil }
             return "\(tripwire.displayName) tripwire switched \(state) in Settings"
+        }
+    }
+
+    /// The words for a setting set to a value (1.8.2's step 22), or nil for a malformed kind or value: a sensitivity
+    /// only where Settings offers one, a grace period only as a whole number of seconds up to an hour.
+    private static func settingValueSummary(kind: String) -> String? {
+        let parts = kind.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 3, let value = parts.last else { return nil }
+        switch (parts[1], parts.count) {
+        case ("responseMode", 3):
+            return ResponseMode(rawValue: value).map { "Response mode set to \($0.displayName) in Settings" }
+        case ("sensitivity", 4):
+            guard let tripwire = SensorType(rawValue: parts[2]), SensorType.sensitivityTripwires.contains(tripwire),
+                  let level = Sensitivity(rawValue: value) else { return nil }
+            return "\(tripwire.displayName) sensitivity set to \(level.displayName) in Settings"
+        case ("gracePeriod", 3):
+            guard let seconds = Int(value), String(seconds) == value, (0...3_600).contains(seconds) else { return nil }
+            return "Arming grace period set to \(seconds) s in Settings"
+        case ("cameraReadiness", 3):
+            return CameraReadiness(rawValue: value).map { "Camera battery mode set to \($0.displayName) in Settings" }
+        case ("illumination", 3):
+            return IlluminationMode(rawValue: value).map { "Illumination set to \($0.displayName) in Settings" }
+        case ("cloudRetention", 3):
+            return CloudRetention(rawValue: value).map { "iCloud photo and video storage set to \($0.displayName) in Settings" }
+        default:
+            return nil
         }
     }
 
@@ -530,9 +759,11 @@ enum InterruptionCause: String, CaseIterable, Sendable {
     case terminated
     /// An active session was sent to the background, where iOS stops the watch (32.R6).
     case backgrounded
-    /// The device was locked while armed under Guided Access (review 3, R3.3): the lock button
-    /// is the only way to background the app there, so the lapse can be named. Whatever the
-    /// tripwires could not see during the lock is compared against their baselines on resume.
+    /// The app left the screen while armed under Guided Access (review 3, R3.3): the lock button is
+    /// the usual way to background the app there, not the only one (a call or Siri, which SECURITY.md
+    /// says can interrupt), so the record names the lock with that hedge (item 153's MAL-06). The raw value stays "locked" for
+    /// the records already written. Whatever the tripwires could not see during it is compared
+    /// against their baselines on resume where a tripwire has a state to compare (Power, Motion).
     case locked
     /// The countdown was sent to the background before the watch went live — a swipe-away
     /// during the grace seconds (item 74, line 6). Named for the countdown so the relaunch's

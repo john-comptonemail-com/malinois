@@ -84,3 +84,55 @@ out. Two completions of this ADR's principle:
   past its own server-stamped `creationDate` ("now" for a record that never got one).
   The field that decided sort order — and therefore eviction age — was the one scalar
   the decoder's clamp suite missed.
+
+## Amendment (2026-10-26, 1.8.2): a photo's loss before upload is monotonic too
+
+When the media byte limit discards an unsent photo, the capturing phone marks its event
+(`mediaDiscarded`), so neither phone offers a download of a photo that never reached iCloud.
+Another device that already held a copy of the event never learned it (BACKLOG 166's A2,
+Codex's codex-2): the copy that says so carries the same revision when the thumbnail stays,
+which `supersedes` accepts only for a grown count or a new failure reason, and without a
+thumbnail the discard lowered the record's revision, so the capturing phone refused to send
+it (`mayWrite`) and a receiver would have refused it as older. Now:
+
+- **The mark joins the monotonic facts.** A mirror takes it from a copy of any revision
+  without that copy replacing anything else (`learningTheLoss`), and a superseding copy that
+  lacks it keeps it (`inheritingLocalEnrichment`). First-hand evidence is untouched, as before.
+- **The revision does not go back.** The first evidence slot counts a capture the byte limit
+  discarded (`metaRevision`), so the copy carrying the mark is sent and taken like any other.
+
+Tests: `Item166ReviewTests` (through the store's real byte limit and the record's encoding).
+
+Codex's look at that change (codex-23): the mark covered the whole event, and the byte limit set it for any pending
+capture, though part of one can be in iCloud (a two-camera capture whose front photo landed and rear did not; a photo
+that landed while its record's save failed); learned on another device, it hid the download of a photo iCloud holds.
+The owner chose to record what landed (2026-10-26, option (a)): each file that reaches iCloud is noted on this phone's
+event by its camera (`uploadedMedia`, kept on this phone and only ever growing, through the store's updates as the
+other monotonic facts; since 2026-10-27 its names also ride the record's list of its media, ADR 0002's amendment of
+that day), and the byte limit sets the mark only when none did. A partial upload keeps its download on
+every device; the camera whose file was lost is not named, as before. The capturing phone offers the download of
+a file it knows landed, the rest of the upload not finished (codex-25). Tests: `Item166ReviewTests`.
+
+Codex's full review of `8573b6c` (item 174's codex-1, the owner: "as recommended", 2026-10-28): after iCloud's copies are
+found deleted or reset (`EventStore.requeuedForReupload`), `uploadedMedia` described an iCloud that no longer held those
+files, so the byte limit skipped its check, the capture's next upload read synced with nothing in iCloud, and its
+download stayed offered. The requeue now voids the receipts of every capture it picks, synced or partly up, and raises
+their generation (`Event.receiptEpoch`): receipts only grow within one generation, so an older copy brings none back, and
+a landing that an upload begun before the loss reports is not noted. Tests: `Item174ReviewTests`. Nor is an answer of
+iCloud's presence check asked for before the loss: the check stays owed for one asked for after (BACKLOG 176's codex-2,
+the owner: "as recommended"). Test: `Item166ReviewTests`.
+
+Codex's look at that (codex-24): an event saved before this version has no record of what landed, and an older version
+writing the log drops it, so no record could not be read as none; a file can also land unrecorded (a kill at that
+instant, a reply lost). The owner chose to ask iCloud (2026-10-26, option (b)): the byte limit leaves a capture with no
+record of a landed file unmarked and owing a check (`mediaDiscardUnchecked`), its download offered meanwhile; the
+engine's pending sweep asks iCloud which of its files it holds (the presence check of the iCloud copies, for this
+phone's captures bound to the verified account: one fetch a pass, under the pass's own lease, for up to 20 of them,
+the oldest first), and the capture is marked lost only if iCloud holds none, its record reopened so the mark reaches
+the other devices; what iCloud holds becomes the record; no answer waits for the next pass or sweep. A capture that
+can never have gone up (recorded while iCloud backup was off, or tied to no account) is marked at once, as before. The
+store's updates keep the mark and an owed check, and a capture awaiting its check takes no late camera file, as a
+marked one does. A capture an older version already marked stays marked. A receipt of a file that landed while iCloud
+was asked outweighs an empty answer sampled before it landed (codex-27). A capture whose upload history this phone
+cannot know, restored from a device backup or not yet bound, is never marked at once (codex-29, codex-31, codex-32;
+ADR 0039).

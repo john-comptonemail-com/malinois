@@ -26,6 +26,8 @@ final class FakeCaptureHost: CapturePipelineHost {
     private(set) var notices: [String?] = []
     func setCaptureFlash(_ on: Bool) { flashStates.append(on) }
     func rearmTripwiresDuringCapture() { rearms += 1 }
+    private(set) var untilClearWarnings = 0
+    func untilClearClipReachedWarningTime() { untilClearWarnings += 1 }
     @discardableResult func pauseAudioForCapture() -> Bool { audioPauses += 1; return audioHandoffNeeded }
     func resumeAudioAfterCapture() { audioResumes += 1 }
     func suppressVision(for seconds: TimeInterval) { visionSuppressions.append(seconds) }
@@ -59,6 +61,7 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         t.untilClearIdle = 0.15
         t.untilClearMax = 1.0
         t.untilClearPoll = 0.02
+        t.untilClearWarningAfter = 0.3
         t.warmUpDeadline = 0.2
         return t
     }()
@@ -236,6 +239,10 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertNotNil(heldLens == .rear ? current.mediaFilename : current.secondaryMediaFilename,
                         "the finished lens must survive while its sibling callback remains blocked")
         XCTAssertNil(heldLens == .rear ? current.secondaryMediaFilename : current.mediaFilename)
+        // A photo kept after the deadline is no recording: no duration in either slot (item 152's lead 21, 1.8.2's step
+        // 11). Red at the step's red commit: a rear photo kept late read "B 0.0s".
+        XCTAssertNil(current.primaryDuration)
+        XCTAssertNil(current.secondaryDuration, "a rear photo kept after the deadline is no 0.0-second recording")
         await gate.release()
         try? await Task.sleep(for: .milliseconds(50))
     }
@@ -703,6 +710,27 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         feeder.cancel()
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.9, "held to the ceiling")
         XCTAssertLessThan(Date().timeIntervalSince(started), 1.6)
+    }
+
+    /// Item 152's hardening (c) (1.8.2's step 10): an until-clear recording tells its host once, after
+    /// `untilClearWarningAfter`, so Alert mode can show its first warning while the clip still records; a clip that goes
+    /// quiet sooner ends without it. Red at the step's red commit: the host was never told.
+    func testUntilClearTellsItsHostOnceWhenTheWarningIsDue() async throws {
+        let rig = makeRig()
+        let feeder = Task { @MainActor in
+            for _ in 0..<40 {   // 2 s of activity, past the warning time and the 1 s ceiling
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                rig.pipeline.noteActivity()
+            }
+        }
+        let held = await rig.pipeline.capture(from: .rear, mode: .untilClear, illumination: .off)
+        _ = try XCTUnwrap(held.capture)
+        feeder.cancel()
+        XCTAssertEqual(rig.host.untilClearWarnings, 1, "once, though the clip ran past the warning time")
+        let quiet = makeRig()
+        let short = await quiet.pipeline.capture(from: .rear, mode: .untilClear, illumination: .off)
+        _ = try XCTUnwrap(short.capture)
+        XCTAssertEqual(quiet.host.untilClearWarnings, 0, "a clip quiet before the warning time ends without it")
     }
 
     /// An interrupted camera session (the app backgrounded) finalizes the clip at once,

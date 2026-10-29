@@ -9,7 +9,8 @@
 //  clips cannot use) reached only Home, after the disarm. F4: on a charger (Auto) or in Instant
 //  mode the camera runs from the ARM tap, and the arming screens showed no REC badge. F2 (added with
 //  the owner's wording): the passcode advice said someone who knows the unlock code "still can't
-//  exit", though a forced restart ends the watch. Each test lays
+//  exit", though a forced restart ends the watch; item 166's B1 (codex-3 on 144e723): nor did it say
+//  to turn Face ID or Touch ID off for ending Guided Access. Each test lays
 //  out the real screen in a window (item 82's pattern) and reads what its notices and badges report
 //  (`OnScreenRecorder`: SwiftUI gives a unit test no accessibility elements). The engine reaches
 //  each state its own way: the backup switch through `setCloudBackup`, the notices through a
@@ -250,6 +251,23 @@ final class Item120ScreensTests: XCTestCase {
             XCTAssertFalse(advice.contains("still can't exit"), "\(screen): \(advice)")
             XCTAssertTrue(advice.contains("can't end Guided Access"), "\(screen): \(advice)")
             XCTAssertTrue(advice.contains("A forced restart still ends the watch"), "\(screen): \(advice)")
+        }
+    }
+
+    /// Item 166's B1 (Codex's codex-3 on 144e723): the same advice never said to turn Face ID or Touch ID off in Guided
+    /// Access's Passcode Settings. With it on, a face or finger enrolled on the phone (one the device passcode can add)
+    /// ends Guided Access without either code, so the different passcode stops nobody (SECURITY.md has said so since item
+    /// 162's F9). Read as each screen shows it.
+    func testThePasscodeAdviceSaysToTurnFaceIDOffForEndingGuidedAccess() throws {
+        let rig = makeRig { $0.gracePeriodSeconds = 60 }
+        rig.engine.beginArming()
+        let screens: [(String, [String])] = [("the Guided Access step", try shownTexts(on: arming(rig))),
+                                             ("the Guided Access prompt", try shownTexts(on: GuidedAccessPromptView {}))]
+        rig.engine.cancelArming()
+        for (screen, shown) in screens {
+            let advice = try XCTUnwrap(shown.first { $0.contains("Passcode Settings") },
+                                       "\(screen) shows no passcode advice: \(shown)")
+            XCTAssertTrue(advice.lowercased().contains("turn off the face id (or touch id) switch"), "\(screen): \(advice)")
         }
     }
 

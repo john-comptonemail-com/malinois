@@ -1,8 +1,13 @@
 # ADR 0053: The countdown warns when the siren would play away from the iPhone
 
-- **Status:** accepted (BACKLOG 141, the owner's ruling "Approved on your 1-4 plan": fable-2's fix "as the test shows";
-  the test, 2026-10-20); for 1.8 (76).
+- **Status:** superseded by ADR 0062 (2026-10-28, 1.8.2: in Siren mode the siren plays from the iPhone's speaker, and
+  the countdown's warning is removed). Accepted before (BACKLOG 141, the owner's ruling "Approved on your 1-4 plan":
+  fable-2's fix "as the test shows"; the test, 2026-10-20); for 1.8 (76).
 - **Date:** 2026-10-20
+- **Amended 2026-10-23** (1.8.2, BACKLOG 155's A13, the owner's ruling (a)): "before the tripwires start" is held by a
+  guard in the engine (`MonitoringEngine.sirenRouteCheckAllowed`), since the check sets the audio setting and the Sound
+  tripwire records from calibration on; the check's function is named for what it does,
+  `SirenPlayer.setSirenCategoryAndReadOutputs()`.
 
 ## Context
 
@@ -36,7 +41,8 @@ the session, so nothing plays and no other app's sound is touched. The app's ses
 set, and the Sound tripwire's (`.playAndRecord` without Bluetooth options) leaves Bluetooth headphones out of the route.
 The check runs only in Siren mode, before the tripwires start; a Siren-mode camera holds no microphone.
 
-Code: `SirenPlayer.awayWarning(outputs:)` (pure) and `SirenPlayer.currentOutputs()`; `MonitoringEngine+SirenRoute.swift`;
+Code: `SirenPlayer.awayWarning(outputs:)` (pure) and `SirenPlayer.setSirenCategoryAndReadOutputs()`;
+`MonitoringEngine+SirenRoute.swift`;
 the arming screen's countdown.
 
 ## Consequences

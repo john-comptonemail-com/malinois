@@ -91,3 +91,12 @@ Every reader of the settings at launch, and what it does while they are unresolv
   initializer, ADR 0016); reading the preferences file's protection directly (an implementation detail of the
   system); refusing to run at all before the unlock (the push handler's fetch and the log's own deferral are
   wanted).
+
+## Amendment (2026-10-25, 1.8.2): the recovery re-arm and the watch relay wait as well
+
+The settings resolve on the unlock notice or the app becoming active, and the launch recovery runs from the same two
+notices on its own, so nothing ordered the two: the app becoming active first started the recovery re-arm's countdown
+on the default length and let the watch relay send the interruption's alert on the default alerts switch (Codex's
+codex-4 on the full review of 1.8.2, BACKLOG item 165's A3). Now the recovery re-arm defers until the settings resolve
+(`settings.whenResolved`, the flag staying owed), and the relay holds what is new until they have, as it holds it for
+the first Pro check. Tests: `Item152SettingsGuardTests.testRecoveryAndTheWatchRelayWaitForTheStoredSettings`.

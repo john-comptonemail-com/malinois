@@ -109,3 +109,8 @@ microphone, the one engine wait on the session queue this decision had left unbo
 the same shape: at most `EngineTiming.sirenMicReleaseWait` (1.5 s), after which the alarm sounds
 anyway; the abandoned release goes on unstructured and, when it lands, the alarm is made to sound
 again if the session's deactivation silenced it (`MonitoringEngine+SirenMicRelease.swift`).
+
+Amended 2026-10-23 (1.8.2, BACKLOG 162's A1): that restart comes back at the level the siren's ramp
+has reached (its quiet start, or part way up the rise), not at full volume, so a late release neither
+cuts the owner's quiet window short nor starts it again; past the ramp, or with none, it is at full
+volume as before (`SirenPlayer.ensureSounding`).

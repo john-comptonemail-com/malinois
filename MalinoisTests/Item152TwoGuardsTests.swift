@@ -13,6 +13,7 @@
 //  change, red at that commit (against compile-only stubs).
 //
 
+import AVFoundation
 import XCTest
 @testable import Malinois
 
@@ -133,6 +134,240 @@ final class Item152TwoGuardsTests: XCTestCase {
         XCTAssertTrue(pump(until: { rig.engine.siren.soundRequestsForTesting >= 1 }, timeout: 2), "sounded once released")
         XCTAssertEqual(rig.engine.siren.soundRequestsForTesting, 1, "once: the release came in time, no restart")
         rig.engine.disarm()
+    }
+
+    /// Item 162's A1 (1.8.2's step 8): a ramping siren that the late release silenced inside its quiet start comes back
+    /// where the ramp was, quiet, not at full volume: the owner's quiet window is not cut short (nor started again, which
+    /// would lengthen it). Red at the step's red commit: it came back at full volume.
+    func testALateReleaseRestartsARampingSirenWhereTheRampWas() {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.sirenMicReleaseWait = 0.3
+        timing.alertDuration = 5   // as above
+        let rig = makeRig(timing: timing) {
+            $0.responseMode = .siren; $0.captureMode = .clip3; $0.cameraPosition = .front; $0.sirenRampUp = true
+        }
+        rig.camera.holdMicDrop = true
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.engine.siren.soundRequestsForTesting >= 1 }, timeout: 3), "the siren is sounded")
+        XCTAssertEqual(rig.engine.siren.startLevelForTesting, SirenPlayer.rampStartVolume, "a ramped start, quiet")
+        rig.engine.siren.silenceForTesting()
+        rig.camera.releaseMicDrop()
+        XCTAssertTrue(pump(until: { rig.engine.siren.soundRequestsForTesting >= 2 }, timeout: 3), "sounded again")
+        XCTAssertEqual(rig.engine.siren.startLevelForTesting, SirenPlayer.rampStartVolume,
+                       "back inside the quiet start, at its quiet level")
+        rig.engine.disarm()
+    }
+
+    /// The same restart further on, in the rise (15 s after a ramped start, the rise half done): it comes back at the
+    /// level the rise had reached.
+    func testARestartInTheRiseComesBackAtTheRisesLevel() {
+        let siren = SirenPlayer()
+        var now: TimeInterval = 1_000
+        siren.uptimeForTesting = { now }
+        siren.start(rampUp: true)
+        defer { siren.stop() }
+        now += SirenPlayer.rampHoldSeconds + SirenPlayer.rampFadeSeconds / 2
+        siren.silenceForTesting()
+        siren.ensureSounding()
+        let halfway = SirenPlayer.rampStartVolume + (1 - SirenPlayer.rampStartVolume) / 2
+        XCTAssertEqual(siren.startLevelForTesting ?? -1, halfway, accuracy: 0.001)
+    }
+
+    /// Past the ramp, or after an escalation sent it loud, or with no ramp at all, a restart is at full volume, as
+    /// before.
+    func testARestartAfterTheRampOrAnEscalationIsAtFullVolume() {
+        let siren = SirenPlayer()
+        var now: TimeInterval = 1_000
+        siren.uptimeForTesting = { now }
+        siren.start(rampUp: true)
+        defer { siren.stop() }
+        now += SirenPlayer.rampHoldSeconds + SirenPlayer.rampFadeSeconds + 1
+        siren.silenceForTesting()
+        siren.ensureSounding()
+        XCTAssertEqual(siren.startLevelForTesting, 1, "past the ramp")
+        siren.stop()
+        siren.start(rampUp: true)
+        siren.goFullVolume()
+        siren.silenceForTesting()
+        siren.ensureSounding()
+        XCTAssertEqual(siren.startLevelForTesting, 1, "an escalation ended the ramp")
+        siren.stop()
+        siren.start(rampUp: false)
+        siren.silenceForTesting()
+        siren.ensureSounding()
+        XCTAssertEqual(siren.startLevelForTesting, 1, "no ramp")
+    }
+
+    /// The ramp's level: quiet through the hold, then rising evenly to full over the fade; a restart past the ramp, or
+    /// with none, has no ramp to continue.
+    func testTheRampsLevelRisesEvenlyAfterTheQuietHold() {
+        let hold = SirenPlayer.rampHoldSeconds, fade = SirenPlayer.rampFadeSeconds
+        XCTAssertEqual(SirenPlayer.rampLevel(afterSeconds: 0), SirenPlayer.rampStartVolume)
+        XCTAssertEqual(SirenPlayer.rampLevel(afterSeconds: hold), SirenPlayer.rampStartVolume)
+        XCTAssertEqual(SirenPlayer.rampLevel(afterSeconds: hold + fade / 2), 0.575, accuracy: 0.001)
+        XCTAssertEqual(SirenPlayer.rampLevel(afterSeconds: hold + fade), 1)
+        XCTAssertEqual(SirenPlayer.rampLevel(afterSeconds: 100), 1)
+        XCTAssertEqual(SirenPlayer.rampElapsed(anchor: 1_000, now: 1_005), 5)
+        XCTAssertNil(SirenPlayer.rampElapsed(anchor: 1_000, now: 1_000 + hold + fade), "the ramp is over")
+        XCTAssertNil(SirenPlayer.rampElapsed(anchor: nil, now: 1_005), "no ramp")
+        XCTAssertEqual(SirenPlayer.rampElapsed(anchor: 1_000, now: 990), 0, "a clock read before the anchor is the start")
+    }
+
+    // MARK: - Hardening (c) (1.8.2's step 10): Alert with Until clear warns while the clip records
+
+    /// In Alert mode an Until clear clip ran up to 2 minutes before the first warning, and the tampering itself kept it
+    /// recording. The warning now shows once the clip has recorded as long as the default 3-second clip, and the clip goes
+    /// on recording. Red at the step's red commit: no warning until the clip ended.
+    func testAlertWithUntilClearWarnsWhileTheClipStillRecords() {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.untilClearIdle = 1.5
+        timing.untilClearWarningAfter = 0.3
+        timing.alertDuration = 5
+        let rig = makeRig(timing: timing) { $0.responseMode = .alert; $0.captureMode = .untilClear; $0.cameraPosition = .front }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        XCTAssertTrue(pump(until: { rig.engine.alertActive }, timeout: 1.2), "the warning shows while the clip records")
+        XCTAssertEqual(rig.camera.clipEnds, 0, "and the clip is still recording")
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 5), "the clip ends when quiet")
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3))
+        XCTAssertTrue(rig.engine.alertActive, "the response's own decision extends the warning, which stays")
+        rig.engine.disarm()
+    }
+
+    /// Stealth shows no warning, early or late: the early warning follows the response mode.
+    func testStealthWithUntilClearStillShowsNoWarning() {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.untilClearIdle = 1.0
+        timing.untilClearWarningAfter = 0.3
+        let rig = makeRig(timing: timing) { $0.responseMode = .stealth; $0.captureMode = .untilClear; $0.cameraPosition = .front }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 5), "the clip records and ends")
+        XCTAssertFalse(rig.engine.alertActive)
+        rig.engine.disarm()
+    }
+
+    // MARK: - codex-1 on step 10: a lit clip's white screen covered the warning
+
+    private func litUntilClearRig(_ mode: ResponseMode, camera position: CameraChoice,
+                                  warningAfter: TimeInterval = 0.3, padQuietFor: TimeInterval? = nil) -> Rig {
+        var timing = EngineCharacterizationTests.fastTiming
+        timing.untilClearIdle = 1.5
+        timing.untilClearWarningAfter = warningAfter
+        timing.alertDuration = 5
+        if let padQuietFor {   // the pad stays open, and its quiet window lasts, past the test's check (item 167's A1)
+            timing.disarmActivityGrace = padQuietFor
+            timing.disarmEntryTimeout = padQuietFor * 2
+        }
+        let rig = makeRig(timing: timing) {
+            $0.responseMode = mode; $0.captureMode = .untilClear; $0.cameraPosition = position; $0.illumination = .on
+        }
+        rig.camera.supportsMultiCam = position == .both
+        return rig
+    }
+
+    /// The armed screen draws a lit clip's white screen over the warning, so the early warning ended nothing and
+    /// nobody saw it (front camera, or Both, with the light on). The warning now ends the light, and the clip goes on
+    /// recording. Red at the codex-1 red commit: the light stayed on over the warning. Both's clips end through
+    /// `endBothClips`, counted apart; the count reaching 1 later shows it was live when it read 0 (Codex's note).
+    func testTheEarlyWarningEndsTheCaptureLightSoItCanBeSeen() {
+        for position in [CameraChoice.front, .both] {
+            let rig = litUntilClearRig(.alert, camera: position)
+            let clipEnds = { position == .both ? rig.camera.bothClipEnds : rig.camera.clipEnds }
+            arm(rig)
+            rig.engine.handleTrip(.motion)
+            XCTAssertTrue(pump(until: { rig.engine.captureFlash }, timeout: 3), "\(position): the clip is lit")
+            XCTAssertTrue(pump(until: { rig.engine.alertActive }, timeout: 1.5), "\(position): the warning shows")
+            XCTAssertFalse(rig.engine.captureFlash, "\(position): and the light that would cover it is off")
+            XCTAssertEqual(clipEnds(), 0, "\(position): while the clip still records")
+            XCTAssertTrue(pump(until: { clipEnds() == 1 }, timeout: 6), "\(position): the clip ends later, once")
+            XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 6))
+            rig.engine.disarm()
+        }
+    }
+
+    /// The same for an escalation's warning during a lit clip (a sensor flood): it ended no light either.
+    func testAnEscalationsWarningEndsTheCaptureLight() {
+        let rig = litUntilClearRig(.alert, camera: .front, warningAfter: 60)
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.engine.captureFlash }, timeout: 3), "the clip is lit")
+        rig.engine.escalate(.flood)
+        XCTAssertTrue(rig.engine.alertActive)
+        XCTAssertFalse(rig.engine.captureFlash, "the flood's warning can be seen")
+        rig.engine.disarm()
+    }
+
+    /// Controls: Stealth shows no warning, so its clip keeps its light; with the disarm pad up and in use no warning
+    /// starts. The pad's quiet window outlasts the check: with the compressed timing's 0.5 s the pad had closed before
+    /// it, and the check passed only because a warning the pad held back was dropped (item 167's A1).
+    func testStealthKeepsItsLightAndThePadHoldsTheWarningBack() {
+        let stealth = litUntilClearRig(.stealth, camera: .front)
+        arm(stealth)
+        stealth.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { stealth.engine.captureFlash }, timeout: 3), "the clip is lit")
+        pump(until: { false }, timeout: 0.6)
+        XCTAssertTrue(stealth.engine.captureFlash, "Stealth keeps the light: no warning to show")
+        XCTAssertFalse(stealth.engine.alertActive)
+        stealth.engine.disarm()
+        let padUp = litUntilClearRig(.alert, camera: .front, padQuietFor: 3)
+        arm(padUp)
+        padUp.engine.beginDisarmEntry()
+        padUp.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { padUp.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        pump(until: { false }, timeout: 0.6)
+        XCTAssertFalse(padUp.engine.alertActive, "no warning over the owner's typing")
+        padUp.engine.disarm()
+    }
+
+    /// The production setting: the default clip's 3 seconds.
+    func testAnUntilClearWarningComesAfterTheDefaultClipsLength() {
+        XCTAssertEqual(EngineTiming.production.untilClearWarningAfter, CaptureMode.clip3.fixedDuration)
+    }
+
+    // MARK: - codex-4 on step 8: a waiting retry against a newer request
+
+    /// A restart's activation retry carried the ramp it was continuing. An escalation that came while that retry waited,
+    /// its own start failing too, could lose to it: the older retry started the siren at the ramp's quiet level, and the
+    /// escalation's retry, finding it playing, gave up. Each retry now acts only for the request that made it. Red at
+    /// the codex-4 red commit: the siren came back at the ramp's 0.15.
+    func testAnEscalationIsNotLostToAnOlderRestartsRetry() {
+        let siren = SirenPlayer()
+        var now: TimeInterval = 1_000
+        siren.uptimeForTesting = { now }
+        siren.start(rampUp: true)
+        defer { siren.stop() }
+        now += 2
+        siren.silenceForTesting()
+        siren.activationFailuresForTesting = 2   // the ramp's restart and the escalation each fail once
+        siren.ensureSounding()
+        siren.goFullVolume()
+        XCTAssertTrue(pump(until: { siren.isPlaying }, timeout: 3), "sounding again after the retries")
+        settle(0.6)   // any later retry has had its turn
+        XCTAssertEqual(siren.startLevelForTesting, 1, "the escalation's full volume")
+    }
+
+    /// An interruption's end brings the siren back at full volume, never re-granting the ramp's quiet window, and a
+    /// restart after it (the alert window's extension) must not take up the old ramp, even when the interruption's own
+    /// restart failed. Red at the codex-4 red commit: the extension resumed the ramp's quiet level.
+    func testAnInterruptionsFullVolumeIsNotUndoneByALaterRestart() {
+        let siren = SirenPlayer()
+        var now: TimeInterval = 1_000
+        siren.uptimeForTesting = { now }
+        siren.start(rampUp: true)
+        defer { siren.stop() }
+        now += 2
+        siren.silenceForTesting()
+        siren.activationFailuresForTesting = 1   // the interruption's restart fails its first attempt
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+                                        userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue])
+        settle(0.1)   // the observer's hop to the main actor
+        siren.ensureSounding()
+        XCTAssertTrue(pump(until: { siren.isPlaying }, timeout: 3))
+        settle(0.6)
+        XCTAssertEqual(siren.startLevelForTesting, 1, "full volume after the interruption")
     }
 
     /// The production bound: about a second and a half.

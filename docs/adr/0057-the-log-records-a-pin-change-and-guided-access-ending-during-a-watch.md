@@ -19,8 +19,9 @@ online, before the Airplane Mode, the backgrounding and the app deletion such a 
 ## Decision
 
 1. Settings' Change PIN writes one "pinChanged" status entry when the new PIN is saved, after the
-   current PIN was entered (`MonitoringEngine.notePINChanged`, called by `ChangePINView` before it
-   dismisses). The recovery flows keep their own record ("reinstalled", ADR 0040's recognised
+   current PIN was entered (`MonitoringEngine.notePINChanged`; since 1.8.2 written by `changePIN`,
+   `ChangePINView`'s save, so the save and the record are one step and a failed save records nothing,
+   BACKLOG 162's G1). The recovery flows keep their own record ("reinstalled", ADR 0040's recognised
    reinstall) or none (a damaged credential).
 2. Guided Access going from on to off while the watch is live (armed, triggered, or the calibration
    review, when the sensors already watch; not while disarmed, not during the countdown, which is

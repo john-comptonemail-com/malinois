@@ -114,6 +114,8 @@ countdowns, with Cross-device alerts on and Pro active), the outbox and the hist
 
 - Tamper, shown on its own: "Tamper detected on your device at 9:04 PM."
 - Disarm or cancelled countdown, shown on its own: "Malinois was disarmed on one of your devices at 9:04 PM."
+  Since 1.8.2 (BACKLOG 156, the owner's sentence): "Malinois was disarmed, or arming was cancelled, on one of your
+  devices at 9:04 PM.", with the disarm subscription's sentence.
 - The summary, title "Malinois": "While your watch was away: 5 Malinois alerts, the latest a tamper at Oct 15,
   3:42 PM. See your iPhone's Event Log." With one alert: "While your watch was away: 1 Malinois alert, a tamper at
   Oct 15, 3:42 PM. See your iPhone's Event Log." "a disarm" when the latest is a disarm or a cancelled countdown.

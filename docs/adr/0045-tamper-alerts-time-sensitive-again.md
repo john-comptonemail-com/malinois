@@ -7,6 +7,8 @@
   tamper alert asks for Time Sensitive).
 - **Amended 2026-10-19 by ADR 0052** (1.8 (75)): the watch has an alert extension too, which shows iCloud's tamper
   alert Time Sensitive, as the iPhone's does, unless the relay's copy of the event already tapped.
+- **Amended 2026-10-27 by ADR 0061** (1.8.2): once three tamper alerts have arrived within a minute, the rest of that
+  burst arrive quietly, not Time Sensitive, saying they are one of many.
 - **Date:** 2026-10-12
 
 ## Context

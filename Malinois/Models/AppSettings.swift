@@ -537,6 +537,7 @@ final class AppSettings: ObservableObject, Codable {
 
     /// Takes every stored value from `loaded` into this object, the one the app shares: the deferred load's end.
     private func adopt(_ loaded: AppSettings) {
+        wasResetAtLoad = loaded.wasResetAtLoad   // a store reset at the unlock is a reset too (codex-10)
         enabledSensors = loaded.enabledSensors
         sensitivities = loaded.sensitivities
         triggerMode = loaded.triggerMode
@@ -626,6 +627,38 @@ final class AppSettings: ObservableObject, Codable {
     /// promise in words).
     nonisolated(unsafe) static private(set) var loadWasReset = false
 
+    /// Whether these settings are the defaults a damaged store was reset to at their load (codex-10 on 1.8.2; the owner's
+    /// ruling (a)): the engine records the reset as such, once, and re-adopts the protection baseline from them, so the
+    /// defaults are not taken for edits in Settings. Per object, unlike `loadWasReset`, which the process keeps.
+    private(set) var wasResetAtLoad = false
+
+    /// The reset whose record is still owed (codex-10's residual on 1.8.2): noted as a reset saves the defaults, before
+    /// they are saved, and cleared once the engine has written the record and the new baseline
+    /// (`noteResetRecorded`), so the app ending in between leaves the next launch owing them, not reading the saved
+    /// defaults as the owner's. The note holds the record's identity (codex-17 on 1.8.2): only that record stands for
+    /// the reset, never another device's copy or an earlier reset.
+    static let resetPendingKey = "com.malinois.settings.resetPending"
+
+    /// The identity of the record the owed reset is to have.
+    var pendingResetID: UUID? {
+        (UserDefaults.standard.string(forKey: Self.resetPendingKey)).flatMap(UUID.init(uuidString:))
+    }
+
+    /// The owed reset's identity, saved in the note first when the note holds none (a timestamp, as development builds
+    /// of 1.8.2 wrote it, or damage), so the record a retry looks for is the one this attempt writes (codex-17's
+    /// residual on 1.8.2).
+    func notedResetID() -> UUID {
+        if let id = pendingResetID { return id }
+        let id = UUID()
+        UserDefaults.standard.set(id.uuidString, forKey: Self.resetPendingKey)
+        return id
+    }
+
+    /// The reset's record and baseline are written: nothing is owed.
+    func noteResetRecorded() {
+        UserDefaults.standard.removeObject(forKey: Self.resetPendingKey)
+    }
+
     /// The settings at launch: the stored ones, the defaults for a fresh install, or, before the first unlock after a
     /// restart, the defaults flagged as waiting (`awaitingUnlock`, ADR 0055) and loaded for real at the unlock.
     @MainActor static func load() -> AppSettings {
@@ -657,7 +690,10 @@ final class AppSettings: ObservableObject, Codable {
     /// The stored settings decoded, or, when they cannot be, set aside and reset (announced on Home).
     private static func decodeOrReset(_ data: Data) -> AppSettings {
         do {
-            return try JSONDecoder().decode(AppSettings.self, from: data)
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+            // The saved defaults of a reset whose record is still owed: the app ended first (codex-10's residual).
+            if UserDefaults.standard.object(forKey: resetPendingKey) != nil { decoded.wasResetAtLoad = true }
+            return decoded
         } catch {
             // Individually-missing fields already decode to their defaults (`decodeIfPresent`),
             // so reaching here means the blob is corrupt or a field has the wrong *type* — one
@@ -674,6 +710,7 @@ final class AppSettings: ObservableObject, Codable {
             // backup's cannot be read it is off, failing closed for privacy (item 124's F12, the
             // owner's option B, ADR 0049). Home's backup-off notice says so.
             let reset = AppSettings()
+            reset.wasResetAtLoad = true   // the log says so, not "in Settings" (codex-10)
             let kept = Self.readableICloudChoices(in: data)
             reset.cloudBackup = kept.backup ?? false
             if let alerts = kept.alerts { reset.notifyOtherDevices = alerts }
@@ -682,7 +719,9 @@ final class AppSettings: ObservableObject, Codable {
             reset.cloudRetention = .forever
             // Stored at once over the damaged settings (set aside above), not left to the 0.4-second autosave:
             // the damaged settings used to be removed first, so a relaunch inside that window found none and
-            // started from the defaults, iCloud backup on (Codex's V1, BACKLOG 128).
+            // started from the defaults, iCloud backup on (Codex's V1, BACKLOG 128). The reset is noted first, so
+            // its record is owed until written (codex-10's residual on 1.8.2).
+            UserDefaults.standard.set(UUID().uuidString, forKey: resetPendingKey)
             reset.save()
             return reset
         }

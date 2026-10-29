@@ -29,6 +29,9 @@ protocol CapturePipelineHost: AnyObject {
     /// Re-arm the enabled tripwires so continued tampering keeps registering during an
     /// until-clear recording.
     func rearmTripwiresDuringCapture()
+    /// An until-clear recording has run for `EngineTiming.untilClearWarningAfter`: the host may show the first warning
+    /// now rather than when the clip ends (item 152's hardening (c)). Called once per clip.
+    func untilClearClipReachedWarningTime()
     /// Pause Sound for a clip; true means its recorder yielded microphone ownership. Resume afterwards.
     @discardableResult func pauseAudioForCapture() -> Bool
     func resumeAudioAfterCapture()
@@ -312,7 +315,7 @@ final class EvidenceCapturePipeline {
             if secondary {
                 current.secondaryMediaFilename = stored.filename
                 current.secondaryCamera = capture.camera.rawValue
-                current.secondaryDuration = capture.duration
+                current.secondaryDuration = capture.ext == "mov" ? capture.duration : nil   // a still has none (item 152's lead 21)
             } else {
                 current.mediaFilename = stored.filename
                 current.primaryCamera = capture.camera.rawValue
@@ -647,6 +650,7 @@ final class EvidenceCapturePipeline {
         let start = Date()
         let idleThreshold = timing.untilClearIdle
         let maxDuration = timing.untilClearMax
+        var warningDue = true   // the host hears once per clip (item 152's hardening (c))
         while !sessionIsOver {
             try? await Task.sleep(nanoseconds: UInt64(timing.untilClearPoll * 1_000_000_000))
             // If the app was backgrounded, the capture session is interrupted and the
@@ -659,6 +663,11 @@ final class EvidenceCapturePipeline {
             if sessionIsOver { break }
             // Re-arm the tripwires so continued tampering keeps registering.
             host?.rearmTripwiresDuringCapture()
+            // Alert mode's first warning need not wait for the clip to end (item 152's hardening (c)).
+            if warningDue, Date().timeIntervalSince(start) >= timing.untilClearWarningAfter {
+                warningDue = false
+                host?.untilClearClipReachedWarningTime()
+            }
             let idle = Date().timeIntervalSince(lastActivity ?? start)
             if idle >= idleThreshold || Date().timeIntervalSince(start) >= maxDuration { break }
         }

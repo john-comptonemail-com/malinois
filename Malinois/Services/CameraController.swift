@@ -41,6 +41,10 @@ protocol EvidenceCamera: AnyObject, Sendable {
     /// granted (item 129, T1: on a fresh simulator, never asked, the engine skipped the warm-up
     /// and seven tests failed).
     var videoPermission: AVAuthorizationStatus { get }
+    /// The camera question of the first ARM tap (item 69, ADR 0011): asks iOS when it has never been asked, and answers
+    /// whether the camera is granted afterwards. Here for the same reason as `videoPermission`: a test's fake answers
+    /// for itself, and no real alert stops a test (item 162's G1).
+    func requestVideoAccess() async -> Bool
     /// Whether a clip session attaches the microphone. The engine sets it at arm from the
     /// owner's "Record audio in clips" setting AND the microphone permission; the controller
     /// never attaches an unauthorized mic, so iOS never raises the permission prompt on its own.
@@ -117,6 +121,7 @@ extension EvidenceCamera {
 extension CameraController: EvidenceCamera {
     var supportsMultiCam: Bool { Self.supportsMultiCam }
     var videoPermission: AVAuthorizationStatus { AVCaptureDevice.authorizationStatus(for: .video) }
+    func requestVideoAccess() async -> Bool { await Self.requestCameraAccessIfUndetermined() }
     /// The mic is attached only when the owner asked for clip audio AND iOS has granted it.
     private var wantsMic: Bool { clipAudio && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
     var isRecordingActivePublisher: AnyPublisher<Bool, Never> { $isRecordingActive.eraseToAnyPublisher() }
@@ -460,8 +465,6 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     static func cameraPromptIsDue(cameraNeeded: Bool, undetermined: Bool, guidedAccessOn: Bool) -> Bool {
         cameraNeeded && undetermined && !guidedAccessOn
     }
-
-    static var cameraIsUndetermined: Bool { AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined }
 
     enum MicrophonePermission { case undetermined, granted, denied }
 
@@ -1385,20 +1388,13 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         return image.jpegData(compressionQuality: 0.4)
     }
 
-    static func videoThumbnail(from url: URL, maxDimension: CGFloat = 200) -> Data? {
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: maxDimension, height: maxDimension)
-        // Prefer a frame ~1s in — exposure/illumination have settled and the subject
-        // is more likely in frame than at 0.2s — falling back for very short clips.
-        for seconds in [1.0, 0.3, 0.0] {
-            if let cg = try? generator.copyCGImage(at: CMTime(seconds: seconds, preferredTimescale: 600),
-                                                   actualTime: nil) {
-                return UIImage(cgImage: cg).jpegData(compressionQuality: 0.5)
-            }
-        }
-        return nil
+    /// A clip's thumbnail: its frame most likely to show something, chosen by what changed in it, or else its frame
+    /// about 1 s in, where exposure and the light have settled (BACKLOG 154, 1.8.2's step 35;
+    /// `CameraController+ClipThumbnail.swift`); none once AVFoundation runs out of time (codex-14). `duration` is the
+    /// clip's measured length when the caller has it, which spares a read of it.
+    static func videoThumbnail(from url: URL, duration: Double? = nil, maxDimension: CGFloat = 200) -> Data? {
+        clipThumbnailImage(of: url, duration: duration, maxDimension: maxDimension)
+            .flatMap { UIImage(cgImage: $0).jpegData(compressionQuality: 0.5) }
     }
 }
 

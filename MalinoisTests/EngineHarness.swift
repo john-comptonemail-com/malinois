@@ -31,6 +31,10 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     /// The camera permission the engine reads (item 129, T1): allowed unless a test says
     /// otherwise, whatever the simulator has been granted.
     var videoPermission: AVAuthorizationStatus = .authorized
+    /// The answer to the camera question (item 162's G1): the permission once asked.
+    var videoAccessAnswer: AVAuthorizationStatus = .authorized
+    /// Run while the camera question is open, before its answer: a test reads the engine there.
+    var duringVideoAccessRequest: (@MainActor () -> Void)?
     var omittedBothCameras: Set<String> = []
     var invalidBothClipFiles: Set<String> = []
     var multiCamWarmUpError: Error?
@@ -93,11 +97,13 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     private var _bothStills = 0
     private var _bothClips = 0
     private var _clipEnds = 0
+    private var _bothClipEnds = 0
     private var _shutDowns = 0
     private var _micDrops = 0
     private var _visionTapRequests: [Bool] = []
     private var _attemptBegins = 0
     private var _roomChecks: [Int] = []
+    private var _videoAccessRequests = 0
     private var _holdStills = false
     private var stillWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -110,8 +116,12 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     /// How many clips' room each storage check asked for (item 116).
     var roomChecks: [Int] { lock.withLock { _roomChecks } }
     var clipEnds: Int { lock.withLock { _clipEnds } }
+    /// Both cameras' clips ended: `clipEnds` counts the single camera's only (Codex's note on codex-1's test, 1.8.2).
+    var bothClipEnds: Int { lock.withLock { _bothClipEnds } }
     /// Item 65, finding 5: how many attempts announced themselves before touching the lens.
     var attemptBegins: Int { lock.withLock { _attemptBegins } }
+    /// How many times the camera question was asked (item 162's G1).
+    var videoAccessRequests: Int { lock.withLock { _videoAccessRequests } }
 
     // MARK: Holding a capture open
 
@@ -159,6 +169,13 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var visionTapRequests: [Bool] { lock.withLock { _visionTapRequests } }
 
     // MARK: EvidenceCamera
+
+    func requestVideoAccess() async -> Bool {
+        lock.withLock { _videoAccessRequests += 1 }
+        await duringVideoAccessRequest?()
+        videoPermission = videoAccessAnswer
+        return videoAccessAnswer == .authorized
+    }
 
     func setVisionTapEnabled(_ enabled: Bool) { lock.withLock { _visionTapRequests.append(enabled) } }
 
@@ -257,6 +274,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 
     func beginBothClips(rearTorch: Bool) { lock.withLock { _bothClips += 1 } }
     func endBothClips() async throws -> (front: URL?, rear: URL?) {
+        lock.withLock { _bothClipEnds += 1 }
         await onBothCaptureEnd?()
         if let finalizedBothForTesting { return finalizedBothForTesting }
         func file(_ lens: String) throws -> URL? {
@@ -324,7 +342,9 @@ enum TestIsolation {
                                                    "com.malinois.arming.", "com.malinois.recovery.",
                                                    "com.malinois.protection.",   // item 91's recorded settings
                                                    "com.malinois.beats.",
-                                                   "com.malinois.retention."]   // item 116's marker limit
+                                                   "com.malinois.retention.",   // item 116's marker limit
+                                                   "com.malinois.rating.",   // item 137: the calm disarms
+                                                   "com.malinois.settings.resetPending"]   // codex-10's residual: owed
 
     @MainActor private static var engines: [MonitoringEngine] = []
 
@@ -373,8 +393,8 @@ enum TestIsolation {
         MonitoringEngine.recoveryPendingForTesting = nil
         if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
         EventStore.rootOverrideForTesting = nil
-        EventStore.checkpointObserverForTesting = nil   // item 155's S1: no test's observer outlives it
         MainActor.assumeIsolated {
+            EventStore.checkpointObserverForTesting = nil   // item 155's S1: no test's observer outlives it
             CloudEnrollment.sharedForTesting = nil
             BackgroundAssertion.providerForTesting = nil   // item 153's MAL-01: UIKit's assertions again
         }

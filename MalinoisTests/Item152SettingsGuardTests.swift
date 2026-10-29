@@ -11,7 +11,12 @@
 //  unresolved (the defaults in memory, flagged): nothing saves, seeds, purges or uploads, and the stored settings
 //  load into the same object at the unlock. A damaged settings blob now resets retention to Keep forever. The sealed
 //  canary is planted here as a file the process cannot read (its permissions), the one way the simulator can give
-//  "exists but cannot be read". Written before the change, red at that commit (against compile-only stubs).
+//  "exists but cannot be read". Written before the change, red at that commit (against compile-only stubs). Item 165's
+//  A3 (Codex's codex-4 on 224a07a; item 163's step 39): the recovery re-arm and the watch relay, which ran on the
+//  defaults when the app became active before the stored settings loaded, now wait for them; red before its change.
+//  Its residuals, Codex's codex-19 (a reconnect) and codex-21 (an arm's warm-up): an automatic setup of the account's
+//  alert subscriptions follows the owner's choice as it is after each wait, and an "off" under way supersedes it; each
+//  red before its change.
 //
 
 import XCTest
@@ -362,5 +367,406 @@ final class Item152SettingsGuardTests: XCTestCase {
         try storeOwnersSettings()
         _ = AppSettings.load()
         XCTAssertEqual(AppSettings.canaryState(), .readable, "a launch that read stored settings")
+    }
+
+    // MARK: - Item 165's A3: recovery and the watch relay wait for the stored settings
+
+    /// The relay's sends, kept for the test.
+    private final class SentAlerts {
+        var messages: [WatchAlertMessage] = []
+    }
+
+    /// item 165's A3 (codex-4 on 224a07a): the armed app was killed, and the app launched again before the first unlock,
+    /// its settings waiting with the defaults in memory; then it becomes active before the stored settings load. The
+    /// recovery re-arm must not start on the defaults (their 15-second grace period, not the owner's 42), and the watch
+    /// relay must not send the interruption's alert on the default switch (alerts on, the owner's off). Once the
+    /// settings load, the re-arm runs on the owner's grace period, and the relay reads the owner's switch.
+    func testRecoveryAndTheWatchRelayWaitForTheStoredSettings() throws {
+        try storeOwnersSettings()   // alerts off, a 42-second grace period, Guided Access not required
+        try seal()
+        let settings = AppSettings.load()
+        XCTAssertTrue(settings.awaitingUnlock, "before the first unlock")
+        UserDefaults.standard.set(0.5, forKey: MonitoringEngine.armedMarkerKey)   // the armed app was killed
+        let store = EventStore()
+        let cloud = CloudExfiltrator()
+        cloud.accountIdentityForTesting = { nil }
+        let pro = ProEntitlements(resolvedAs: .trial)
+        let sent = SentAlerts()
+        let relay = WatchAlertRelay(store: store, settings: settings, entitlements: pro,
+                                    send: { sent.messages.append($0) })
+        relay.start()
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: cloud,
+                                                          camera: FakeCamera(), entitlements: pro,
+                                                          timing: EngineCharacterizationTests.fastTiming,
+                                                          protectedDataAvailable: { false }))
+        defer { engine.disarm(); withExtendedLifetime(relay) {} }
+        XCTAssertTrue(engine.launchRecoveryWaiting, "the recovery waits for the unlock")
+        unseal()   // unlocked: the stored settings can load, and have not yet
+        engine.handleScenePhase(true)   // the app becomes active first
+        XCTAssertTrue(store.events.contains { $0.interrupted == true }, "the interruption is on the record")
+        XCTAssertTrue(sent.messages.isEmpty, "no alert sent on the default switch")
+        XCTAssertEqual(engine.state, .disarmed, "no re-arm on the defaults")
+        settings.resolveIfReadable()   // the stored settings load
+        XCTAssertFalse(settings.awaitingUnlock)
+        XCTAssertEqual(engine.state, .arming, "the owed re-arm runs once they have")
+        XCTAssertEqual(engine.graceRemaining, 42, "on the owner's grace period")
+        XCTAssertTrue(sent.messages.isEmpty, "and the owner's switch is off")
+    }
+
+    // MARK: - Item 165's A3 residual: automatic alert subscriptions (codex-19 on 946b248, codex-21 on b00a120)
+
+    /// A wait a test holds: shut, it holds the waits that begin until it is released; open, they pass. It counts the
+    /// waits begun, so a test waits for the one it holds instead of sleeping (Codex's note on 946b248..b00a120).
+    @MainActor
+    private final class Gate {
+        private var isShut: Bool
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private(set) var entered = 0
+        init(shut: Bool = true) { isShut = shut }
+        func wait() async {
+            entered += 1
+            guard isShut else { return }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        func shut() { isShut = true }
+        func release() {
+            isShut = false
+            waiting.forEach { $0.resume() }
+            waiting = []
+        }
+    }
+
+    /// What the cloud was asked: the alert subscriptions saved and removed (their identifiers, in order), and the
+    /// automatic setups (the arm's warm-up, a reconnect's refresh) begun and finished. A test can have the device
+    /// authentication refused, or the removal fail.
+    @MainActor
+    private final class CloudCalls {
+        var saved: [String] = []
+        var removed: [String] = []
+        var setupsBegun = 0
+        var setupsFinished = 0
+        var authenticationRefused = false
+        var removalFails = false
+    }
+
+    /// The tamper and disarm subscriptions' identifiers, in the order they are saved.
+    private var alertSubscriptions: [String] {
+        [CloudExfiltrator.makeTamperSubscription().subscriptionID, CloudExfiltrator.makeDisarmSubscription().subscriptionID]
+    }
+
+    /// An installation verified for "account-a", the account holding no subscription, every subscription saved or
+    /// removed and every automatic setup counted; the lease, the arm, the reconnect, the switch's account-wide "off"
+    /// and the choice of what to save run as shipped. A gate holds its wait while shut: the account lookup, the
+    /// listing of the account's subscriptions, a save, or the device authentication an "off" asks for (which must
+    /// start open: the verification here asks it too). `pro` is the owner's Pro, a trial unless a test passes its own.
+    private func makeAlertsRig(_ settings: AppSettings, lookup: Gate? = nil, listing: Gate? = nil, save: Gate? = nil,
+                               authentication: Gate? = nil,
+                               pro: ProEntitlements? = nil) async throws -> (MonitoringEngine, CloudExfiltrator, CloudCalls) {
+        let file = try XCTUnwrap(EventStore.rootOverrideForTesting)
+            .appendingPathComponent("grant-" + UUID().uuidString).appendingPathComponent("state.json")
+        let calls = CloudCalls()
+        let enrollment = CloudEnrollment(file: file, authenticate: { _ in
+            await authentication?.wait()
+            return !calls.authenticationRefused
+        })
+        let verified = await enrollment.enroll(account: "account-a", resolve: { "account-a" })
+        XCTAssertTrue(verified, "a verified installation")
+        let cloud = CloudExfiltrator(enrollment: enrollment)
+        cloud.accountIdentityForTesting = {
+            await lookup?.wait()
+            return "account-a"
+        }
+        cloud.existingSubscriptionsForTesting = {
+            await listing?.wait()
+            return []
+        }
+        cloud.subscriptionSaveForTesting = { subscription in
+            calls.saved.append(subscription.subscriptionID)
+            await save?.wait()
+            return true
+        }
+        cloud.subscriptionRemovalForTesting = { ids in
+            calls.removed += ids
+            return !calls.removalFails
+        }
+        cloud.automaticSetupBeganForTesting = { calls.setupsBegun += 1 }
+        cloud.automaticSetupFinishedForTesting = { calls.setupsFinished += 1 }
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: EventStore(), cloud: cloud,
+                                                          camera: FakeCamera(), entitlements: pro ?? ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming))
+        return (engine, cloud, calls)
+    }
+
+    /// The owner's stored settings, loaded, with cross-device alerts switched on.
+    private func alertsOnSettings() throws -> AppSettings {
+        try storeOwnersSettings()
+        let settings = AppSettings.load()
+        XCTAssertFalse(settings.awaitingUnlock)
+        settings.notifyOtherDevices = true
+        return settings
+    }
+
+    /// The owner's "off" as Settings' switch makes it (`applyCrossDeviceAlerts`): the account-wide removal, with its
+    /// device authentication, and the switch saved off only once the removal has landed.
+    private func turnAlertsOff(_ cloud: CloudExfiltrator, _ settings: AppSettings) async -> Bool {
+        let landed = await cloud.setCrossDeviceAlerts(false)
+        if landed { settings.notifyOtherDevices = false }
+        return landed
+    }
+
+    /// The owner's "on" as Settings' switch makes it: the account-wide setup, and the switch saved on once it landed.
+    private func turnAlertsOn(_ cloud: CloudExfiltrator, _ settings: AppSettings) async -> Bool {
+        let landed = await cloud.setCrossDeviceAlerts(true)
+        if landed { settings.notifyOtherDevices = true }
+        return landed
+    }
+
+    /// Polls until `condition` holds, for at most three seconds.
+    private func eventually(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        return condition()
+    }
+
+    /// item 165's A3 residual (codex-19 on 946b248): while the stored settings wait for the first unlock, their alerts
+    /// switch reads as the default's (on), and a reconnect set the account's alert subscriptions up on it, after the
+    /// owner's "off" had loaded. A reconnect while they wait asks for nothing.
+    func testAReconnectBeforeTheSettingsLoadSetsNoAlertSubscriptionUp() async throws {
+        try storeOwnersSettings()   // alerts off
+        try seal()
+        let settings = AppSettings.load()
+        XCTAssertTrue(settings.awaitingUnlock, "before the first unlock")
+        let (engine, _, calls) = try await makeAlertsRig(settings)
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)   // a reconnect, the settings still waiting
+        XCTAssertEqual(engine.alertRefreshesAskedForTesting, 0, "no refresh asked for on the defaults")
+        unseal()
+        settings.resolveIfReadable()   // the owner's "off" loads
+        XCTAssertFalse(settings.notifyOtherDevices)
+        XCTAssertEqual(calls.saved, [], "no alert subscription set up against the owner's off")
+    }
+
+    /// item 165's A3 residual: a refresh asked for with alerts on carried that "on" through the account lookup, so an
+    /// "off" made meanwhile did not stop it. The refresh asks again after each wait.
+    func testAnAlertsOffDuringARefreshSetsNoAlertSubscriptionUp() async throws {
+        let settings = try alertsOnSettings()
+        let lookup = Gate()
+        let (engine, _, calls) = try await makeAlertsRig(settings, lookup: lookup)
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)   // the refresh starts, and waits on the account lookup
+        let held = await eventually { calls.setupsBegun == 1 }
+        XCTAssertTrue(held, "the refresh waits on the account lookup")
+        settings.notifyOtherDevices = false   // the owner's "off", meanwhile
+        lookup.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the refresh finished")
+        XCTAssertEqual(calls.saved, [], "the refresh asked again and set nothing up")
+    }
+
+    /// The control: with alerts on, a reconnect sets the account's alert subscriptions up, as before.
+    func testAReconnectWithAlertsOnSetsTheAlertSubscriptionsUp() async throws {
+        let settings = try alertsOnSettings()
+        let (engine, _, calls) = try await makeAlertsRig(settings)
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)
+        XCTAssertEqual(engine.alertRefreshesAskedForTesting, 1, "the reconnect asked for a refresh")
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the refresh finished")
+        XCTAssertEqual(calls.saved, alertSubscriptions, "the tamper and disarm subscriptions")
+    }
+
+    /// codex-21 on b00a120, the control: an arm with alerts on sets the account's alert subscriptions up, the tamper
+    /// subscription first, as before.
+    func testAnArmWithAlertsOnSetsTheAlertSubscriptionsUp() async throws {
+        let settings = try alertsOnSettings()
+        let (engine, _, calls) = try await makeAlertsRig(settings)
+        engine.beginArming()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, alertSubscriptions, "the tamper and disarm subscriptions")
+    }
+
+    /// codex-21 on b00a120: the arm's warm-up carried the choice read at the arm through its account lookup, so an
+    /// "off" the owner made meanwhile (the arm cancelled, then Settings' switch, its removal landed) did not stop it:
+    /// the lookup ended after the off, and the warm-up set the subscriptions up again. It asks again after each wait.
+    func testAnAlertsOffDuringTheArmsAccountLookupSetsNoAlertSubscriptionUp() async throws {
+        let settings = try alertsOnSettings()
+        let lookup = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, lookup: lookup)
+        engine.beginArming()
+        let held = await eventually { calls.setupsBegun == 1 }
+        XCTAssertTrue(held, "the arm's warm-up waits on the account lookup")
+        cloud.accountIdentityForTesting = { "account-a" }   // the off's own lookups answer at once
+        engine.cancelArming()
+        let landed = await turnAlertsOff(cloud, settings)
+        XCTAssertTrue(landed, "the owner's off landed")
+        lookup.release()   // the warm-up's lookup ends after the off
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, [], "no alert subscription set up after the owner's off")
+    }
+
+    /// codex-21, the Pro half of the live choice: cross-device alerts are Pro's, and the arm's warm-up asks for Pro as
+    /// it is after each wait, not as it was at the arm. The trial ends while a cancelled arm's warm-up waits on the
+    /// account lookup, the switch untouched: nothing is set up.
+    func testATrialThatEndsDuringTheArmsAccountLookupSetsNoAlertSubscriptionUp() async throws {
+        let settings = try alertsOnSettings()
+        let lookup = Gate()
+        let pro = ProEntitlements(resolvedAs: .trial)
+        let (engine, _, calls) = try await makeAlertsRig(settings, lookup: lookup, pro: pro)
+        engine.beginArming()
+        let held = await eventually { calls.setupsBegun == 1 }
+        XCTAssertTrue(held, "the arm's warm-up waits on the account lookup")
+        engine.cancelArming()
+        pro.resolveForTesting(as: .free)   // the trial ends
+        lookup.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertTrue(settings.notifyOtherDevices, "the switch is still on")
+        XCTAssertEqual(calls.saved, [], "no alert subscription set up once Pro had ended")
+    }
+
+    /// codex-21: the same, the owner's off made while the warm-up's listing of the account's subscriptions waits.
+    func testAnAlertsOffDuringTheArmsListingSetsNoAlertSubscriptionUp() async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing)
+        engine.beginArming()
+        let held = await eventually { listing.entered == 1 }
+        XCTAssertTrue(held, "the arm's warm-up waits on the listing")
+        engine.cancelArming()
+        let landed = await turnAlertsOff(cloud, settings)
+        XCTAssertTrue(landed, "the owner's off landed")
+        listing.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, [], "no alert subscription set up after the owner's off")
+    }
+
+    /// codex-21: the owner's off made while the warm-up's first save waits. That save was under way before the off,
+    /// and what CloudKit accepts of it stays (the known limit); no other save begins after the off.
+    func testAnAlertsOffBetweenTheArmsSavesStartsNoOtherSave() async throws {
+        let settings = try alertsOnSettings()
+        let save = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, save: save)
+        engine.beginArming()
+        let held = await eventually { calls.saved.count == 1 }
+        XCTAssertTrue(held, "the arm's warm-up waits on its first save")
+        engine.cancelArming()
+        let landed = await turnAlertsOff(cloud, settings)
+        XCTAssertTrue(landed, "the owner's off landed")
+        save.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, Array(alertSubscriptions.prefix(1)), "no save began after the owner's off")
+    }
+
+    /// codex-21, the off's own wait: Settings saves the switch off only once the removal has landed, so while the
+    /// owner's off waits on Face ID or the passcode the switch still reads on. A warm-up that reaches its saves then
+    /// is superseded by the off under way, and saves nothing.
+    func testAnArmReachingItsSavesWhileTheOwnersOffWaitsSavesNothing() async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let authentication = Gate(shut: false)
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing, authentication: authentication)
+        engine.beginArming()
+        let listed = await eventually { listing.entered == 1 }
+        XCTAssertTrue(listed, "the arm's warm-up waits on the listing")
+        engine.cancelArming()
+        await assertNothingSavedWhileTheOffWaits(cloud, settings, calls, listing: listing, authentication: authentication)
+    }
+
+    /// codex-21: the same for a reconnect's refresh, whose live choice (codex-19) reads the switch, still on while the
+    /// owner's off waits.
+    func testAReconnectReachingItsSavesWhileTheOwnersOffWaitsSavesNothing() async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let authentication = Gate(shut: false)
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing, authentication: authentication)
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)
+        let listed = await eventually { listing.entered == 1 }
+        XCTAssertTrue(listed, "the refresh waits on the listing")
+        await assertNothingSavedWhileTheOffWaits(cloud, settings, calls, listing: listing, authentication: authentication)
+    }
+
+    /// Codex's note on d084392: an "off" that fails also stands down the automatic setup under way, which saves
+    /// nothing; the switch stays on, and the next automatic setup, under a fresh count, sets the subscriptions up.
+    /// Here Face ID or the passcode is refused.
+    func testAnOffRefusedAtFaceIDStandsTheSetupUnderWayDownButNotTheNext() async throws {
+        try await assertAFailedOffStandsTheSetupUnderWayDownButNotTheNext { $0.authenticationRefused = true }
+    }
+
+    /// The same when the off's removal fails.
+    func testAnOffWhoseRemovalFailsStandsTheSetupUnderWayDownButNotTheNext() async throws {
+        try await assertAFailedOffStandsTheSetupUnderWayDownButNotTheNext { $0.removalFails = true }
+    }
+
+    private func assertAFailedOffStandsTheSetupUnderWayDownButNotTheNext(_ fail: (CloudCalls) -> Void) async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing)
+        engine.beginArming()
+        let listed = await eventually { listing.entered == 1 }
+        XCTAssertTrue(listed, "the arm's warm-up waits on the listing")
+        engine.cancelArming()
+        fail(calls)
+        let landed = await turnAlertsOff(cloud, settings)
+        XCTAssertFalse(landed, "the owner's off failed")
+        XCTAssertTrue(settings.notifyOtherDevices, "the switch stays on")
+        listing.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, [], "the warm-up under way stood down")
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)   // the next automatic setup
+        let refreshed = await eventually { calls.setupsFinished == 2 }
+        XCTAssertTrue(refreshed, "the reconnect's refresh finished")
+        XCTAssertEqual(calls.saved, alertSubscriptions, "the next setup set the subscriptions up")
+    }
+
+    /// Codex's note on d084392: the switch's own "on" is not held back by the counting it does: turned back on right
+    /// after an "off" landed, while the old arm's warm-up still waits, it sets the subscriptions up itself, and the
+    /// old warm-up saves nothing, so each is saved once.
+    func testAnOnRightAfterAnOffSetsTheSubscriptionsUpOnceWhileTheOldWarmUpStandsDown() async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing)
+        engine.beginArming()
+        let listed = await eventually { listing.entered == 1 }
+        XCTAssertTrue(listed, "the arm's warm-up waits on the listing")
+        engine.cancelArming()
+        let off = await turnAlertsOff(cloud, settings)
+        XCTAssertTrue(off, "the owner's off landed")
+        let on = Task { await turnAlertsOn(cloud, settings) }
+        let waiting = await eventually { listing.entered == 2 }
+        XCTAssertTrue(waiting, "the owner's on waits on its own listing")
+        listing.release()
+        let landed = await on.value
+        XCTAssertTrue(landed, "the owner's on landed")
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the arm's warm-up finished")
+        XCTAssertEqual(calls.saved, alertSubscriptions, "each subscription saved once, by the owner's on")
+    }
+
+    /// With an automatic setup held in its listing: the owner's off begins and waits on the device authentication;
+    /// the listing ends, and the setup finishes having saved nothing; then the off lands.
+    private func assertNothingSavedWhileTheOffWaits(_ cloud: CloudExfiltrator, _ settings: AppSettings, _ calls: CloudCalls,
+                                                    listing: Gate, authentication: Gate) async {
+        authentication.shut()
+        let asked = authentication.entered
+        let off = Task { await turnAlertsOff(cloud, settings) }
+        let waiting = await eventually { authentication.entered == asked + 1 }
+        XCTAssertTrue(waiting, "the owner's off waits on the device authentication")
+        XCTAssertTrue(settings.notifyOtherDevices, "the switch still reads on")
+        listing.release()
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the automatic setup finished")
+        XCTAssertEqual(calls.saved, [], "nothing saved while the owner's off was under way")
+        authentication.release()
+        let landed = await off.value
+        XCTAssertTrue(landed, "the owner's off landed")
+        XCTAssertEqual(calls.removed.count, 3, "the tamper, disarm and 1.0 subscriptions removed")
+        XCTAssertEqual(calls.saved, [], "and nothing saved after it")
     }
 }

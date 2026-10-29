@@ -15,7 +15,25 @@ import CommonCrypto
 
 enum KeychainService {
 
-    private static let service = "Malinois"
+    private static let service = serviceName(testRunner: isTestRunner)
+
+    /// The Keychain service the PIN items live under: the app's, or under the test runner the suite's own (item 152's
+    /// hardening (f)). The suite sets and clears PINs, lockouts and the Early-Access membership, and on a developer's
+    /// own iPhone the test host shares the installed app's items, so a run used to replace that phone's PIN. A Release
+    /// build has only the app's. Pure (unit-tested).
+    static func serviceName(testRunner: Bool) -> String {
+        #if DEBUG
+        if testRunner { return "Malinois.tests" }
+        #endif
+        return "Malinois"
+    }
+
+    #if DEBUG
+    private static let isTestRunner = TestHost.isTestRunnerLaunch(
+        xcTestLoaded: NSClassFromString("XCTestCase") != nil, environment: ProcessInfo.processInfo.environment)
+    #else
+    private static let isTestRunner = false
+    #endif
     private static let account = "com.malinois.pin"
     private static let lengthAccount = "com.malinois.pin.length"
     /// The length the pad auto-submits at, confirmed by a successful PIN change or entry (item 106).
@@ -341,11 +359,23 @@ enum KeychainService {
     /// the lockout at twice the intended rate.
     @MainActor
     static func verify(_ pin: String) -> Bool {
-        guard pinPresence == .present, rateLimitReadable, lockoutRemaining() == 0 else { return false }
-        guard let verified = verifyWithoutRateLimit(pin) else { return false }
+        verifyEntry(pin) == .correct
+    }
+
+    /// What one PIN entry came to (item 153's MAL-14 (a)): right; wrong, a real guess that failed and was counted; or
+    /// not checked, when no PIN could be compared (none usable, the Keychain sealed, or a lockout in force), which is no
+    /// guess, so the armed pad records nothing for it.
+    enum PINEntryResult: Equatable { case correct, wrong, notChecked }
+
+    /// `verify` with its three outcomes kept apart, for the pad that records wrong entries. The same contract: only a
+    /// real wrong guess is counted.
+    @MainActor
+    static func verifyEntry(_ pin: String) -> PINEntryResult {
+        guard pinPresence == .present, rateLimitReadable, lockoutRemaining() == 0 else { return .notChecked }
+        guard let verified = verifyWithoutRateLimit(pin) else { return .notChecked }
         guard verified else {
             recordFailure()          // wrong guess → cost it, whoever asked
-            return false
+            return .wrong
         }
         // Success clears the counter HERE, not in the caller (seventh review, #1): the
         // failure half of the contract already lived in the service, but the success half
@@ -355,7 +385,7 @@ enum KeychainService {
         resetAttempts()
         confirmLength(pin.count)   // the pad may now auto-submit at it (item 106)
         noteCorrectEntry()   // the ARM tap's check counts from here (ADR 0054)
-        return true
+        return .correct
     }
 
     /// The cryptographic check alone, with no rate-limit read or failure accounting.
@@ -411,7 +441,7 @@ enum KeychainService {
     @discardableResult
     @MainActor
     static func recordFailure() -> TimeInterval {
-        let failures = failedAttempts + 1
+        let failures = nextFailureCount(after: failedAttempts)
         setFailedAttempts(failures)
         let delay = lockoutDelay(forFailures: failures)
         guard delay > 0 else { return 0 }
@@ -449,6 +479,13 @@ enum KeychainService {
 
     /// The longest wait a lockout can impose; a stored deadline further ahead than this is damage (item 144's F3).
     static let maxLockoutDelay: TimeInterval = 3600
+
+    /// The failure count after one more failure: one more, stopping at `Int.max` (item 162's A12, Codex's codex-6).
+    /// Only damage could leave a stored count there, since Malinois counts up from 0, and `+ 1` on it trapped: a crash
+    /// at the next wrong PIN instead of a refusal. The wait at that count is already the longest. Pure (unit-tested).
+    static func nextFailureCount(after count: Int) -> Int {
+        count < Int.max ? count + 1 : Int.max
+    }
 
     @MainActor
     static func resetAttempts() {
@@ -643,6 +680,12 @@ enum KeychainService {
     static func writeLockoutValueForTesting(_ value: String) { _ = write(Data(value.utf8), account: lockoutAccount) }
     /// Test-only companion: the stored lockout value, nil when absent.
     static var lockoutValueForTesting: String? { read(account: lockoutAccount).flatMap { String(data: $0, encoding: .utf8) } }
+    /// Test-only (item 162's A12): plants a failure count as damage would leave it.
+    static func writeFailedAttemptsValueForTesting(_ value: String) { _ = write(Data(value.utf8), account: attemptsAccount) }
+    /// Test-only companion: the stored failure count, nil when absent.
+    static var failedAttemptsValueForTesting: String? {
+        read(account: attemptsAccount).flatMap { String(data: $0, encoding: .utf8) }
+    }
     /// Test-only: forgets the in-process copy of the deadline, so a test sees what the stored value alone says.
     @MainActor static func clearMirroredLockoutForTesting() { mirroredLockout = nil }
     /// Test-only: every Keychain write reports failure, constructing the partial-failure state

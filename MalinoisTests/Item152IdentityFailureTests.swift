@@ -284,6 +284,12 @@ final class Item152IdentityFailureTests: XCTestCase {
         XCTAssertTrue(pruned, "the byte-cap pass ran")
         store.drainIOForTesting()
         XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path), "the only photo was deleted")
+        // Since item 166's codex-24 (the owner's option (b)) the loss is marked once iCloud, asked at a sweep, holds none of
+        // the capture's files; until then its check is owed.
+        XCTAssertEqual(store.events.first { $0.id == id }?.mediaDiscardUnchecked, true, "the loss is on the record, its check owed")
+        engine.cloudPresenceForTesting = { _ in [] }   // iCloud holds none of it
+        _ = await waitFor({ !engine.pendingSweepActive }, timeout: 3)
+        await engine.retryPendingSync()
         XCTAssertEqual(store.events.first { $0.id == id }?.mediaDiscarded, true, "the loss of a never-uploaded photo is marked")
     }
 
@@ -481,6 +487,12 @@ final class Item152IdentityFailureTests: XCTestCase {
         XCTAssertTrue(pruned, "the byte-cap pass ran")
         recovered.drainIOForTesting()
         XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path), "the only photo was deleted")
+        // Since item 166's codex-24 (the owner's option (b)): marked once iCloud, asked at a sweep, holds none of it.
+        XCTAssertEqual(recovered.events.first { $0.id == id }?.mediaDiscardUnchecked, true,
+                       "the loss is on the record, its check owed")
+        recoveredEngine.cloudPresenceForTesting = { _ in [] }   // iCloud holds none of it
+        _ = await waitFor({ !recoveredEngine.pendingSweepActive }, timeout: 3)
+        await recoveredEngine.retryPendingSync()
         XCTAssertEqual(recovered.events.first { $0.id == id }?.mediaDiscarded, true, "the loss of a never-uploaded photo is marked")
     }
 

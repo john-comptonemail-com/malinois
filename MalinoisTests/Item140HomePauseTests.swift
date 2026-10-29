@@ -41,8 +41,9 @@ final class Item140HomePauseTests: XCTestCase {
 
     // MARK: - States that keep new events on this iPhone
 
-    /// Never verified: the row asks for verification and the line says events stay here, which they do.
-    func testNeverVerifiedHomeAsksForVerificationAndSaysEventsStayHere() async throws {
+    /// Never verified: the row asks for verification and the line says Malinois won't upload what was recorded before
+    /// then, which it won't.
+    func testNeverVerifiedHomeAsksForVerificationAndSaysEarlierEventsWontUpload() async throws {
         let rig = await makeRig(file: Self.file(), prompts: Prompts())
         rig.cloud.accountIdentityForTesting = { "account-a" }
         let lease = await rig.cloud.acquireCloudLease()
@@ -55,11 +56,11 @@ final class Item140HomePauseTests: XCTestCase {
         XCTAssertTrue(shown.contains(Self.needed), "\(shown)")
         XCTAssertFalse(shown.contains(Self.waiting), "\(shown)")
         XCTAssertEqual(line(rig), HomeView.iCloudPausedNotice)
-        XCTAssertTrue(HomeView.iCloudPausedNotice.contains("stay on this iPhone"))
+        XCTAssertTrue(HomeView.iCloudPausedNotice.contains("Malinois won't upload events recorded before then"))
     }
 
     /// Verified for one account, then another seen: new events are held, also after a relaunch.
-    func testAnotherAccountSeenHomeAsksForVerificationAndSaysEventsStayHere() async throws {
+    func testAnotherAccountSeenHomeAsksForVerificationAndSaysEarlierEventsWontUpload() async throws {
         let path = Self.file()
         let rig = await makeRig(file: path, prompts: Prompts())
         rig.cloud.accountIdentityForTesting = { "account-a" }

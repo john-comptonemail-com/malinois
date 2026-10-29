@@ -71,8 +71,12 @@ final class Item109LateAlertTimeTests: XCTestCase {
             return UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         }
         func delivered(_ request: UNNotificationRequest) -> UNNotificationContent? {
+            // Since 1.8.2 the extension counts tamper arrivals (ADR 0061): an empty record, and the test waits for its answer.
+            for key in [AlertBurst.arrivalsKey, AlertBurst.burstKey(AlertBurst.arrivalsKey)] { UserDefaults.standard.removeObject(forKey: key) }
+            let answered = expectation(description: "the extension delivered the alert")
             var result: UNNotificationContent?
-            NotificationService().didReceive(request) { result = $0 }
+            NotificationService().didReceive(request) { result = $0; answered.fulfill() }
+            wait(for: [answered], timeout: 5)
             return result
         }
         let tamper = try XCTUnwrap(delivered(push(CloudExfiltrator.makeTamperSubscription().subscriptionID, tamperText)))

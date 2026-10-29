@@ -447,4 +447,73 @@ final class KeychainServiceTests: XCTestCase {
         XCTAssertEqual(KeychainService.pendingRecovery, .lostHash)
     }
 
+    // MARK: - Item 152's hardening (f) (1.8.2's step 12): the suite's own Keychain service
+
+    /// The suite sets and clears PINs, lockouts and the Early-Access membership. On a developer's own iPhone the test host
+    /// shares the installed app's Keychain items, so the suite keeps its own service: an item it writes is not under the
+    /// app's. This test only reads the app's service, never writes or deletes there. Red at the step's red commit: the
+    /// marker it planted was under the app's service. The marker is read back from the suite's own service first, so a
+    /// Keychain refusing writes cannot pass the test by finding nothing anywhere (Codex's note on step 12).
+    func testTheSuitesKeychainItemsAreNotTheInstalledApps() throws {
+        let marker = String(Double(Int.random(in: 1_000_000...9_999_999)))   // a time no real entry carries
+        KeychainService.writeLastEntryForTesting(marker)
+        defer { KeychainService.removeLastEntryForTesting() }
+        try XCTSkipUnless(KeychainService.lastCorrectEntry != nil, "Keychain unavailable in this build")
+        XCTAssertEqual(KeychainService.lastCorrectEntry?.timeIntervalSince1970, Double(marker),
+                       "the marker is in the suite's own service")
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "Malinois",
+                                    kSecAttrAccount as String: "com.malinois.pin.lastEntry",
+                                    kSecReturnData as String: true]
+        var found: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &found)
+        let stored = (found as? Data).flatMap { String(data: $0, encoding: .utf8) }
+        XCTAssertFalse(status == errSecSuccess && stored == marker, "the suite wrote under the installed app's service")
+    }
+
+    /// The installed app keeps the service it always had; a test run takes its own.
+    func testTheAppKeepsItsServiceAndTheSuiteTakesItsOwn() {
+        XCTAssertEqual(KeychainService.serviceName(testRunner: false), "Malinois")
+        XCTAssertNotEqual(KeychainService.serviceName(testRunner: true), "Malinois")
+    }
+
+    // MARK: - Item 153's MAL-14 (a) (1.8.2's step 5): no false "Wrong PIN" record
+
+    /// A lockout in force compares no PIN: the entry is not checked, so it is no wrong guess, the count does not move
+    /// and the armed pad records nothing, even when the pad's ticker had not yet shown the lockout. Red at the step's
+    /// red commit: every refusal read as a wrong guess, and the armed pad recorded one.
+    func testALockoutInForceChecksNoPINAndRecordsNothing() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4321"), "Keychain unavailable in this build")
+        defer { KeychainService.resetAttempts(); KeychainService.wipeStalePINData() }
+        KeychainService.resetAttempts()
+        for _ in 0..<5 { _ = KeychainService.recordFailure() }
+        XCTAssertEqual(KeychainService.verifyEntry("0000"), .notChecked)
+        XCTAssertEqual(KeychainService.verifyEntry("4321"), .notChecked, "while locked, not even the right PIN is checked")
+        XCTAssertFalse(PINEntryView.recordsAttempt(.notChecked))
+        XCTAssertEqual(KeychainService.failedAttemptsValueForTesting, "5", "the count did not move")
+    }
+
+    /// A sealed Keychain (the phone locked, the item unreadable) compares no PIN either: not checked, not counted, not
+    /// recorded.
+    func testASealedKeychainChecksNoPINAndRecordsNothing() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4321"), "Keychain unavailable in this build")
+        defer { KeychainService.readStatusForTesting = nil; KeychainService.resetAttempts(); KeychainService.wipeStalePINData() }
+        KeychainService.resetAttempts()
+        KeychainService.readStatusForTesting = -25308   // errSecInteractionNotAllowed: sealed
+        XCTAssertEqual(KeychainService.verifyEntry("0000"), .notChecked)
+        KeychainService.readStatusForTesting = nil
+        XCTAssertNil(KeychainService.failedAttemptsValueForTesting, "nothing was counted")
+    }
+
+    /// A real wrong guess is counted and recorded, and the right PIN is neither: the rule the two tests above narrow.
+    func testARealWrongGuessIsCountedAndRecorded() throws {
+        try XCTSkipUnless(KeychainService.setPIN("4321"), "Keychain unavailable in this build")
+        defer { KeychainService.resetAttempts(); KeychainService.wipeStalePINData() }
+        KeychainService.resetAttempts()
+        XCTAssertEqual(KeychainService.verifyEntry("0000"), .wrong)
+        XCTAssertTrue(PINEntryView.recordsAttempt(.wrong))
+        XCTAssertEqual(KeychainService.failedAttemptsValueForTesting, "1")
+        XCTAssertEqual(KeychainService.verifyEntry("4321"), .correct)
+        XCTAssertFalse(PINEntryView.recordsAttempt(.correct))
+    }
 }

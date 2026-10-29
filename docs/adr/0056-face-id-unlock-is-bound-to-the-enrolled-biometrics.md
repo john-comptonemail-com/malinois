@@ -70,3 +70,12 @@ Nothing here leaves the phone: no upload, no record in the log, no alert, nothin
   Face ID re-enrolment but not alternate appearances, and it would move the PIN's fragments); seeding the record at
   the update (decision 4); turning the unlock off at launch rather than at the pad (the pad is where the owner can
   read why, and where the PIN is at hand).
+
+## Amendment (2026-10-25, 1.8.2): a change of the unlock is recorded
+
+Since 1.8.2's step 22 (ADR 0019's amendment of 2026-10-24), Face ID unlock is one of the protection settings whose
+change leaves a record in the log at the next comparison (Settings closing, or the next arm): switched on or off in
+Settings, or switched off by the pad when the enrolled faces or fingers changed, its "off" not saying "in Settings".
+The record uploads as every status record does, with iCloud backup on. The binding's Keychain item still stays on
+this phone and goes nowhere. The path inventory's "no record in the log" and "not a protection setting" are superseded
+on that point (Codex's codex-5 on the full review of 1.8.2, BACKLOG item 165's F2).

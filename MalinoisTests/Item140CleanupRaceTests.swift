@@ -85,8 +85,12 @@ final class Item140CleanupRaceTests: XCTestCase {
         XCTAssertTrue(cleaned, "the limit takes the event's media")
         store.drainIOForTesting()
         XCTAssertFalse(fileExists(rear, in: store))
-        XCTAssertEqual(store.events.first?.mediaDiscarded, true,
-                       "never-uploaded rear evidence must not disappear without the loss marker")
+        // Since item 166's codex-24 (the owner's option (b)) the loss is on the record as a check owed, and marked once
+        // iCloud, asked at the engine's sweep (no engine here), holds none of the capture's files.
+        XCTAssertEqual(store.events.first?.mediaDiscardUnchecked, true,
+                       "never-uploaded rear evidence must not disappear without the loss on the record")
+        store.resolveDiscardCheck(event.id, landed: [], epoch: nil)
+        XCTAssertEqual(store.events.first?.mediaDiscarded, true, "marked once iCloud holds none of it")
     }
 
     /// The same race where the limit has room: the oldest of three synced events, chosen while the files were
@@ -138,5 +142,66 @@ final class Item140CleanupRaceTests: XCTestCase {
         XCTAssertEqual(passes, 1, "one pass measured and freed it")
         XCTAssertEqual(media(of: newest.id, in: store).count, 1)
         XCTAssertNil(store.events.first { $0.id == oldest.id }?.mediaDiscarded, "synced media is a cache, not a loss")
+    }
+
+    // MARK: - Item 155's T1: the checkpoint observer hook across threads (BACKLOG 163, step 12)
+
+    /// Tests set and clear `EventStore.checkpointObserverForTesting` on the main thread, and every snapshot write
+    /// calls it on the store's I/O queue. Read there, it was a data race: 1.8.2's step 1 gate caught it twice
+    /// (`tsan-79-8e2810f.log`), when a tearDown cleared the hook while a store was still writing; the store now reads it
+    /// on the main actor, when it queues the write. This drives the real path, snapshot writes in flight while the hook
+    /// changes. Under ThreadSanitizer (the gate runs this class with it) it fails while the queue reads the hook;
+    /// without ThreadSanitizer it passes either way.
+    func testTheCheckpointObserverCanChangeWhileTheStoreWrites() {
+        let store = EventStore()
+        let observer: @Sendable (URL, [Event], Data) -> Void = { _, _, _ in }
+        for i in 0..<200 {
+            store.flush()
+            EventStore.checkpointObserverForTesting = i.isMultiple(of: 2) ? observer : nil
+        }
+        store.drainIOForTesting()
+        EventStore.checkpointObserverForTesting = nil
+        XCTAssertNil(EventStore.checkpointObserverForTesting)
+    }
+
+    /// A write calls the observer that was set when the write was queued, never one set while it waited:
+    /// Item152IdentityFailureTests sets its observer after a sweep whose writes may still be queued, and must see
+    /// only its own. The first observer holds the I/O queue inside the first write while a second write is queued
+    /// under it, then the second observer is set and a third write queued.
+    func testTheCheckpointObserverSeesOnlyWritesQueuedAfterItWasSet() {
+        let store = EventStore()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let first = CallCount()
+        let second = CallCount()
+        EventStore.checkpointObserverForTesting = { _, _, _ in
+            if first.record() == 1 { entered.signal(); release.wait() }
+        }
+        store.flush()
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success, "the first write reached its observer")
+        store.flush()
+        EventStore.checkpointObserverForTesting = { _, _, _ in second.record() }
+        store.flush()
+        release.signal()
+        store.drainIOForTesting()
+        EventStore.checkpointObserverForTesting = nil
+        XCTAssertEqual(first.count, 2, "the first observer saw the two writes queued while it was set")
+        XCTAssertEqual(second.count, 1, "the second saw only the write queued after it was set")
+    }
+}
+
+/// Counts a hook's calls, which come on the store's I/O queue, behind a lock.
+private final class CallCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    var count: Int { lock.withLock { calls } }
+
+    @discardableResult
+    func record() -> Int {
+        lock.withLock {
+            calls += 1
+            return calls
+        }
     }
 }

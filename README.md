@@ -19,7 +19,7 @@ Once armed, if the phone is moved, tilted, unplugged, handled, touched, or appro
 
 | If someone… | You'll find |
 |---|---|
-| picks up, moves, touches, unplugs or covers the phone | An event in the Event Log: the time, the sensors that fired, and a photo or clip when the camera could take one. With Pro, verified iCloud access and a connection, the event's record reaches your iCloud within moments, before the photo, and your other devices get an alert. |
+| picks up, moves, touches, unplugs or covers the phone | An event in the Event Log: the time, the sensors that fired, and a photo or clip when the camera could take one. With Pro, verified iCloud access and a connection, the event's record reaches your iCloud before the photo, and your other devices get an alert. |
 | keeps jostling or tapping it to bury the real event | One "sustained activity" record instead of a flooded log, with photos still taken on a timer. |
 | tries wrong PINs | Wrong disarm PINs leave their own event, with a front-camera photo when available. |
 | disarms it with your PIN | A disarm record. With Pro, your other devices get a disarm alert. |
@@ -53,35 +53,29 @@ This is ultimately a personal project, but it's a project I think others might f
 
 ## How this is engineered
 
-- About 25,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 1,223 unit tests in 90 files, about as many lines of tests as of app. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 210 of them, each tested on its own.
-- 48 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 28,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 1,585 unit tests in 118 files, 37,199 lines of tests. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 226 of them, each tested on its own.
+- 53 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
 
 **Early-Access:** while the program is open, Pro is free for every install, permanently — no card, nothing to cancel, nothing to do. If Pro ever becomes a paid unlock, that will apply to new installs only; Early-Access installs keep everything.
 
-A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (each event's record reaches iCloud within moments, then its photo or clip, so a phone destroyed seconds later can still leave its record behind), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
+A Pro in-app purchase is available, but **Pro is not required to meet Malinois' objective**: Detection, on-device capture, the local log, everything needed to fulfill that promise, is and will always be free. Pro features are "nice-to-haves" or extend the app functionality beyond the primary objective, and I believe the defaults are sufficient for the vast majority of use cases. Pro features include cloud backup/restore (each event's record reaches iCloud first, then its photo or clip, so a phone destroyed seconds later can still leave its record behind), cross-device alerts, Vision/Audio tripwires, more capture options, and helping me further enrich Anthropic investors.
 
 With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copies readable only on your own devices.
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
-## What's new in 1.8.1
+## What's new in 1.8.2
 
-- ARM asks for your PIN when it has not been entered for 14 days.
-- The one-time screen before your first arm also asks you to turn Voice Control off, and the arm is cancelled after a minute without a touch.
-- On a second device, Home offers "Allow notifications" right after you verify iCloud access.
-- The log now records a stalled motion tripwire, a reinstall, a PIN change, and Guided Access ending during a watch.
-- Face ID unlock for the Event Log is tied to the faces or fingers enrolled when you turn it on; if they change, it turns off until you turn it on again.
-- If Malinois opens before your iPhone's first unlock after a restart, it waits for your settings instead of using defaults.
-- A clip that keeps uploading is no longer cut off; only an upload that has stalled is.
-- A momentary failure to look up your iCloud account no longer pauses uploads or clears your verification.
-- In Siren mode the alarm sounds even if the camera is slow to give up the microphone, and Malinois does not re-arm itself while a PIN recovery is pending.
-- Evidence pushes ask iOS for extra running time from their first step, so a lock right after a trip is less likely to cut them off.
-- Two rare fixes: a damaged lockout value can no longer lock the PIN pad for good, and an interruption at the moment the app leaves the screen can no longer go unrecorded.
+- In Siren mode the siren now plays from the iPhone's own speaker even with headphones, AirPods or a Bluetooth speaker connected; iOS may show its orange microphone dot while it sounds, though nothing is recorded.
+- Once three tamper alerts arrive within a minute, the rest of that burst arrive quietly, on Apple Watch too.
+- The Event Log now records changes to more settings, how long monitoring was interrupted, and a skipped automatic re-arm; countdowns cancelled in a row count as one record, with one alert.
+- A clip's thumbnail now shows a frame near the biggest change in its first 12 seconds, rather than always the frame 1 second in.
+- Also: an earlier warning with Until clear, a warning when arming an iPhone without a passcode, the "Allow notifications" offer as soon as you verify iCloud access, reliability fixes for uploads, alarms and Apple Watch alerts, and clearer wording about Guided Access and iCloud backup.
 
 Earlier releases are listed under [Roadmap](#roadmap), at the end of this file.
 
@@ -109,7 +103,7 @@ against this source.
 
 ## Where to look
 
-- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 1,800
+- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 1,900
   lines: every defense mechanism, the attacks the app explicitly does *not* defend against, and how to
   report a vulnerability. If you read one file, read this one.
 - **`Malinois/`** — the app. No third-party dependencies, by design: what you
@@ -254,3 +248,17 @@ Fixes for two rare timing problems found in a review.
 - A photo or clip that arrives during a storage clean-up is now checked again before it can be removed.
 - Clearer words in the app about what iCloud backup, alerts and the Vision tripwire do.
 - Fixes from independent reviews, including which event a sensor trip is recorded on and how storage limits apply to downloads.
+
+**Shipped in 1.8.1**
+
+- ARM asks for your PIN when it has not been entered for 14 days.
+- The one-time screen before your first arm also asks you to turn Voice Control off, and the arm is cancelled after a minute without a touch.
+- On a second device, Home offers "Allow notifications" right after you verify iCloud access.
+- The log now records a stalled motion tripwire, a reinstall, a PIN change, and Guided Access ending during a watch.
+- Face ID unlock for the Event Log is tied to the faces or fingers enrolled when you turn it on; if they change, it turns off until you turn it on again.
+- If Malinois opens before your iPhone's first unlock after a restart, it waits for your settings instead of using defaults.
+- A clip that keeps uploading is no longer cut off; only an upload that has stalled is.
+- A momentary failure to look up your iCloud account no longer pauses uploads or clears your verification.
+- In Siren mode the alarm sounds even if the camera is slow to give up the microphone, and Malinois does not re-arm itself while a PIN recovery is pending.
+- Evidence pushes ask iOS for extra running time from their first step, so a lock right after a trip is less likely to cut them off.
+- Two rare fixes: a damaged lockout value can no longer lock the PIN pad for good, and an interruption at the moment the app leaves the screen can no longer go unrecorded.

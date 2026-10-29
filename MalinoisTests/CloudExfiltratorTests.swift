@@ -855,7 +855,8 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertEqual(disarm.recordType, CloudExfiltrator.disarmSignalRecordTypeV2)
         XCTAssertNotEqual(tamper.subscriptionID, disarm.subscriptionID)
         XCTAssertEqual(tamper.notificationInfo?.alertBody, "Tamper detected on your device.")
-        XCTAssertEqual(disarm.notificationInfo?.alertBody, "Malinois was disarmed on one of your devices.")
+        XCTAssertEqual(disarm.notificationInfo?.alertBody, "Malinois was disarmed, or arming was cancelled, on one of your devices.",
+                       "a cancelled countdown sends this alert too (item 156; the owner's sentence)")
         for sub in [tamper, disarm] {
             XCTAssertEqual(sub.predicate.predicateFormat, "TRUEPREDICATE")
             XCTAssertTrue(sub.querySubscriptionOptions.contains(.firesOnRecordCreation))
@@ -871,16 +872,41 @@ final class CloudExfiltratorTests: XCTestCase {
     /// second alert. The OFF flip must name every ID this app has ever created, the 1.0 one
     /// included. (Item 76's own test of the upgrade is merged here: the test-suite audit's P2.)
     func testEnsureFillsOnlyTheGapsAndRemoveNamesEveryIDEverCreated() {
-        let tamperID = CloudExfiltrator.makeTamperSubscription().subscriptionID
-        let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
+        let tamper = CloudExfiltrator.makeTamperSubscription()
+        let disarm = CloudExfiltrator.makeDisarmSubscription()
+        let tamperID = tamper.subscriptionID, disarmID = disarm.subscriptionID
+        func stored(_ subscription: CKQuerySubscription, mutable: Bool = true) -> CloudExfiltrator.StoredSubscription {
+            .init(mutable: mutable, body: subscription.notificationInfo?.alertBody)
+        }
         XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [:]).map(\.subscriptionID),
                        [tamperID, disarmID])
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true]).map(\.subscriptionID),
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: stored(tamper)]).map(\.subscriptionID),
                        [disarmID], "an account that predates 1.3 gains the disarm subscription on its next ensure")
-        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: false, disarmID: true]).map(\.subscriptionID),
+        XCTAssertEqual(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: stored(tamper, mutable: false),
+                                                                       disarmID: stored(disarm)]).map(\.subscriptionID),
                        [tamperID], "a 1.3.x subscription is saved again, under its own ID")
-        XCTAssertTrue(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: true, disarmID: true]).isEmpty)
+        XCTAssertTrue(CloudExfiltrator.subscriptionsToSave(existing: [tamperID: stored(tamper), disarmID: stored(disarm)]).isEmpty)
         XCTAssertEqual(Set(CloudExfiltrator.subscriptionIDsToRemove), [tamperID, disarmID, "malinois-tamper-meta-sub"])
+    }
+
+    /// Item 156 (1.8.2's step 9): an account whose disarm subscription still alerts with 1.8.1's sentence has it saved
+    /// again under its own ID, so the new sentence reaches accounts that already have the subscription (a sentence in
+    /// the code alone never would). Only a sentence this build knows to be retired is replaced: one it does not know, a
+    /// later build's, is left alone, so devices on two builds never take turns saving their own. Red at the step's red
+    /// commit: only a missing or immutable subscription was saved.
+    func testADisarmSubscriptionWithTheRetiredSentenceIsSavedAgain() {
+        let tamper = CloudExfiltrator.makeTamperSubscription()
+        let disarmID = CloudExfiltrator.makeDisarmSubscription().subscriptionID
+        let current = CloudExfiltrator.StoredSubscription(mutable: true, body: tamper.notificationInfo?.alertBody)
+        func toSave(disarmBody: String?) -> [String] {
+            CloudExfiltrator.subscriptionsToSave(existing: [tamper.subscriptionID: current,
+                                                            disarmID: .init(mutable: true, body: disarmBody)])
+                .map(\.subscriptionID)
+        }
+        XCTAssertEqual(toSave(disarmBody: "Malinois was disarmed on one of your devices."), [disarmID],
+                       "1.8.1's sentence is replaced")
+        XCTAssertEqual(toSave(disarmBody: "A sentence from a later build."), [], "an unknown sentence is left alone")
+        XCTAssertEqual(toSave(disarmBody: nil), [], "no sentence read: left alone")
     }
 
     func testAPhotoRecordEncryptsItsMetadataButNotTheMedia() throws {
@@ -1426,8 +1452,8 @@ final class CloudExfiltratorTests: XCTestCase {
         let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.touch])
         var state = event
         state.stateChange = "armed"
-        await cloud.warmUp(notifyOtherDevices: true)
-        await cloud.refreshSubscription(notifyOtherDevices: true)
+        await cloud.warmUp(alertsWanted: { true })
+        await cloud.refreshSubscription(stillWanted: { true })
         let fact = await cloud.pushFact(event)
         let upload = await cloud.exfiltrate(event, fullMediaURL: nil)
         let audit = await cloud.pushStateChange(state)

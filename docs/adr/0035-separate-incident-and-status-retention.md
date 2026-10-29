@@ -4,6 +4,7 @@
   a row whose upload is running is never taken, and on Pro a removal of evidence meant for iCloud leaves
   a status entry (Consequences). Amended again 2026-10-14 (BACKLOG 116, Codex's review): status entries'
   uploads are protected too, and the launch trims, the media clean-up and the entry's daily limit hold.
+  Amended 2026-10-26 (BACKLOG 166's A1): the report a removal owes is kept on disk until it has run.
 - **Date:** 2026-10-10
 
 ## Context
@@ -72,3 +73,27 @@ evidence; sustained floods and pending captures retain their existing priorities
   already evicted before upgrade still cannot be discovered locally (ADR 0022).
 - This correction is prepared for 1.5 on its own branch. It must also be carried
   into 2.0 before that release; no release/main merge is implied by the fix.
+
+## Amendment (2026-10-26, 1.8.2): the report owed is kept on disk
+
+The entry's report of a removal ran on a later turn of the main actor and was owed only in memory,
+while the file queue wrote the log without the removed events and deleted their media. A kill in
+between left neither the events nor the entry (BACKLOG 166's A1, Codex's codex-1, shown by its probe
+at the incident limit); the launch trims' report was lost the same way when the app ended before the
+Pro check answered, the consequence accepted above. Now every removal the entry could count is
+written beside the log (`reports-owed.json`: the light copies and the watch) on the file queue
+before the log that drops it, read back at the next launch and after the unlock reload (less any
+event the journal brought back), handed to the report like the launch trims, and retired once its
+report has run: the entry it adds is journaled before then. The file is written only when the log
+is, never while it waits for the first unlock. Older versions ignore the file; the entry's daily
+limit still decides whether a replayed report writes one. Tests: `Item166ReviewTests`.
+
+Codex's look at that change (codex-22): the journal's recovery at launch trims the log too, and it wrote the file before
+the launch had read it, so a crash after its log write lost the reports a launch before owed; and a failed write of the
+file was only logged while the log that drops the events was written and their media deleted. Now the file is read
+before the journal's recovery (and at the unlock reload before the recovery and the reconciliation), every log write
+first makes sure the reports owed are on disk, writing them again if the last write failed, and fails (Home's banner,
+the media kept) while it cannot; a file that cannot be read is set aside (`reports-owed.corrupt-<time>.json`), never
+written over, and if it cannot be moved no log that drops an event whose report is owed is written.
+The reports read at an unlock are handed to a report already listening only after the recovery, less the
+incidents it brought back (codex-26: one handed over first went out for an incident the log held again).

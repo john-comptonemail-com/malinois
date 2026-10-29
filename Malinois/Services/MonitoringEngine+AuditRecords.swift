@@ -11,10 +11,20 @@
 import Foundation
 
 extension MonitoringEngine {
-    /// Settings' Change PIN saved a new PIN (the current one entered first): one "pinChanged" record. The recovery
-    /// flows keep their own record ("reinstalled"), or none for a damaged credential (ADR 0040).
+    /// Settings' Change PIN saved a new PIN (the current one entered first): one "pinChanged" record, written by
+    /// `changePIN`. The recovery flows keep their own record ("reinstalled"), or none for a damaged credential
+    /// (ADR 0040).
     func notePINChanged() {
         logStateChange("pinChanged")
+    }
+
+    /// Settings' Change PIN saves the new PIN through here (item 162's G1): the save and its record are one step, so a
+    /// failed save changes nothing and records nothing, and a saved one is on the record before the view goes. `save`
+    /// is the Keychain's, or a test's. Returns whether the PIN was saved.
+    func changePIN(to pin: String, save: @MainActor (String) -> Bool = KeychainService.setPIN) -> Bool {
+        guard save(pin) else { return false }
+        notePINChanged()
+        return true
     }
 
     /// Guided Access went from on to off while the watch was live (armed, triggered, or the calibration review, when

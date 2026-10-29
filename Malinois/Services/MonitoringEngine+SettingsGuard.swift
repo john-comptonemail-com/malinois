@@ -20,7 +20,7 @@ extension MonitoringEngine {
     /// The launch work itself: the first-use protection baseline and the device name. After a wait, what the launch's
     /// uploads held back for the switch's answer goes now, if backup is on (the sweep reads what is pending afresh).
     func settingsDidResolve(afterWaiting waited: Bool) {
-        adoptProtectionSettingsIfNeeded()
+        if settings.wasResetAtLoad { recordSettingsReset() } else { adoptProtectionSettingsIfNeeded() }
         refreshDeviceName()
         if waited, settings.cloudBackup { sweepAfterTheRunningOne() }
     }
@@ -32,14 +32,36 @@ extension MonitoringEngine {
 
     /// Adopts the settings present at launch only when there is no readable recorded baseline.
     /// Writes no audit row: existing configuration is history, not an edit. A valid baseline
-    /// must survive relaunch unchanged so an edit made before the app ended is not forgotten.
+    /// must survive relaunch unchanged so an edit made before the app ended is not forgotten; one
+    /// recorded before 1.8.2 only gains the seven settings it lacks, as they are now (step 22).
     private func adoptProtectionSettingsIfNeeded() {
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: Self.recordedProtectionKey),
-           (try? JSONDecoder().decode(ProtectionSettings.self, from: data)) != nil { return }
+           let recorded = try? JSONDecoder().decode(ProtectionSettings.self, from: data) {
+            let filled = recorded.fillingMissing(from: ProtectionSettings(settings))
+            if filled != recorded, let data = try? JSONEncoder().encode(filled) {
+                defaults.set(data, forKey: Self.recordedProtectionKey)
+            }
+            return
+        }
         if let data = try? JSONEncoder().encode(ProtectionSettings(settings)) {
             defaults.set(data, forKey: Self.recordedProtectionKey)
         }
+    }
+
+    /// The stored settings could not be decoded and were reset to their defaults (ADR 0049), which no one chose in
+    /// Settings (codex-10 on 1.8.2; the owner's ruling (a)): one record says so, and the reset settings become the
+    /// baseline, so the next comparison writes no edit "in Settings" for them and those after it are real edits.
+    /// Once, across the app ending first (codex-10's residual): the reset is noted until its record and baseline are
+    /// written, and its record takes the note's identity, so only that record stands for it, never another device's
+    /// copy or an earlier reset (codex-17); a note that holds none is given one before the record is written.
+    private func recordSettingsReset() {
+        let id = settings.notedResetID()
+        if !eventStore.events.contains(where: { $0.id == id }) { logStateChange("settingsReset", id: id) }
+        if let data = try? JSONEncoder().encode(ProtectionSettings(settings)) {
+            UserDefaults.standard.set(data, forKey: Self.recordedProtectionKey)
+        }
+        settings.noteResetRecorded()
     }
 
     /// Item 91 (review 1's F3 (a); the 1.4 review's A1): compares the protection settings with the

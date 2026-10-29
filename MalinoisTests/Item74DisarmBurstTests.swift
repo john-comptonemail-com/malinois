@@ -8,6 +8,10 @@
 //  disarms raised one alert per record. Now a disarm sent within ten minutes of happening always
 //  alerts, and among the late ones in a sweep pass only the newest does, so the owner still learns
 //  once that protection stopped. A cancelled countdown writes the same signal and counts the same.
+//  Item 162's ds4f1-1017-6 (BACKLOG 163's step 16, the owner: "yes, with step 16"): when the newest late disarm, which
+//  carries the pass's alert, does not land and an older one does, the pass sent no alert, and none ever came if the
+//  newest never landed. Now the newest late disarm that landed carries it. Written before the change, red at that
+//  commit; each control pins one part of the rule.
 //
 
 import XCTest
@@ -59,6 +63,58 @@ final class Item74DisarmBurstTests: XCTestCase {
     }
 
     // MARK: - The sweep
+
+    private func makeEngine() -> (MonitoringEngine, EventStore) {
+        let store = EventStore()
+        let engine = TestIsolation.track(MonitoringEngine(settings: AppSettings(), eventStore: store, cloud: CloudExfiltrator(),
+                                                          camera: FakeCamera(),
+                                                          entitlements: ProEntitlements(resolvedAs: .trial),
+                                                          timing: EngineCharacterizationTests.fastTiming))
+        return (engine, store)
+    }
+
+    /// The newest late disarm does not land and an older one does: the newest of those that landed carries the alert.
+    func testALateDisarmThatLandsCarriesTheAlertWhenTheNewestDoesNot() async {
+        let (engine, store) = makeEngine()
+        let late = (1...3).map { state("disarmed", minutesAgo: Double($0) * 60) }   // the newest first
+        for event in late { store.add(event) }
+        engine.sweepUploadForTesting = { event in (event.id == late[0].id ? .pending : .synced, nil) }
+        await engine.retryPendingSync()
+        XCTAssertEqual(engine.sweepStandInAlertsForTesting, [late[1].id], "the newest late disarm that landed")
+    }
+
+    /// Control: the newest late disarm lands and carries the alert itself; none stands in.
+    func testNoStandInWhenTheNewestLateDisarmLands() async {
+        let (engine, store) = makeEngine()
+        let late = (1...3).map { state("disarmed", minutesAgo: Double($0) * 60) }
+        for event in late { store.add(event) }
+        engine.sweepUploadForTesting = { _ in (.synced, nil) }
+        await engine.retryPendingSync()
+        XCTAssertEqual(engine.sweepStandInAlertsForTesting, [])
+    }
+
+    /// Control: no late disarm lands; none stands in (the newest carries the alert when it lands).
+    func testNoStandInWhenNoLateDisarmLands() async {
+        let (engine, store) = makeEngine()
+        let late = (1...3).map { state("disarmed", minutesAgo: Double($0) * 60) }
+        for event in late { store.add(event) }
+        engine.sweepUploadForTesting = { _ in (.pending, nil) }
+        await engine.retryPendingSync()
+        XCTAssertEqual(engine.sweepStandInAlertsForTesting, [])
+    }
+
+    /// Control: only late disarms count. A fresh disarm that does not land is no late disarm's carrier: the one late
+    /// disarm, which landed, carried its own alert, and none stands in.
+    func testAFreshDisarmIsNeverTheStandIn() async {
+        let (engine, store) = makeEngine()
+        let late = state("disarmed", minutesAgo: 60)
+        let fresh = state("disarmed", minutesAgo: 1)
+        for event in [late, fresh] { store.add(event) }
+        engine.sweepUploadForTesting = { event in (event.id == fresh.id ? .pending : .synced, nil) }
+        await engine.retryPendingSync()
+        XCTAssertEqual(engine.sweepStandInAlertsForTesting, [])
+        XCTAssertEqual(engine.sweepDisarmSignalsForTesting[late.id], true, "the one late disarm carried its own alert")
+    }
 
     /// The sweep hands each record its decision: three late disarms and a fresh one in one pass,
     /// and only the newest late one and the fresh one alert.

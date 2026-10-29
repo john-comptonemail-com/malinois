@@ -2,7 +2,7 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.8.1 (78)**. Start with the practical guide below.
+This document describes **Malinois 1.8.2 (79)**. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
 
@@ -260,7 +260,7 @@ make every hold permanent: a temporary verification pause is a different conditi
 Home tells the two apart: while a verified installation waits for iCloud (offline, or just
 after a relaunch) its iCloud row says **Waiting for iCloud**; while new events would be tied to
 no account (before the first verification, or after another account was seen) it asks for
-verification and says that events recorded before then stay on this iPhone.
+verification and says that Malinois won't upload events recorded before then.
 
 Account changes invalidate pending cloud work, and stale results must not be
 attached to the local log. Work already accepted by the server cannot be recalled.
@@ -462,20 +462,22 @@ something specific and leaves something behind (details in
   (which needs the PIN, and since 1.4 attempts a record of its own). On Pro with verified
   cloud access, an eligible account binding and cross-device alerts enabled, the app
   attempts to send the disarm notification. Connectivity and system delivery still apply.
-  (Eligible disarms that could not be sent while offline can be retried later; among such late disarms one alert is raised per upload pass, for the newest,
-  so a backlog does not raise one alert each.) The PIN also opens Settings: a PIN-holder can weaken the *next*
+  (Eligible disarms that could not be sent while offline can be retried later; among such late disarms one alert is raised per upload pass, for the newest
+  (since 1.8.2, for the newest that uploaded, when the newest itself did not), so a backlog does not raise one alert
+  each.) The PIN also opens Settings: a PIN-holder can weaken the *next*
   session's configuration — every tripwire but Touch, the camera, the Guided Access
-  requirement and the jamming response. Turning off account-wide cross-device alerts
+  requirement, the jamming response and the settings named below. Turning off account-wide cross-device alerts
   additionally requires fresh device authentication. Since 1.4 such changes attempt
   an audit record ("Camera switched off in Settings"), written when Settings closes or,
   if not recorded then, at the next arm. The first launch remembers the existing configuration
   before Settings can edit it, without inventing an audit row; later launches preserve that
   baseline so an unreported change is still caught (ADR 0019). On Pro the audit records follow
-  the usual verified, account-bound iCloud upload path. Only those settings leave a record (the
-  tripwires, the Guided Access requirement, cross-device alerts, the jamming response; iCloud backup
-  has its own entries). Sensitivity, the response mode, illumination, the battery mode, the grace
-  period, Face ID unlock and the cloud storage setting change with no record, so a PIN-holder can
-  make the next session less sensitive or silent without a trace in the log. A PIN-holder can still
+  the usual verified, account-bound iCloud upload path. Since 1.8.2 sensitivity, the response mode,
+  illumination, the battery mode, the grace period, Face ID unlock and the cloud storage setting leave
+  a record too ("Response mode set to Stealth (covert) in Settings"), so a PIN-holder who makes the next
+  session less sensitive or silent leaves the change in the log. iCloud backup has its own entries; the
+  rest of Settings (the capture mode and lens, clip audio, the siren's ramp, the alert's words, the
+  PIN pad's scramble, the device's label) changes with no record. A PIN-holder can still
   weaken the configuration; these audit attempts help make changes visible but can fail.
 - **Guided Access passcode:** can close the app. On the next eligible launch, the app
   attempts a "Monitoring interrupted — the app was closed or crashed while armed"
@@ -506,7 +508,8 @@ something specific and leaves something behind (details in
   ending Guided Access on the screen, not from forcing a restart. Without the passcode, a
   forced restart leaves the phone locked. This assumes the iPhone has a passcode at all:
   without one, a forced restart leaves the phone open, Guided Access gone, though the
-  Malinois log still needs the PIN.
+  Malinois log still needs the PIN. Since 1.8.2 the arming screen says so on an iPhone
+  without one.
 - **iCloud credentials and authorized clients:** ordinary iCloud.com and iOS storage
   controls do not provide an individual-record editor for Malinois. Account access
   can enable wholesale deletion, including an encrypted-data reset; on an unlocked
@@ -523,13 +526,15 @@ something specific and leaves something behind (details in
   does not remove), so since 1.4 the app looks: at each launch it asks iCloud for its newest
   records that went up, by name, and when most are gone it can requeue eligible local
   records for upload and say so on Home. Cloud verification and account checks apply;
-  requeueing does not mean that the subsequent upload has succeeded. The check also runs with
+  requeueing does not mean that the subsequent upload has succeeded. Each re-uploaded tamper record fires the alert
+  subscription on the owner's other devices; since 1.8.2 their alert extensions take such a burst quietly after its
+  first three alerts (ADR 0061). The check also runs with
   iCloud backup off; the requeued records then wait until backup is turned back on, as Home's
   notice says since 1.8 (76). So an owner's
   own deletion in iOS Settings lasts only while this phone keeps iCloud backup off or no longer
-  holds the events. The requeue happens only while the device is signed into the account those
-  records went to (remembered the first time it found them in place); under another account it
-  declines that recovery requeue and says so. Since 1.5.1 ordinary uploads are bound as
+  holds the events. The requeue happens only while the device is signed into the account this
+  installation is verified for, and only for the records bound to that account when they were
+  recorded (since 1.8.2); under another account it declines that recovery requeue and says so. Since 1.5.1 ordinary uploads are bound as
   well: each event carries the account it was captured under, and evidence whose account
   is unknown or different stays on this device instead of uploading to the signed-in
   account (ADR 0039; *Installation enrollment* under Cloud). Until the next
@@ -538,9 +543,14 @@ something specific and leaves something behind (details in
   capable of writing the account's records could also submit fabricated records.
   Malinois treats downloaded records as clamped, labeled mirrors: never
   superseding first-hand evidence, timestamps believed at most a day ahead of the
-  record's own server stamp, and first against the retention cap. Insertion buys
+  record's own server stamp, and first against the retention cap. Since 1.8.2 each
+  copy is also held to what a real record carries: each tripwire and each photo name
+  once, a thumbnail of at most 64 KiB, a device name of at most 64 characters and
+  2,048 bytes, and a status entry's number only as the app writes it. Insertion buys
   distraction in the log, not reach into the on-device record (fourth pass, R2-F3 +
-  R3-4).
+  R3-4), with one exception: a photo saved in iCloud under the name of one of this
+  iPhone's own photos is attached by a later download into that record (*Evidence
+  comes back*, below).
 
 **Tier 3 — professional adversaries (outside the guarantees, stated honestly).** The
 realistic top of this app's threat ladder is not a government — it is the private-sector
@@ -653,14 +663,17 @@ Two consequences matter for the threat model:
   A stored deadline that is not one the app could have written (damage) is replaced by a fresh
   one from the failure count, so the pad is locked for the right time, never for good and
   never not at all (since 1.8.1); a deadline in an older version's format that lies further
-  ahead than the longest wait counts as damage too.
-  On the armed screen a failed attempt also attempts a **"Wrong PIN entered"**
+  ahead than the longest wait counts as damage too. A damaged failure count at the largest
+  number the app can store stays there, and the next wrong PIN is refused with the full
+  hour's wait instead of crashing the app (since 1.8.2).
+  On the armed screen a wrong guess also attempts a **"Wrong PIN entered"**
   event with a front-camera still (whoever is typing faces it),
   eligible for authorized Pro upload and notification like any trip — the owner's own typos
   included; an attempt typed while a capture is still running joins that capture's record.
   The lockout itself is unchanged, the right PIN adds no record of its own (the "disarmed"
   audit record already stands), and the Home gate and the other PIN pads stay
-  lockout-only (ADR 0014).
+  lockout-only (ADR 0014). An entry refused without a PIN being compared (the Keychain
+  unreadable, or a lockout already in force) is no guess and records nothing (since 1.8.2).
 - **Durable writes.** Keychain writes **update in place** rather than delete-then-add,
   so a failed write (e.g. one attempted while the device is locked) can't destroy the
   PIN hash or silently reset the lockout counter. And "no hash on file" is only
@@ -756,7 +769,9 @@ Two consequences matter for the threat model:
   since, with the iPhone passcode or otherwise, turns the unlock off before any prompt, with a
   caption saying so; the PIN opens the log as always, and Settings (behind the PIN) turns the
   unlock on again, binding it afresh (ADR 0056). An install updating with the unlock on is asked
-  to turn it on again once.
+  to turn it on again once. Since 1.8.2 a face or finger opens only the screen whose pad asked for
+  it: an answer that arrives after that pad closed, after the app went to the background, or
+  after a newer request opens nothing.
   Viewing is a convenience; the security boundary is unmoved: disarm, stopping a recovery
   re-arm, and ordinary PIN changes require the Malinois PIN. Explicit Forgot PIN
   recovery is a separate flow: device authentication can authorize a replacement,
@@ -804,7 +819,9 @@ Two consequences matter for the threat model:
   copy supersedes a mirror, it inherits the locally-downloaded media reference rather
   than erasing it (eighth review, M3). Store updates as a class preserve monotonic
   fields: owner attribution and an advanced sync state can never be walked back by a
-  stale in-flight copy (sixth review, F2 — ADR 0006).
+  stale in-flight copy (sixth review, F2 — ADR 0006), and since 1.8.2 neither can the mark
+  that a photo was discarded before it uploaded, which a copy held on another device takes
+  from any later copy of the event.
 - **Two-shot exfiltration** *(Pro)* races a power-off: the instant a tamper is
   logged with verified cloud access and an eligible account binding — for *every*
   capture mode, *before* the camera capture even starts — a tiny
@@ -813,9 +830,7 @@ Two consequences matter for the threat model:
   thumbnail restarts its 20 s whenever bytes move, within a ten-minute cap: a network path that *stalls* without failing — CloudKit's
   own resource timeout is measured in days — is cancelled and counted as a network-class
   failure, so a stall can neither wedge the per-event pipeline nor mute the
-  observed-failure escalation by never technically failing (sixth review, F1). Until the
-  next update, those 20 seconds are timed on the device's clock: a clock change during a
-  stalled save can lengthen its wait by as much as the change, or end it early. The
+  observed-failure escalation by never technically failing (sixth review, F1). The
   account-status preflight ahead of each push is bounded the same way (10 s), so no step
   of the chain — check or write — can hang it (fourth pass, R3-1). The event is also queued for the on-device store before capture (an asynchronous write — a runtime persist failure raises a Home banner rather than passing silently, F6), so a successful event write can preserve the detection even if capture fails — and on the **free
   tier** that on-disk write is the whole story, since the iCloud pushes are Pro-gated
@@ -825,12 +840,10 @@ Two consequences matter for the threat model:
   engine's task that starts one, holds a background-task assertion from its first step, the identity lookup included,
   so a lock or a kill in the same instant finds iOS's extra time already asked for; it used to be asked for only
   after the lookup and the per-event queue wait (ADR 0003). **Writes for one event are serialized** (ADR
-  0003): each starts only after the previous write for that event has finished, and a
+  0003): each starts only after the previous write for that event has finished, in the order they were asked for,
+  and since 1.8.2 each sends the event as the phone's log holds it at that moment; a
   write carrying less evidence than one already sent is refused; different events'
-  uploads stay concurrent. One gap remains, to be fixed in the next update: for an event
-  without a photo or clip, the first record and the fuller one can arrive the wrong way
-  round, so the iCloud copy can lose details added after the trip (why a capture failed,
-  wrong PINs typed meanwhile); the phone's own log keeps them.
+  uploads stay concurrent.
 - **Partial camera evidence.** A Both-camera attempt keeps each successfully saved capture
   and records why front or rear coverage was missing, including a file that could not be
   saved or fallback to the front camera. These are original-attempt reasons and remain after
@@ -875,16 +888,22 @@ Two consequences matter for the threat model:
   `completeUnlessOpen`** — encrypted while the device is locked, unless a file is
   currently open for an in-flight upload. This is stronger than the container
   default. Media is written (and recorded clips are *moved*) into the store off the
-  main actor, with the protection class re-applied after the move **as one
-  transaction — a clip whose protection cannot be applied is removed, never left on
-  disk under-protected** — so a large clip never lands in memory or blocks the UI at
-  the moment of capture.
+  main actor, with the protection class applied **as one transaction with the move — a
+  downloaded clip whose protection cannot be applied is removed, never left on disk
+  under-protected** — so a large clip never lands in memory or blocks the UI at the moment
+  of capture. Since 1.8.2 a recorded clip is raised to that protection before it leaves the
+  folder it waits in (below), so one whose protection iOS will not raise stays there, whole,
+  and its save is tried again the next time the app starts.
 - **Recordings waiting to be attached are protected less.** A clip records into
   Application Support/PendingCameraEvidence, which uses `completeUntilFirstUserAuthentication`:
   readable whenever the phone has been unlocked once since it started, so a finished clip
   can still be read and attached if the screen locks first. The store moves each clip out
   as it attaches it, under `completeUnlessOpen` as above, so only a clip no event took stays
-  there; such a clip is removed at launch once it is 30 days old.
+  there; such a clip is removed at launch once it is 30 days old. Since 1.8.2 a save that
+  starts after the lock's grace period (about 10 seconds; a late camera file, or work done
+  when a notification wakes the app) completes: the store flushes each file it writes without
+  reopening it, which iOS refuses for a `completeUnlessOpen` file once the phone has locked.
+  Before 1.8.2 such a save failed and the photo or clip was lost (found on a device check).
 - **Retention has separate budgets: 500 incidents and 100 recent status entries**,
   with the existing shared ~2 GB media cap. Arm/disarm, settings and interruption
   history cannot displace incidents, and incident flooding cannot consume status
@@ -899,8 +918,9 @@ Two consequences matter for the threat model:
   upload and had not fully uploaded (pending, or waiting for iCloud verification), the log
   keeps a status entry saying so, once per watch or once a day while disarmed (kept across
   relaunches); it does not say how many. A trim made while the log loads at launch is reported
-  too, once the Pro check has answered (normally within seconds); if the app ends before then,
-  that report is lost. On upgrade a
+  too, once the Pro check has answered (normally within seconds). Since 1.8.2 the report a removal
+  owes is written beside the log before the log that drops its events, and kept until it has run,
+  so an app that ends first reports it at its next launch. On upgrade a
   readable legacy log adopts these limits; old status history beyond 100 is removed
   locally even if unsynced. Count trimming does not delete records from iCloud. The
   cloud-cleanup minimum age of 30 days does not apply to these local storage limits.
@@ -909,7 +929,14 @@ Two consequences matter for the threat model:
   media is attached (a capture, a download or a recovered file), not only at the next event:
   on a phone at the cap the oldest synced media goes first, which can be a download itself. A
   pending capture the byte cap must discard in a storage emergency is
-  **marked on its event** so the loss is visible. A launch-time
+  **marked on its event** so the loss is visible; since 1.8.2 only when none of its files had
+  reached iCloud, and a capture part of which had keeps its download instead. After iCloud's copies
+  are found deleted or reset, what had reached iCloud before no longer counts, nor an answer
+  iCloud gave before: such a capture is checked against iCloud again before it is marked or kept.
+  One exception: a
+  capture whose iCloud account 1.8.1 or earlier could not tell, after a restore from a device
+  backup or an update from before 1.5.1, is still marked, though part of it may have reached
+  that account's iCloud. A launch-time
   sweep also reclaims media files no event references (true leaks); it deletes nothing
   while a corrupt-log backup exists — after a corruption, an unreferenced file may be
   evidence whose metadata was lost — and never touches referenced or recent files. Since
@@ -943,9 +970,13 @@ Two consequences matter for the threat model:
   stays unknown. A missing thumbnail or a delegate error alone does not discard bytes.
   Unclaimed movie files stay in protected Application Support/PendingCameraEvidence,
   outside temporary-file cleanup; termination before finalization still does not
-  guarantee playable footage or automatic attachment after relaunch. Nothing attaches a
-  clip still there later, so one 30 days old is removed at launch. A separate pending
-  allowance of 1,200 files / 2 GB limits admission. A clip is checked against it before
+  guarantee playable footage or automatic attachment after relaunch. Since 1.8.2, when a
+  clip's save is refused after the store has written its intent (the record naming the clip
+  and its event), the save is tried again the next time the app starts (above); a clip
+  refused before that, such as when the attachment folder is full, is not attached later,
+  like any other clip still there, and one 30 days old is removed at launch. A separate
+  pending allowance of 1,200 files / 2 GB limits admission. A clip is checked against it
+  before
   its capture starts the camera, so when it is full (or holds an unreadable entry) that
   capture starts no camera and lights nothing: the event records that clip storage is full,
   Home says so, and photos are unaffected. A camera the watch already keeps ready, and the
@@ -976,9 +1007,11 @@ Two consequences matter for the threat model:
   during the first 120 s, so a pad can stand to about 150 s) and a
   mere touch on the glass do not qualify; owner
   *attribution* still uses the wider any-touch window, but presentation was deliberately
-  narrowed to actual typing (F1). Residual, accepted: someone tapping keys holds suppression
-  for the pad's lifetime — while standing over an armed device whose motion, sound and vision
-  tripwires are live.
+  narrowed to actual typing (F1). A warning held back this way is postponed, not dropped
+  (since 1.8.2): it appears when that 20 s window ends or as soon as the pad closes without a
+  correct PIN, whichever comes first, and only a correct PIN clears it. Residual, accepted:
+  someone tapping keys holds suppression for the pad's lifetime — while standing over an armed
+  device whose motion, sound and vision tripwires are live.
   Detection and capture run underneath throughout (proximity excepted, as above); anything
   captured while the pad was open
   is flagged **owner-attributed** only if a correct PIN follows — a wrong PIN's own record
@@ -1010,7 +1043,8 @@ Two consequences matter for the threat model:
   camera**: the video pipeline keeps running through the alarm, so the next trigger pays no
   cold start and the vision tripwire keeps watching between captures. The siren waits for
   that release, but since 1.8.1 at most about 1.5 s: a camera queue that does not answer no
-  longer leaves the alarm silent, and a release that lands late makes it sound again. Its coverage during a
+  longer leaves the alarm silent, and a release that lands late makes it sound again, at the level its ramp had
+  reached by then (since 1.8.2), so the quiet start is neither cut short nor begun again. Its coverage during a
   sustained alarm is bounded, stated honestly: every capture suppresses vision for ~5 s (the
   scene being recorded must not judge itself), so under continuous tampering the other
   tripwires carry detection; vision's win here is the quiet stretches and the warm restart. (Siren is
@@ -1054,7 +1088,7 @@ where the tell is the *pattern* of triggers, not any single one:
   past the retention caps. The aggregate check counts *triggers*, not raw sensor trips,
   so a genuine tamper firing motion + touch + proximity together still counts once and
   can never be misread as synthetic noise (F3). Repeats **coalesce** into one "sustained
-  activity" counter event instead of hundreds, and the app **goes loud** (abandons Stealth with an on-screen warning; the siren joins only in Siren mode — suspected jamming is the one escalation that always sirens). Crucially, coalescing suppresses **log spam and upload volume, not
+  activity" counter event instead of hundreds, and, with *Alarm on suspected attack* on, the app **goes loud** (abandons Stealth with an on-screen warning; the siren joins only in Siren mode — suspected jamming is the one escalation that always sirens); with it off, an alert or siren already running stays up while the trips go on (since 1.8.2). Crucially, coalescing suppresses **log spam and upload volume, not
   evidence**: capture continues on a bounded cadence (a photo every ~20 s) so a real
   tamper that looks like a flood still gets capture attempts, subject to camera
   availability and the cadence limit. Each of those photos is its own record, so with Pro and
@@ -1176,9 +1210,11 @@ cancellation, unavailable authentication, and unknown account identity fail clos
 Cloud service entry points, queued writes, retry pages, downloads, subscription changes,
 and cleanup carry account/generation checks. Account changes invalidate pending work;
 stale results cannot be applied to local evidence. Already accepted server operations
-cannot be recalled. First-hand evidence is bound at capture to an enrolled account;
-migration retains only known previous account bindings, and unknown history remains
-local rather than being silently adopted by a different account. The Event Log separates
+cannot be recalled. First-hand evidence is bound at capture to an enrolled account.
+Since 1.8.2 the one-time rebuild after a restore from a device backup, or an update from before
+1.5.1, binds no restored record: nothing the backup keeps proves which account a record went to,
+so restored history remains local rather than being adopted by any account, and copies from
+other devices are bound again by the next fetch. The Event Log separates
 held evidence from retryable uploads and explains the hold without exposing account IDs.
 This presentation is not authorization: every upload still requires a fresh account lease.
 A lookup that fails for want of a network, or by its deadline, denies only that request and
@@ -1219,7 +1255,11 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   can be *recovered*, not merely proven to exist. Retrieval and restore never confuse
   failure with absence (ninth review, R3-3): "iCloud holds nothing" is claimed only when
   every slot actually answered, and a fetch that couldn't check everything says so and
-  offers a retry instead of presenting a partial result as the whole story. The app keeps no
+  offers a retry instead of presenting a partial result as the whole story. Since 1.8.2 a
+  download into this iPhone's own record asks only for the names its own upload gave its
+  photos, one for each camera the record names, so a photo saved under another name cannot
+  join it or give it a camera it never used; one saved under the name of this iPhone's own
+  photo can, since the app records no digest of what it uploaded. The app keeps no
   device identity, so after a reinstall or an erase (a DFU restore included) the device's own
   earlier records come back as copies, labelled with the name they were stamped with, as another
   device's records are. Images that come back are cloud input, so they decode within explicit
@@ -1263,7 +1303,11 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   CloudKit records. Device/sensor details and Vision-only quieting from ADR 0017 are suspended
   from 1.5.1 on. Generic tamper alerts keep the subscription's sound and wording; from 1.6 the
   extension shows them Time Sensitive, decided from the subscription the push names without
-  reading the record (ADR 0045), so a Vision-only trip is Time Sensitive too; routine arm records
+  reading the record (ADR 0045), so a Vision-only trip is Time Sensitive too. Since 1.8.2, once
+  three tamper alerts have arrived within a minute (counted from the extension's own record of
+  tamper arrivals), the rest of that burst arrive passive, without sound, saying they are one of many, while
+  each follows the one before by less than two and a half minutes (ADR 0061): a re-upload after a
+  deletion in iOS Settings raised one Time Sensitive alert per record. Routine arm records
   remain silent. This avoids an unenrolled background
   reader and introduces no shared authorization storage or new signing capability. Older
   installed builds retain their previous alert behavior.
@@ -1286,7 +1330,8 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   iPhone's alerts as well, a few seconds before the relayed copy (TestFlight 1.8 (74)). Since 1.8
   (75) the watch pairs the two by the event's ID, which iCloud's push carries in the name of the
   record that fired it (ADR 0052): the watch's alert extension shows iCloud's tamper copy Time
-  Sensitive, as the iPhone's does, or quietly when the relayed copy of the event already tapped; the
+  Sensitive, as the iPhone's does, or quietly when the relayed copy of the event already tapped or when it is one of
+  a burst (ADR 0061; relayed tamper alerts under an hour old follow the same rule, counted apart, each once it is shown); the
   watch app posts the relayed copy as before, a tamper Time Sensitive with sound, whatever the list holds, then
   removes iCloud's copy from the list. (In 75 and 76 it posted the relayed copy quietly when iCloud's copy was listed
   as loud; on the owner's watch, with the app closed, tamper alerts then came with no tap: a listed copy need not
@@ -1403,8 +1448,10 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   and Siri behavior has varied across owner tests; neither is an unconditional
   no-interruption guarantee. Guided Access remains the recommended configuration. Its Options should also disable the Side Button
   (Sleep/Wake Button on older phones): with it on (the default), one press locks the screen and suspends the watch until
-  the owner unlocks — recorded as a lock, and the tripwires compare the live state with
-  their baselines on resume, but nothing is watched meanwhile (README, *Enable it*). With it off, a
+  the owner unlocks — recorded, with how long nothing was watched (since 1.8.2), but nothing is watched meanwhile: on
+  resume the Power and Motion tripwires compare the live state with their baselines, which catches a changed power
+  connection or a tilt beyond Motion's threshold, not a change undone during the lapse or a phone moved and set down
+  the same way up (README, *Enable it*). With it off, a
   press only shows the iOS banner that Guided Access is on and how to exit; the tripwires keep
   running, and ending Guided Access still needs its passcode, or Face ID or Touch ID if you allowed them in Guided Access's settings.
 - **Disarmed under Guided Access, the screen stays on for ten minutes** (since 1.4,
@@ -1537,7 +1584,9 @@ These are out of scope by design — Malinois does not claim to defend against t
   full-resolution media and old heartbeat trails only** — facts, thumbnails, audit records
   and each watch's latest beat have no deletion path inside the app, and nothing newer than
   **30 days** can be deleted by these cleanup paths (server-date-anchored policy and floor
-  are enforced inside each deleting call, not the UI; unavailable time defers deletion). So a PIN-holder cannot use "free
+  are enforced inside each deleting call, not the UI; unavailable time defers deletion; since 1.8.2 the automatic
+  clean-up asks again before every batch whether the setting still wants it, so Keep forever, Manual or another period
+  chosen while a pass is under way stops what it has not yet sent). So a PIN-holder cannot use "free
   up iCloud space" to destroy the evidence of what they just did. What the PIN defeats is
   narrower — it stops *future* monitoring and silences the response; the GA passcode
   unlocks the single-app restriction. Recorded interruptions and notification
@@ -1575,19 +1624,33 @@ These are out of scope by design — Malinois does not claim to defend against t
   owed re-arm but not the PIN, and the re-arm waits for the recovery to finish); there
   is no monitoring while the app is stopped or during the new countdown/calibration.
 - **Siren volume.** iOS gives no app a way to override the hardware volume buttons,
-  so whoever has the phone can turn the siren down. The `.playback` category defeats the silent
-  switch, and the on-screen warning + already-escaped evidence are the deterrents
+  so whoever has the phone can turn the siren down. The siren's audio settings (`.playAndRecord` in
+  Siren mode since 1.8.2, `.playback` otherwise) both play with the silent switch on, and the
+  on-screen warning + already-escaped evidence are the deterrents
   that don't depend on audio — but the alarm's loudness itself isn't guaranteed.
   Mitigations shipped: the arming screen tells Siren-mode users to disable **Volume
   Buttons** in Guided Access → Options (so the siren's volume can't be lowered while
-  armed), and a low-volume warning is now re-sampled at go-live — not just at the
-  start of arming — so it reflects the volume the device will actually alarm at.
-- **Siren route.** The siren plays wherever the iPhone's sound goes: with headphones, AirPods, a
-  Bluetooth speaker, AirPlay or a car connected it plays there, not in the room (on the owner's
-  iPhone with AirPods, 2026-10-20; it moved back to the iPhone as soon as they went in their case).
-  Since 1.8 (76) the countdown says so in Siren mode, reading the route iOS gives the siren's own
-  audio setting at arm and at each tick. Nothing pins the siren to the speaker, and headphones
-  connected after the countdown still take it (ADR 0053).
+  armed), and warns when the media volume is low, read as arming begins and again as
+  the countdown starts, right after the coaching that says to turn it up. It is not
+  read again when the watch goes live: a volume lowered during the countdown shows no
+  warning.
+- **Siren route.** Until 1.8.2 the siren played wherever the iPhone's sound went: with headphones,
+  AirPods, a Bluetooth speaker, AirPlay or a car connected it played there, not in the room (on the
+  owner's iPhone with AirPods, 2026-10-20, and with AirPods connected during a watch, 2026-10-27).
+  Since 1.8.2, in Siren mode it plays from the iPhone's speaker whatever is connected: the recording
+  audio setting, with `defaultToSpeaker` and without the Bluetooth and AirPlay options, and the
+  speaker asked for at each start and again at any change of route while it plays. Malinois records
+  nothing with that setting, but iOS may show its microphone indicator while the siren plays. With
+  the microphone permission never answered, starting it asked nothing on the Simulator or on a real
+  iPad with 1.8.2's TestFlight build (2026-10-29); an iPhone in that state has not been tried. If
+  the setting will not start, the siren plays with the playback one, which goes wherever the sound
+  goes. The suspected-attack alarm in Alert and
+  Stealth keeps the playback setting. An alarm that plays anywhere but the speaker without the
+  speaker setting, or with its speaker request refused, is logged once, naming the output as iOS
+  names it; an output connected after an alarm on the playback setting started (the fallback, or
+  Alert and Stealth's) is not. AirPlay screen mirroring is an output of the recording setting too; the speaker request is to take the sound off it as well,
+  which has not been tested. The countdown's low-volume warning reads the volume iOS reports for its
+  current output, which with headphones connected may be theirs rather than the speaker's (ADR 0062).
 - **Power tripwire is bidirectional but connection-state only.** The Power / Cable
   tripwire fires on a power-connection change in **either** direction — unplugged, or
   plugged in (the latter catches a device armed on battery being connected to a computer
@@ -1663,8 +1726,11 @@ These are out of scope by design — Malinois does not claim to defend against t
   the current one — a jump of more than 30 s, or uptime that shrank, means the device
   restarted; otherwise the app alone was closed or crashed. Sending an active session to the
   background is its own cause — named a lock when Guided Access was on, since the lock
-  button is the only exit there; on resume the tripwires compare the live state with their
-  baselines, so a plug or unplug during the lock still trips. Cancelling a countdown, and a
+  button is then the usual exit (not the only one: a call or Siri can interrupt, so since 1.8.2 the record says "or
+  Malinois otherwise left the screen"); a live watch's return is recorded with how long nothing was watched (since
+  1.8.2), and on resume the Power and Motion tripwires compare the live state with their baselines, so a power
+  connection that differs on return, or a tilt beyond Motion's threshold, trips, while a smaller tilt, a change undone
+  during the lapse, or a phone moved and set down the same way up, goes unseen. Cancelling a countdown, and a
   kill during one, leave records too: the one needs no PIN and used to leave nothing. A marker from a build before the stamp stays a bare
   "interrupted" rather than a guess. The one thing that can mislead the rule is a manual
   clock change of more than 30 s between arm and relaunch, which Guided Access rules out
@@ -1750,8 +1816,10 @@ These are out of scope by design — Malinois does not claim to defend against t
   than silently dropping the re-arm (M4). The crash-loop guard is timed against actual
   re-arm *attempts*, so a re-arm that was only deferred never counts toward it. Two attempts
   within 90 seconds stop the automatic re-arm; since 1.8 (76) Home then says so ("Not re-armed
-  automatically ..."), until the owner's next arm. Someone who can close the app twice within
-  90 seconds gets the same, and each close is still recorded.
+  automatically ..."), until the owner's next arm, and since 1.8.2 the Event Log records the skip as a quiet status
+  entry. Someone who can close the app twice within 90 seconds gets the same, and each close is still recorded.
+  Stopping the re-arm's countdown takes the Malinois PIN; since 1.8.2 the stop is recorded as a cancelled countdown is
+  ("Arming cancelled before going live"), and on Pro alerts the owner's other devices the same way.
 - **The recovery countdown itself leaves a marker (F1, external review round 11).** The window
   between consuming the owed re-arm flag and re-engaging covert used to hold no persistent
   state, so killing the app a second time *during* the visible recovery countdown left the next

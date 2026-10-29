@@ -82,6 +82,12 @@ enum SensorType: String, Codable, CaseIterable, Identifiable {
         [.motion, .power, .proximity, .audio, .vision, .touch]
     }
 
+    /// The tripwires Settings offers a sensitivity for, in its order: Power and Proximity are binary. Settings' pickers
+    /// and the settings records (1.8.2's step 22) read it.
+    static var sensitivityTripwires: [SensorType] {
+        tripwires.filter { $0 != .power && $0 != .proximity }
+    }
+
     /// The tripwires gated behind Pro. Defined once here because the set is consulted from
     /// three unrelated places — the entitlement clamp (`AppSettings.effectiveSensors`), the
     /// Settings row, and the Test Sensors row — and they must never disagree: a UI that

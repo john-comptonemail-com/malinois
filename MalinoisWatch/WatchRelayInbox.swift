@@ -29,6 +29,8 @@ final class WatchRelayInbox {
     /// own, the alerts summed up and the summary, in one record, so an interruption can never keep one
     /// without the others (Codex's X2).
     nonisolated static let memoryKey = "com.malinois.watch.relayMemory"
+    /// The record of relayed tamper alerts shown on their own, for the burst rule (item 169's codex-3; ADR 0061).
+    nonisolated static let relayArrivalsKey = "com.malinois.watch.relayArrivals"
 
     private let defaults: UserDefaults
     private let now: @MainActor () -> Date
@@ -114,10 +116,19 @@ final class WatchRelayInbox {
         // since iCloud's may not have tapped (TestFlight 76).
         let plan = WatchAlertPairing.relayed(message, delivered: await readList())
         let request: UNNotificationRequest
+        var burstAfter: AlertBurst.Record?   // the burst record after this alert, kept once it is shown
         if let joined {
             request = joined.request(now: handledAt)
         } else {
-            request = Self.request(for: message, now: handledAt)
+            // A relayed tamper alert that is one of many arriving at once comes quietly, as iCloud's do (item 169's
+            // codex-3; ADR 0061): a backlog under an hour old, too young for the summary, taps three times, not twenty.
+            // Counted once it is shown (item 170's codex-4): an alert the watch could not show must not use up a
+            // burst's first three.
+            let arrival = message.kind == .tamper
+                ? AlertBurst.arrive(handledAt, after: AlertBurst.record(defaults: defaults, key: Self.relayArrivalsKey)) : nil
+            burstAfter = arrival?.record
+            let quiet = arrival?.quiet ?? false
+            request = Self.request(for: message, now: handledAt, quiet: quiet)
         }
         var posted = false
         do {
@@ -131,6 +142,7 @@ final class WatchRelayInbox {
         // (Codex's X1: each copy pushed out the next one's memory, and all were counted).
         ledger.finish(id, posted: posted && joined == nil)
         guard posted else { return false }
+        if let burstAfter { AlertBurst.commit(burstAfter, defaults: defaults, key: Self.relayArrivalsKey) }
         // Once the relayed copy is accepted, so iCloud's goes only after its replacement was scheduled.
         if !plan.replacing.isEmpty { remove(plan.replacing) }
         if let joined {
@@ -190,13 +202,18 @@ final class WatchRelayInbox {
 
     /// The notification for an alert shown on its own: its event's time in the text, with sound, and
     /// Time Sensitive for a tamper (ADR 0045), also after iCloud's copy of the event, which may not have tapped (ADR
-    /// 0052, since TestFlight 76).
-    nonisolated static func request(for message: WatchAlertMessage, now: Date) -> UNNotificationRequest {
+    /// 0052, since TestFlight 76); `quiet`, one of a burst (ADR 0061): passive, without sound, in the burst's words.
+    nonisolated static func request(for message: WatchAlertMessage, now: Date, quiet: Bool = false) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         content.title = message.title
-        content.body = message.body(deliveredAt: now)
-        content.sound = .default
-        content.interruptionLevel = message.isTimeSensitive ? .timeSensitive : .active
+        if quiet {
+            content.body = AlertBurst.quietBody
+            content.interruptionLevel = .passive
+        } else {
+            content.body = message.body(deliveredAt: now)
+            content.sound = .default
+            content.interruptionLevel = message.isTimeSensitive ? .timeSensitive : .active
+        }
         return UNNotificationRequest(identifier: message.notificationIdentifier, content: content, trigger: nil)
     }
 

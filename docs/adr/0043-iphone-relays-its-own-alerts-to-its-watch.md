@@ -9,7 +9,9 @@
   by ADR 0045 (63): the relayed tamper alert is Time Sensitive. Amended for 1.6 (65) after the
   1.6 reviews (BACKLOG 108, CE-03): decision 3 remembers an alert only once it was posted.
   Amended 2026-10-13 (BACKLOG 110): the complication option, and a Live Activity tried in its place, give no
-  faster tap; the relay stays (Consequences).
+  faster tap; the relay stays (Consequences). Amended 2026-10-28 (1.8.2, BACKLOG 155's A10): after a failed
+  activation the waiting alerts keep waiting, and a later alert or a foreground asks WatchConnectivity to activate
+  again, after a wait that doubles from 5 seconds up to 10 minutes (decision 2).
 - **Date:** 2026-10-12
 - **Amended 2026-10-17** (1.8, BACKLOG 124's F10): decision 1 relays a cancelled countdown too.
 - **Amended 2026-10-18 by ADR 0051** (1.8 (73), BACKLOG 134): decision 3's late-alert time becomes a time on every
@@ -18,6 +20,9 @@
 - **Amended 2026-10-19 by ADR 0052** (1.8 (75), BACKLOG 140): iCloud now reaches the paired watch also while it is
   connected through its iPhone (TestFlight 1.8 (74): iCloud's copy about 8 seconds before the relay's), so the watch
   pairs the two copies of an event: one tap, and one entry with the time.
+- **Amended 2026-10-23** (1.8.2, BACKLOG 152's lead 19): decision 1's "Pro is active" is decided once the first Pro
+  check has resolved. An entry logged before then (a cold launch's interruption record) waits for the answer, at most
+  20, the newest kept, instead of being dropped while Pro still read as off.
 
 ## Context
 
@@ -51,7 +56,8 @@ out: Malinois has none by design.
    once while the watch app is open, and always queued, which watchOS delivers by waking the watch
    app in the background. Alerts sent while the link is still activating (a relaunch writes its
    interruption record within milliseconds) wait, at most 20, and go out when it activates with a
-   watch (62). It carries the iCloud alerts' fixed texts, the event's ID and its time; no device,
+   watch (62); since 1.8.2 they also wait out a failed activation, until a later alert or a foreground has activated
+   the link again. It carries the iCloud alerts' fixed texts, the event's ID and its time; no device,
    sensor or evidence detail.
 3. **The watch shows each event once.** It activates its end of the link at launch, holds each
    background wake until the link has handed over everything queued and every alert it handed over

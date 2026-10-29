@@ -174,7 +174,7 @@ final class Item134WatchSummaryTests: XCTestCase {
     func testEveryRelayedAlertNamesItsEventsTime() throws {
         let at = try local(10, 19, 8, 59)
         for (kind, words) in [(WatchAlertMessage.Kind.tamper, "Tamper detected on your device"),
-                              (.disarm, "Malinois was disarmed on one of your devices")] {
+                              (.disarm, "Malinois was disarmed, or arming was cancelled, on one of your devices")] {
             let message = alert(kind, at: at)
             XCTAssertEqual(message.body(deliveredAt: at.addingTimeInterval(20)), "\(words) at \(time(at)).", "on time, with the time")
             XCTAssertEqual(message.body(deliveredAt: at.addingTimeInterval(1800)), "\(words) at \(time(at)).", "late, the same day")
@@ -183,7 +183,7 @@ final class Item134WatchSummaryTests: XCTestCase {
         }
         let lateEvening = try local(10, 18, 23, 50)
         let overMidnight = alert(.disarm, at: lateEvening).body(deliveredAt: lateEvening.addingTimeInterval(20 * 60))
-        XCTAssertEqual(overMidnight, "Malinois was disarmed on one of your devices at \(dated(lateEvening)).", "another day: with the date")
+        XCTAssertEqual(overMidnight, "Malinois was disarmed, or arming was cancelled, on one of your devices at \(dated(lateEvening)).", "another day: with the date")
         XCTAssertFalse(overMidnight.contains("\u{2014}"), overMidnight)
     }
 
@@ -343,7 +343,7 @@ final class Item134WatchSummaryTests: XCTestCase {
 
         let shown = Array(rig.posted.suffix(2))
         XCTAssertEqual(shown.map(\.identifier), lastHour.map(\.notificationIdentifier))
-        XCTAssertEqual(shown.map(\.content.body), ["Malinois was disarmed on one of your devices at \(time(lastHour[0].at)).",
+        XCTAssertEqual(shown.map(\.content.body), ["Malinois was disarmed, or arming was cancelled, on one of your devices at \(time(lastHour[0].at)).",
                                                    "Tamper detected on your device at \(time(lastHour[1].at))."])
         XCTAssertEqual(shown.map(\.content.interruptionLevel), [.active, .timeSensitive])
         XCTAssertTrue(shown.allSatisfy { $0.content.sound != nil })
@@ -703,7 +703,10 @@ final class Item134WatchSummaryTests: XCTestCase {
         defaults.writes.removeAll()
         let posted = await WatchRelayInbox(defaults: defaults, now: { now }, post: { _ in }).receive(live[limit])
         XCTAssertTrue(posted)
-        let first = try XCTUnwrap(defaults.writes.first, "the post wrote something")
+        // The memory's first write: since 1.8.2 the burst record is written before the post (item 169's codex-3), apart
+        // from the memory this case is about.
+        let memoryKeys = [WatchRelayInbox.memoryKey, WatchRelayInbox.shownRelayIDsKey]
+        let first = try XCTUnwrap(defaults.writes.first { memoryKeys.contains($0.key) }, "the post wrote its memory")
 
         // The watch stops after the post's first write: that write's value, and the other key as it was.
         let restart = "MalinoisItem134Restart-\(UUID().uuidString)"

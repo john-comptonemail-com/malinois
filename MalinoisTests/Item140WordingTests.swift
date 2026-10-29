@@ -49,7 +49,20 @@ final class Item140WordingTests: XCTestCase {
     }
 
     /// Events recorded before the install's first verification never upload (item 140's A2): not "paused".
-    func testHomeSaysEventsBeforeVerificationStayOnThisIPhone() {
-        XCTAssertTrue(HomeView.iCloudPausedNotice.contains("stay on this iPhone"), HomeView.iCloudPausedNotice)
+    /// Since 1.8.2 in what Malinois does, not where the events stay (item 168's deepseek-flash-3).
+    func testHomeSaysMalinoisWontUploadEventsRecordedBeforeVerification() {
+        XCTAssertTrue(HomeView.iCloudPausedNotice.contains("Malinois won't upload events recorded before then"),
+                      HomeView.iCloudPausedNotice)
+    }
+
+    // MARK: - Item 162's B1 (1.8.2's step 7)
+
+    /// Stealth's caption promised an upload whatever the iCloud backup switch said; an upload needs the switch, Pro and
+    /// the install's verification. The owner's wording. Red at the step's red commit: "Evidence is still captured and
+    /// uploaded."
+    func testStealthsCaptionSaysUploadsNeedICloudBackup() {
+        let caption = SettingsView.responseHint(for: .stealth)
+        XCTAssertTrue(caption.hasSuffix("Evidence is still captured, and uploaded when iCloud backup is on (Pro)."), caption)
+        XCTAssertFalse(caption.contains("captured and uploaded."), caption)
     }
 }

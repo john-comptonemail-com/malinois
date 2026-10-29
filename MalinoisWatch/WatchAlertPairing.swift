@@ -60,6 +60,12 @@ enum WatchAlertPairing {
         }
     }
 
+    /// Pure (unit-tested). Whether a push is iCloud's tamper alert: what the extension's burst record counts (ADR 0061).
+    /// Not the relay's copies, which carry no push.
+    static func isICloudTamperAlert(userInfo: [AnyHashable: Any]) -> Bool {
+        iCloudKind(userInfo: userInfo) == .tamper
+    }
+
     /// Pure (unit-tested). The event an iCloud alert is about: its kind from the subscription that sent it, its ID from
     /// the name of the record that fired it, with that subscription's prefix (`meta-v2-` and `disarm-v2-`:
     /// `CloudExfiltrator.makeMetaRecord` and `makeDisarmSignalRecord`). Nil for anything else.
@@ -74,9 +80,13 @@ enum WatchAlertPairing {
 
     /// Pure (unit-tested). How the watch's alert extension shows an iCloud alert, given the identifiers in the watch's
     /// list: quietly (the passive level, without sound) when the relay's copy of the same event is there, since that
-    /// copy tapped; otherwise a tamper alert, by its subscription, Time Sensitive, as on the iPhone (ADR 0045); anything
-    /// else as sent. The words are never changed.
-    static func iCloudContent(_ content: UNNotificationContent, deliveredIdentifiers: Set<String>) -> UNNotificationContent {
+    /// copy tapped; otherwise a tamper alert, by its subscription, Time Sensitive, as on the iPhone (ADR 0045), or quietly,
+    /// in words that say so, when it is one of many arriving at once (`AlertBurst`, ADR 0061); anything else as sent.
+    /// The words change only for that. `earlierTamperArrivals`: when the extension's earlier iCloud tamper alerts
+    /// arrived, from its own record (item 169's codex-3).
+    static func iCloudContent(_ content: UNNotificationContent, deliveredIdentifiers: Set<String>,
+                              earlierTamperArrivals: [Date] = [], burstLast: Date? = nil,
+                              now: Date = Date()) -> UNNotificationContent {
         guard let kind = iCloudKind(userInfo: content.userInfo),
               let mutable = content.mutableCopy() as? UNMutableNotificationContent else { return content }
         if let pair = iCloudAlert(userInfo: content.userInfo), deliveredIdentifiers.contains(pair.relayIdentifier) {
@@ -85,6 +95,12 @@ enum WatchAlertPairing {
             return mutable
         }
         guard kind == .tamper else { return content }
+        if AlertBurst.arrive(now, after: AlertBurst.Record(arrivals: earlierTamperArrivals, burstLast: burstLast)).quiet {
+            mutable.interruptionLevel = .passive
+            mutable.sound = nil
+            mutable.body = AlertBurst.quietBody
+            return mutable
+        }
         mutable.interruptionLevel = .timeSensitive
         return mutable
     }

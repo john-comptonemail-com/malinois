@@ -83,3 +83,37 @@ enum BiometricBinding {
         return verdict
     }
 }
+
+/// The pad's one biometric request at a time (item 153's MAL-12): a success opens the screen only while the request
+/// that asked for it is still the current one. A newer request, the pad going away or the app going to the background
+/// ends it, so a late answer to an earlier request cannot open a screen asked for later. Like `PINRecoveryView`'s
+/// `requestID`. Unit-tested.
+@MainActor
+final class BiometricRequest {
+    private var current: UUID?
+    private var context: LAContext?
+
+    /// Starts a request for `context`, ending any earlier one; returns its token.
+    func begin(_ context: LAContext) -> UUID {
+        cancel()
+        let id = UUID()
+        current = id
+        self.context = context
+        return id
+    }
+
+    /// Ends the current request: its answer, when it comes, is ignored, and its sheet is ended.
+    func cancel() {
+        current = nil
+        context?.invalidate()
+        context = nil
+    }
+
+    /// Whether `id`'s answer counts: true once, for the current request, which it ends.
+    func finish(_ id: UUID) -> Bool {
+        guard current == id else { return false }
+        current = nil
+        context = nil
+        return true
+    }
+}

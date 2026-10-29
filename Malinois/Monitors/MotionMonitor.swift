@@ -74,19 +74,53 @@ final class MotionMonitor: SensorMonitor {
         now.timeIntervalSince(lastSample ?? startedAt) > threshold
     }
 
-    private func checkForStall() {
+    private func checkForStall(now: Date = Date()) {
         guard let startedAt = watchStartedAt,
-              Self.isStalled(lastSample: lastSampleAt, startedAt: startedAt, now: Date()),
-              Date().timeIntervalSince(lastRestartAttempt ?? .distantPast) > restartBackoff else { return }
-        lastRestartAttempt = Date()
+              Self.isStalled(lastSample: lastSampleAt, startedAt: startedAt, now: now),
+              now.timeIntervalSince(lastRestartAttempt ?? .distantPast) > restartBackoff else { return }
+        lastRestartAttempt = now
         stallCount += 1
         manager.stopDeviceMotionUpdates()
         startUpdates()
         // Reset the stall clock so a recovering stream isn't re-reported every tick.
-        watchStartedAt = Date()
+        watchStartedAt = now
         lastSampleAt = nil
         onStall?(stallCount)
     }
+
+    /// Back from a suspension it could not watch through (review 3's R3.3; item 153's MAL-06). The stall clock restarts:
+    /// a stream that delivered nothing while the app was suspended has not stalled, and the lapse has records of its own
+    /// (interrupted, then resumed with its length); before, the watchdog's first tick back took it for a stall and wrote
+    /// "a few seconds were not watched" for a lock of any length. The pose needs no step of its own: the first fresh
+    /// sample is compared with the pose learned at calibration, which only a trip moves, so a phone moved while nobody
+    /// could watch trips at once; one put back in the same pose cannot be told.
+    func resumeAfterSuspension() {
+        guard watchStartedAt != nil else { return }   // not watching
+        watchStartedAt = Date()
+        lastSampleAt = nil
+    }
+
+    #if DEBUG
+    /// A watch the test drives in place of CoreMotion, which the Simulator lacks (item 153's MAL-06): the pose learned
+    /// at calibration, and the watch started at `start`.
+    func startWatchingForTesting(at start: Date, restingGravity gravity: (x: Double, y: Double, z: Double)) {
+        restingGravity = gravity
+        sessionRestingGravity = gravity
+        hasTripped = false
+        watchStartedAt = start
+        lastSampleAt = nil
+        stallCount = 0
+    }
+
+    /// One sample as CoreMotion would deliver it, at `time`.
+    func sampleForTesting(gravity: (x: Double, y: Double, z: Double), accel: Double = 0, at time: Date) {
+        lastSampleAt = time
+        evaluate(gravity: CMAcceleration(x: gravity.x, y: gravity.y, z: gravity.z), accelMagnitude: accel)
+    }
+
+    /// The watchdog's check, as its timer runs it, at `now`.
+    func checkForStallForTesting(now: Date) { checkForStall(now: now) }
+    #endif
 
     /// The update stream itself, separated out so the watchdog can restart it in place.
     private func startUpdates() {

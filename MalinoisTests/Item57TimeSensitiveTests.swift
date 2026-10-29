@@ -37,9 +37,15 @@ final class Item57TimeSensitiveTests: XCTestCase {
         return UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
     }
 
+    /// What the extension delivers, once it has read the device's list (since 1.8.2 it counts the tamper alerts there,
+    /// ADR 0061), so the test waits for its answer.
     private func delivered(_ request: UNNotificationRequest) -> UNNotificationContent? {
+        // No earlier test's burst (item 169's codex-3), nor its running burst (item 170's codex-5).
+        for key in [AlertBurst.arrivalsKey, AlertBurst.burstKey(AlertBurst.arrivalsKey)] { UserDefaults.standard.removeObject(forKey: key) }
+        let answered = expectation(description: "the extension delivered the alert")
         var result: UNNotificationContent?
-        NotificationService().didReceive(request) { result = $0 }
+        NotificationService().didReceive(request) { result = $0; answered.fulfill() }
+        wait(for: [answered], timeout: 5)
         return result
     }
 

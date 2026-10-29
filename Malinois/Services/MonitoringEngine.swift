@@ -41,9 +41,10 @@ enum Escalation: Equatable {
 
 /// What to do with the tamper alert/siren on a trigger.
 enum AlertAction: Equatable {
-    case none      // nothing (no message mode, or the owner's own disarm — stay quiet)
+    case none      // nothing (no message mode)
     case present   // start a fresh alert/siren
     case extend    // an alert/siren is already up — keep it alive (re-extend its window)
+    case deferred  // the owner is typing their PIN: owed, shown once the typing stops or the pad closes (item 167's A1)
 }
 
 @MainActor
@@ -51,7 +52,7 @@ final class MonitoringEngine: ObservableObject {
 
     // MARK: - Published state
 
-    @Published private(set) var state: MonitoringState = .disarmed {
+    @Published var state: MonitoringState = .disarmed {
         didSet {
             // The app-switcher cover shows the emblem when there is something to hide, and
             // plain black while a watch is live — where a logo would advertise the app that
@@ -67,10 +68,15 @@ final class MonitoringEngine: ObservableObject {
         }
     }
 
+    /// Whether this iPhone has no device passcode (1.8.2's step 34, item 155's F3): a forced restart then opens it and
+    /// ends Guided Access, and the arming screen says so. Read when that screen appears and when the app is back on it
+    /// (`refreshDevicePasscode`, in MonitoringEngine+ArmPINCheck.swift, which sets it).
+    @Published var devicePasscodeMissing = false
+
     @Published private(set) var graceRemaining: Int = 0
     @Published private(set) var calibrationProgress: Double = 0   // 0…1
-    @Published private(set) var lastTriggerDate: Date?
-    @Published private(set) var eventCount: Int = 0
+    @Published var lastTriggerDate: Date?
+    @Published var eventCount: Int = 0
 
     /// True while the capture flash (white screen) is lighting a front-camera
     /// shot. ArmedView shows a full-screen white overlay when this is set.
@@ -116,15 +122,17 @@ final class MonitoringEngine: ObservableObject {
     /// Home offers the notifications prompt while this is true (item 69): a device that will
     /// receive cross-device alerts, and iOS has never been asked.
     @Published private(set) var notificationAskDue = false
+    /// Home makes Apple's rating request while this is true (BACKLOG 137; `MonitoringEngine+RatingRequest.swift`).
+    @Published var ratingRequestPending = false
     /// The arming screen says the camera could not be asked for because Guided Access was on
     /// (item 69, leg 11 on 40); computed at every arm.
     @Published private(set) var cameraAskBlockedByGuidedAccess = false
 
     /// iCloud's encrypted data was reset (34.H13): Apple purged the cloud copies, and this
     /// device is re-uploading what it still holds. Surfaced until the next arm.
-    @Published private(set) var cloudResetNotice: String?
+    @Published var cloudResetNotice: String?
     /// The records the launch check queued again, while its notice stands: its words follow the backup switch (codex-1 on 76).
-    private var cloudReuploadCount: Int?
+    var cloudReuploadCount: Int?
     private var encryptedResetHandled = false
 
     /// iCloud REFUSED an evidence upload (quota, auth, schema, key reset) — the server
@@ -159,47 +167,47 @@ final class MonitoringEngine: ObservableObject {
     /// the siren plays at system volume and can't override the hardware buttons, so warn
     /// the owner while they can still turn it up (F-13). Surfaced on the arming screen.
     @Published private(set) var sirenVolumeLow = false
-    /// The arming screen's warning while Siren is the response and its sound would play away from this iPhone, in
-    /// headphones or another device (fable-2). Set only by `refreshSirenRouteWarning`.
-    @Published var sirenRouteWarning: String?
 
     /// True while the on-screen tamper warning is showing (alert / siren modes).
     /// ArmedView renders the warning message when this is set.
-    @Published private(set) var alertActive = false
+    @Published var alertActive = false
+    /// A fresh warning the PIN pad's quiet window held back (`AlertAction.deferred`, item 167's A1): shown when the
+    /// window ends or the pad closes without a correct PIN; a disarm clears it.
+    private var alertOwedAfterEntry = false
 
     /// Active "go loud" escalation (jamming blackout or a tamper flood), or nil.
     /// ArmedView shows the reason's warning; the siren behaviour depends on it.
-    @Published private(set) var escalation: Escalation?
+    @Published var escalation: Escalation?
     /// Live network reachability (mirrors the connectivity monitor) — surfaced on
     /// Home as a "you're offline, evidence can't upload" warning.
-    @Published private(set) var isOnline = true
+    @Published var isOnline = true
 
     /// Result of the most recent calibration — shown as a brief "calibration
     /// complete" review before going covert, and in the Test Sensors view.
-    @Published private(set) var lastCalibration: CalibrationSummary?
+    @Published var lastCalibration: CalibrationSummary?
     /// True during the brief post-calibration review on the arming screen.
     @Published private(set) var showingCalibrationReview = false
 
     /// Live "Test Sensors" (dry-run) state — sensors run and report readings, but
     /// nothing is recorded and the screen never goes covert.
-    @Published private(set) var dryRunActive = false
-    @Published private(set) var dryRunReadings: [SensorType: SensorReading] = [:]
+    @Published var dryRunActive = false
+    @Published var dryRunReadings: [SensorType: SensorReading] = [:]
     /// Last "would-trip" time per sensor, so the test view can flash it.
-    @Published private(set) var dryRunTrips: [SensorType: Date] = [:]
+    @Published var dryRunTrips: [SensorType: Date] = [:]
     /// Cumulative would-trip count per sensor — a persistent tally that survives
     /// proximity blanking the screen, so the user can confirm it fired even though
     /// the display was off while covered.
-    @Published private(set) var dryRunCounts: [SensorType: Int] = [:]
+    @Published var dryRunCounts: [SensorType: Int] = [:]
     /// Seconds until dry-run calibration begins — a visible "set the phone down" settle window,
     /// so the motion noise floor isn't learned from the hand that just tapped "Test sensors".
     /// The arming flow gets this for free from its grace period; the dry run used to skip
     /// straight to calibrating and learn garbage (BACKLOG 12). Nil once calibrating/running.
-    @Published private(set) var dryRunCountdown: Int?
+    @Published var dryRunCountdown: Int?
     nonisolated static let dryRunSettleSeconds = 3
     /// Bumped by a re-calibration or a stop, so the completion of a calibration that was
     /// abandoned mid-flight finds itself stale and does nothing (item 65, finding 17).
-    private var dryRunGeneration = 0
-    private var dryRunSettleTimer: Timer?
+    var dryRunGeneration = 0
+    var dryRunSettleTimer: Timer?
 
     // MARK: - Collaborators
 
@@ -211,21 +219,21 @@ final class MonitoringEngine: ObservableObject {
     let camera: any EvidenceCamera
     /// The capture mechanism (1.3 step 5): warm-up, settle, illumination, still or clip, the
     /// both-cameras path. This engine is its host — the conformance sits at the end of the file.
-    private let capturePipeline: EvidenceCapturePipeline
+    let capturePipeline: EvidenceCapturePipeline
     /// The disarm-entry state machine (1.3 step 7): the attribution candidate window, the
     /// "actively typing" grace, the pad's timeout/ceiling, and the owner-attribution event
     /// set. This engine hosts it and mirrors its `isActive` into `disarmEntryActive` below.
-    private let disarmEntry: DisarmEntryCoordinator
+    let disarmEntry: DisarmEntryCoordinator
     let entitlements: ProEntitlements
     /// Every duration the engine schedules against, through its seam (`EngineTiming`):
     /// `.production` in the app, a compressed copy in the characterization tests.
     let timing: EngineTiming
 
-    private var monitors: [SensorType: SensorMonitor] = [:]
+    var monitors: [SensorType: SensorMonitor] = [:]
 
     // MARK: - Internal timing
 
-    private var calibrationDuration: TimeInterval { timing.calibrationDuration }
+    var calibrationDuration: TimeInterval { timing.calibrationDuration }
     private var correlationWindow: TimeInterval { timing.correlationWindow }
     /// How often, while armed, to free latched-but-uncorroborated sensors.
     private var refractorySweepInterval: TimeInterval { timing.refractorySweepInterval }
@@ -235,10 +243,10 @@ final class MonitoringEngine: ObservableObject {
     private var autoExposureSettle: TimeInterval { timing.autoExposureSettle }
     /// How long a total connectivity loss must persist before it's treated as
     /// suspected jamming (rides out brief registration flaps / fades).
-    private var blackoutDebounce: TimeInterval { timing.blackoutDebounce }
+    var blackoutDebounce: TimeInterval { timing.blackoutDebounce }
     /// A motion trip within this window means the device isn't stationary — the
     /// blackout is then the "tamper carried away" case, not pre-emptive jamming.
-    private var stationaryWindow: TimeInterval { timing.stationaryWindow }
+    var stationaryWindow: TimeInterval { timing.stationaryWindow }
 
     private var graceTimer: Timer?
     private var graceEndsAt: Date?
@@ -246,8 +254,8 @@ final class MonitoringEngine: ObservableObject {
     /// Counts calibration runs, so a tick acts only for its own (item 129, F2).
     private var calibrationRun = 0
     private var refractoryTimer: Timer?
-    private var dryRunTimer: Timer?
-    private var blackoutTimer: Timer?
+    var dryRunTimer: Timer?
+    var blackoutTimer: Timer?
     private var guidedAccessObserver: NSObjectProtocol?
 
     // MARK: - Camera battery-readiness
@@ -261,18 +269,18 @@ final class MonitoringEngine: ObservableObject {
     private var cameraStandbyDelay: TimeInterval { timing.cameraStandbyDelay }
 
     // MARK: - Jamming / connectivity
-    private let connectivity = ConnectivityMonitor()
+    let connectivity = ConnectivityMonitor()
     /// Whether a usable network path existed at arm — the canary baseline. Only a
     /// *loss* of a path we demonstrably had is treated as suspicious.
-    private var hadConnectivityAtArm = false
-    private var blackoutEscalated = false
+    var hadConnectivityAtArm = false
+    var blackoutEscalated = false
     /// Last time the motion sensor tripped, for the stationary check.
-    private var lastMotionTrip: Date?
+    var lastMotionTrip: Date?
     /// When the current total connectivity loss began (nil while online). Feeds the
     /// trigger-time go-loud's blip filter: a WiFi↔cellular handoff can read as a sub-second
     /// unsatisfied path, and a trigger landing inside that instant must not sound the
     /// blackout siren on a coincidence (39.R2.2).
-    private var offlineSince: Date?
+    var offlineSince: Date?
 
     // MARK: - Flood coalescing
     /// More than this many trips from one sensor within the window is a "flood"
@@ -298,6 +306,13 @@ final class MonitoringEngine: ObservableObject {
     /// the stored copy (`storedAnchor`), since the record can change while the flood runs; this
     /// copy names the record, and stands in for it only if the store has dropped it (item 95).
     private var sustainedEvent: Event?
+    /// The live flood's record, which the engine still pushes after its row has left a full log: its account binding
+    /// is kept (codex-6 on 1.8.2's step 17).
+    var liveFloodAnchorID: UUID? { sustainedEvent?.id }
+    /// The records whose account binding work still uses, counted per record (codex-6 on 1.8.2's step 17, and again on
+    /// `0ed887f`): a fact push from before its task starts until its attempt ends, and a response or capture from the
+    /// record's registration until its upload ends. A record can leave the log meanwhile; its binding is kept.
+    var bindingsInUse: [UUID: Int] = [:]
 
     /// The flood anchor as the store holds it now, or the engine's copy if the store has lost
     /// it. Item 95: the copy taken at the onset, written back whole at the next coalesced
@@ -323,7 +338,7 @@ final class MonitoringEngine: ObservableObject {
     /// its failure mode — a latched monitor silently deaf — is exactly the one worth a
     /// half-second backstop against any future path that forgets (F-15).
     private var latchedSensors: Set<SensorType> = []
-    private var isHandlingTrigger = false
+    var isHandlingTrigger = false
     /// Trips that arrived while a capture was already running (`.triggered`, photo or fixed
     /// clip). Folded into the in-flight event when its capture finishes (34-review M1): a
     /// grab-then-unplug whose cable pull landed inside the ~1–5 s capture window used to be
@@ -332,8 +347,9 @@ final class MonitoringEngine: ObservableObject {
     /// By arm session since Codex's review of 1.7 (70) (item 129, F3), like
     /// `wrongPINsDuringCapture`: one set for the whole engine let a response from an earlier
     /// watch, still saving after a disarm and re-arm, fold the new watch's trips into its own
-    /// event and clear them from the new one. A disarm still drops the trips pending then.
-    private var tripsDuringCapture: [Int: Set<SensorType>] = [:]
+    /// event and clear them from the new one. A disarm no longer drops the trips pending then
+    /// (item 152's lead 14, 1.8.2): the capture's response still folds them when it ends.
+    var tripsDuringCapture: [Int: Set<SensorType>] = [:]
     /// Wrong disarm PINs that landed while a capture was already running (item 49). Folded into
     /// the in-flight event alongside `tripsDuringCapture` (the typing is its Touch) and zeroed at
     /// every capture start. Unlike the trips, a disarm does NOT clear it: the capture's response
@@ -343,7 +359,7 @@ final class MonitoringEngine: ObservableObject {
     /// 2026-09-28 review, item 89 A2): a capture still running when the owner disarms and
     /// re-arms folds only its own session's attempts, and a new session's first trigger clears
     /// only its own count.
-    private var wrongPINsDuringCapture: [Int: Int] = [:]
+    var wrongPINsDuringCapture: [Int: Int] = [:]
 
     /// True while the disarm PIN pad is open — a **mirror** of `DisarmEntryCoordinator.isActive`
     /// (1.3 step 7), kept @Published so the PIN pad view binding is unchanged. Suppresses only
@@ -354,7 +370,7 @@ final class MonitoringEngine: ObservableObject {
     /// True while an "until clear" clip is recording; sensor trips refresh
     /// the pipeline's activity clock (which decides when to stop) instead of firing a new
     /// event.
-    private var isCapturingUntilClear: Bool { capturePipeline.isCapturingUntilClear }
+    var isCapturingUntilClear: Bool { capturePipeline.isCapturingUntilClear }
 
     /// Tamper-alert display (alert / siren response modes).
     let siren = SirenPlayer()   // internal for MonitoringEngine+SirenMicRelease.swift and the tests
@@ -381,9 +397,9 @@ final class MonitoringEngine: ObservableObject {
     /// trigger response captures this at the start and checks it before mutating
     /// state or re-arming, so disarming mid-response can't be clobbered by the
     /// response finishing and calling reArm().
-    private var armSession = 0
+    var armSession = 0
 
-    private var previousBrightness: CGFloat = UIScreen.main.brightness
+    var previousBrightness: CGFloat = UIScreen.main.brightness
 
     /// Pure (unit-tested). The display never comes back from a watch below 0.4 (item 69, leg 3
     /// on 40): the pre-arm level is sampled while the owner holds the phone, but auto-brightness
@@ -395,14 +411,14 @@ final class MonitoringEngine: ObservableObject {
     /// Persisted while armed (value = the pre-arm brightness) and cleared on a clean
     /// disarm. If it's still present at launch, the last armed session ended
     /// abnormally — see `recoverInterruptedSessionIfNeeded`.
-    private static let armedMarkerKey = "com.malinois.armedSession.brightness"
+    static let armedMarkerKey = "com.malinois.armedSession.brightness"
     /// The kernel boot time and the wall clock at the moment a persistent session marker was
     /// planted (BACKLOG 53) — beside `armedMarkerKey` when the watch goes live, and beside
     /// `recoveryInProgressKey` when a recovery countdown starts. Read back with the marker at
     /// the next launch so the interruption record can say whether the DEVICE restarted or only
     /// the app ended (`BootStamp.classify`); cleared with the markers on a clean disarm.
-    private static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
-    private static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
+    static let armedBootTimeKey = "com.malinois.armedSession.bootTime"
+    static let armedBootStampAtKey = "com.malinois.armedSession.bootStampAt"
     /// Timestamp of the last interrupted-session re-arm *attempt*, to detect a crash loop
     /// and avoid auto-re-arming straight back into it.
     private static let recoveryTimeKey = "com.malinois.recovery.lastAt"
@@ -416,11 +432,11 @@ final class MonitoringEngine: ObservableObject {
     /// consuming the owed flag and re-engaging covert used to hold NO persistent marker, so
     /// a second kill during grace/calibration left the next launch blind — no log entry, no
     /// re-arm. Cleared when covert engages (armedMarker takes over) or on a clean disarm.
-    private static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
+    static let recoveryInProgressKey = "com.malinois.recovery.inProgress"
     /// Planted when the grace countdown starts and consumed at go-live or cancel (review 3,
     /// R3.2): one left behind at the next launch means the app ended mid-countdown. Named
     /// there, never re-armed — see `recoverInterruptedSessionIfNeeded`.
-    private static let armingInProgressKey = "com.malinois.arming.inProgress"
+    static let armingInProgressKey = "com.malinois.arming.inProgress"
 
     /// Guided Access state as of the last disarm, so the next arm can say whether it changed
     /// while nobody was watching (BACKLOG 24b). Deliberately narrow: the app cannot observe
@@ -467,6 +483,9 @@ final class MonitoringEngine: ObservableObject {
         self.capturePipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
         self.disarmEntry = DisarmEntryCoordinator(timing: timing)
         self.eventCount = eventStore.events.count
+        // The backup-off rules come first (item 115): the settings' resolution below can write a record at once, a
+        // reset's (codex-12 on 1.8.2), and a record made while backup is off must be kept on this phone like any other.
+        watchBackupSetting()
         seedCloudOwnershipIfReadable()
         capturePipeline.host = self
         camera.onSessionEvent = { [weak self] event in self?.handleCameraSessionEvent(event) }
@@ -474,6 +493,7 @@ final class MonitoringEngine: ObservableObject {
         // Mirror the pad's open state into the @Published property the PIN pad view binds to,
         // so the extraction leaves the view untouched.
         disarmEntry.onActiveChange = { [weak self] active in self?.disarmEntryActive = active }
+        siren.onPlayingElsewhere = { [weak self] output in self?.noteSirenPlayedElsewhere(output) }   // ADR 0062
 
         // The first-use protection baseline (kept if a valid one was saved, so a change left unreported across a
         // restart is still caught, D6) and the device name, once the settings can be read (ADR 0055).
@@ -493,7 +513,7 @@ final class MonitoringEngine: ObservableObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshBrightness() }
-        watchBackupSetting()    // item 115
+        handTheUploaderTheLog()   // item 162's A10
         recoverInterruptedSessionIfNeeded()
         UserDefaults.standard.removeObject(forKey: Self.retiredGuidedAccessAtDisarmKey)   // item 70
         // The launch-order hole (fifth review, round 3): this init runs inside the app's
@@ -673,99 +693,9 @@ final class MonitoringEngine: ObservableObject {
         await checkCloudCopies()   // item 87: were this phone's copies deleted meanwhile?
     }
 
-    // MARK: - Noticing that iCloud's copies were deleted (item 87)
+    // MARK: - Noticing that iCloud's copies were deleted (item 87): in MonitoringEngine+CloudCopies.swift
 
-    /// The iCloud account this phone's records went to (its user record name), remembered at the
-    /// first check that found them in place (item 87, the owner's choice 2a).
-    private static let cloudAccountKey = "com.malinois.cloud.accountRecordName"
-
-    /// How many of the newest synced records the launch check looks for.
-    nonisolated static let cloudCheckSampleSize = 20
-
-    /// Pure (unit-tested): which records the check looks for: this phone's own records that
-    /// reached iCloud, the newest `limit`, newest first. Never a mirror (the capturing device owns
-    /// it) or a record still waiting to go up.
-    nonisolated static func cloudCheckSample(_ events: [Event], limit: Int) -> [Event] {
-        Array(events.filter { $0.cloudSyncState == .synced && !$0.isMirrored }
-            .sorted { $0.startDate > $1.startDate }
-            .prefix(limit))
-    }
-
-    /// Pure (unit-tested): whether the missing share says the copies were deleted: most of them
-    /// gone, and never a single one (one record can be missing for its own reasons).
-    nonisolated static func cloudCopiesDeleted(sampled: Int, missing: Int) -> Bool {
-        missing >= 2 && missing * 2 > sampled
-    }
-
-    /// What the check does about deleted copies (item 87).
-    enum CloudWipeResponse: Equatable { case reupload, differentAccount, unknownAccount }
-
-    /// Pure (unit-tested): the response, from the remembered and the current account. The
-    /// records go back up only to the account they went to; to another one never (the owner's
-    /// evidence must not land in someone else's iCloud), and with either account unknown the check
-    /// only reports.
-    nonisolated static func cloudWipeResponse(storedAccount: String?, currentAccount: String?) -> CloudWipeResponse {
-        guard let storedAccount, let currentAccount else { return .unknownAccount }
-        return storedAccount == currentAccount ? .reupload : .differentAccount
-    }
-
-    /// The launch check (item 87, run after the launch pull): are this phone's newest synced
-    /// records still in iCloud? "Delete Data from iCloud" in iOS Settings needs only the unlocked
-    /// phone outside Guided Access (item 64) and raises no error at the next save, so nothing else
-    /// notices it. An answer that is not conclusive changes nothing.
-    func checkCloudCopies() async {
-        guard entitlements.proActive else { return }
-        let sample = Self.cloudCheckSample(eventStore.events, limit: Self.cloudCheckSampleSize)
-        guard !sample.isEmpty else { return }
-        // Each record under every name it can have: evidence 1.0 uploaded is still under 1.0's.
-        let names = sample.flatMap(CloudExfiltrator.cloudRecordNames(for:))
-        guard let present = await cloudPresence(names) else { return }
-        let missing = sample.filter { !CloudExfiltrator.cloudRecordNames(for: $0).contains(where: present.contains) }.count
-        let current = await cloudAccountName()
-        let defaults = UserDefaults.standard
-        let stored = defaults.string(forKey: Self.cloudAccountKey)
-        guard Self.cloudCopiesDeleted(sampled: sample.count, missing: missing) else {
-            // All (or all but one) in place: remember the account, the first time (choice 2a).
-            if stored == nil, let current { defaults.set(current, forKey: Self.cloudAccountKey) }
-            return
-        }
-        switch Self.cloudWipeResponse(storedAccount: stored, currentAccount: current) {
-        case .reupload:
-            let requeued = eventStore.requeueAllForReupload()   // this phone's own records; never a mirror
-            cloudReuploadCount = requeued
-            refreshCloudReuploadNotice()
-            Log.engine.warning("Cloud copies missing (\(missing, privacy: .public) of \(sample.count, privacy: .public)); requeued \(requeued, privacy: .public)")
-            Task { await retryPendingSync() }
-        case .differentAccount:
-            cloudResetNotice = "This phone's records are not in the iCloud account it is signed into, which is not "
-                + "the one it used before. They stay on this phone; nothing was uploaded to this account."
-            Log.engine.warning("Cloud copies missing under a different iCloud account; nothing uploaded")
-        case .unknownAccount:
-            cloudResetNotice = "iCloud no longer holds this phone's records. They are safe on this phone."
-            Log.engine.warning("Cloud copies missing; the account cannot be confirmed, so nothing uploaded")
-        }
-    }
-
-    /// The launch check's notice in the words for the backup switch as it is now: turned back on, as it asks, it no
-    /// longer asks (Codex's codex-1 on 76). Nothing when the check queued nothing.
-    func refreshCloudReuploadNotice() {
-        guard let count = cloudReuploadCount else { return }
-        cloudResetNotice = Self.cloudReuploadNotice(requeued: count, backupOn: settings.cloudBackup)
-    }
-
-    private func cloudPresence(_ names: [String]) async -> Set<String>? {
-        #if DEBUG
-        if let presence = cloudPresenceForTesting { return await presence(names) }
-        #endif
-        return await cloud.presentRecordNames(names)
-    }
-
-    private func cloudAccountName() async -> String? {
-        #if DEBUG
-        if cloudPresenceForTesting != nil { return cloudAccountForTesting }
-        #endif
-        return await cloud.userRecordName()
-    }
+    // MARK: - Recovery re-arm, going to the background, the interruption records
 
     /// Executes an owed crash-recovery re-arm, applying the crash-loop guard. Consumes the
     /// owed flag up front — even a declined attempt must not be retried forever — and times
@@ -788,6 +718,14 @@ final class MonitoringEngine: ObservableObject {
             Log.engine.info("Recovery re-arm deferred until the PIN recovery completes")
             return
         }
+        // Not on the defaults a launch before the first unlock holds (item 165's A3): the countdown's length, the
+        // tripwires and the response are the owner's settings, which load at the unlock. The flag stays owed, and their
+        // load runs it.
+        guard !settings.awaitingUnlock else {
+            Log.engine.info("Recovery re-arm deferred until the settings load")
+            settings.whenResolved { [weak self] _ in self?.performOwedRecoveryReArm() }
+            return
+        }
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: Self.pendingReArmKey)
         // Re-protect automatically (F-12), but if two re-arm attempts land within the window
@@ -796,12 +734,24 @@ final class MonitoringEngine: ObservableObject {
         let now = Date().timeIntervalSince1970
         let last = defaults.double(forKey: Self.recoveryTimeKey)
         defaults.set(now, forKey: Self.recoveryTimeKey)
-        guard !Self.isCrashLoop(lastAttempt: last, now: now) else { reArmSkipped = true; return }   // Home says so (fable-3)
+        guard !Self.isCrashLoop(lastAttempt: last, now: now) else {
+            reArmSkipped = true   // Home says so (fable-3)
+            logStateChange("reArmSkipped")   // and the Event Log, quietly (item 132's remainder; item 153's MAL-10)
+            return
+        }
         // Cover the countdown window (F1): from here until covert engages there is otherwise
         // no persistent marker, so a kill during grace/calibration would vanish silently.
         defaults.set(true, forKey: Self.recoveryInProgressKey)
         plantBootStamp()   // so a kill inside the countdown can still be told from a restart (53)
         reArmAfterRecovery()
+    }
+
+    /// The recovery re-arm the settings' load ran (item 165's A3): only if it is still owed, on a disarmed engine, with
+    /// the app in the foreground, where a recovery countdown can be seen and cancelled (V-04).
+    private func performOwedRecoveryReArm() {
+        guard state == .disarmed, UserDefaults.standard.bool(forKey: Self.pendingReArmKey),
+              UIApplication.shared.applicationState != .background else { return }
+        performRecoveryReArm()
     }
 
     /// Pure (unit-tested). Whether the launch-time interruption record is written when a
@@ -832,7 +782,12 @@ final class MonitoringEngine: ObservableObject {
     /// crash recovery doesn't log the same lapse a second time at next launch. Cleared on
     /// returning to the foreground, because a kill after that is a genuinely separate
     /// interruption and does deserve its own record.
-    private static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
+    static let backgroundLapseLoggedKey = "com.malinois.armed.backgroundLapseLogged"
+
+    /// When a live watch was last sent to the background, on the clock no setting moves (`lapseNow`): its return
+    /// records how long nothing was watched (item 153's MAL-06). In memory only: a process killed meanwhile never
+    /// resumes, and its relaunch records the interruption instead.
+    var backgroundLapseStartedAt: ContinuousClock.Instant?
 
     /// An active session — arming, calibrating or armed — has been sent to the background,
     /// so protection has stopped, or never finished starting (32.R6).
@@ -850,6 +805,7 @@ final class MonitoringEngine: ObservableObject {
         logInterruptedSession(cause: Self.backgroundInterruptionCause(guidedAccessOn: guidedAccessEnabled,
                                                                       duringCountdown: state == .arming))
         UserDefaults.standard.set(true, forKey: Self.backgroundLapseLoggedKey)   // after the record (item 144's L)
+        if armedSince != nil, backgroundLapseStartedAt == nil { backgroundLapseStartedAt = lapseNow }   // item 153's MAL-06
     }
 
     /// Pure (unit-tested; review 3, R3.3 + item 74, line 6): what sent an active session to the
@@ -884,11 +840,12 @@ final class MonitoringEngine: ObservableObject {
     /// correctly-worded push on the owner's other devices (BACKLOG 59) — never through the
     /// tamper subscription, whose static body would be wrong and noisy for a routine arm.
     @discardableResult
-    func logStateChange(_ kind: String, sessionCloudAllowed: Bool? = nil) -> Event {
+    func logStateChange(_ kind: String, id: UUID = UUID(), sessionCloudAllowed: Bool? = nil) -> Event {
         // `.pending` rather than `.localOnly`: these now DO leave the device (BACKLOG 8),
         // via the silent `TamperEventState` type. `exfiltrate` resolves the state — and
         // marks it `.localOnly` for a genuinely free user, so the badge stays honest.
-        let event = Event(startDate: Date(), endDate: Date(),
+        // `id` is the caller's when the record must be found again: a reset's (codex-17 on 1.8.2).
+        let event = Event(id: id, startDate: Date(), endDate: Date(),
                           triggeredSensors: [], cloudSyncState: .pending, stateChange: kind)
         cloud.enrollment.registerLocalEvent(event)
         eventStore.add(event)
@@ -898,8 +855,9 @@ final class MonitoringEngine: ObservableObject {
         // caller returns, and by then the session snapshot may already be cleared (34 review).
         let allowed = sessionCloudAllowed ?? cloudAllowed
         let hold = BackgroundAssertion.begin("malinois-state-task")   // before the task (item 153's MAL-01)
+        beginBindingUse(record.id)   // until the upload ends: its pin starts only in the task (codex-6 on 0ed887f)
         Task {
-            defer { hold.end() }
+            defer { hold.end(); endBindingUse(record.id) }
             await exfiltrate(record, cloudAllowedOverride: allowed)
         }
         return event
@@ -958,16 +916,22 @@ final class MonitoringEngine: ObservableObject {
     /// `CloudExfiltrator.save`, may report the transient failure that made it give up.
     var sweepUploadForTesting: ((Event) async -> (state: CloudSyncState,
                                                    transient: CloudExfiltrator.TransientFailure?))?
-    private var sweepTransientForTesting: CloudExfiltrator.TransientFailure?
+    var sweepTransientForTesting: CloudExfiltrator.TransientFailure?
     /// Test-only (item 74 line 9): whether each record the sweep handed out would raise the
     /// "disarmed" alert, by record id.
     var sweepDisarmSignalsForTesting: [UUID: Bool] = [:]
+    /// Test-only (item 162's ds4f1-1017-6): the late disarms whose alert the sweep sent on its own, standing in for the
+    /// newest late disarm of their pass, which did not land.
+    var sweepStandInAlertsForTesting: [UUID] = []
     /// Test-only (item 87): stand in for iCloud in the launch check: which of the named records
     /// it still holds (nil: no conclusive answer), and the signed-in account's user record name.
     var cloudPresenceForTesting: (([String]) async -> Set<String>?)?
     var cloudAccountForTesting: String?
-    /// Test-only (fable-2): where the siren would play, in place of iOS's route.
-    var sirenOutputsForTesting: [SirenOutput]?
+    /// Test-only (item 153's MAL-06): the clock a lapse is timed on, in place of `ContinuousClock`.
+    var lapseClockForTesting: (() -> ContinuousClock.Instant)?
+    /// Test-only (Codex's note on d084392): the alert-subscription refreshes a reconnect has asked for, counted as it
+    /// asks, so a test sees that none was without waiting for a task that would come later.
+    var alertRefreshesAskedForTesting = 0
 
     /// Test-only (item 89, C1): stands in for iCloud inside a pull from it. Given how many
     /// records the pull asks for, it returns the records and whether the fetch reached iCloud and
@@ -1064,7 +1028,7 @@ final class MonitoringEngine: ObservableObject {
 
     /// Runs the waiting launch recovery from whichever observer fired first, and removes both.
     /// After the unlock it re-checks, and waits again if the device re-locked meanwhile.
-    private func runDeferredRecovery(appIsActive: Bool) {
+    func runDeferredRecovery(appIsActive: Bool) {
         guard let unlockToken = protectedDataRecoveryObserver else { return }   // already ran
         NotificationCenter.default.removeObserver(unlockToken)
         if let activeToken = activeRecoveryObserver { NotificationCenter.default.removeObserver(activeToken) }
@@ -1101,6 +1065,8 @@ final class MonitoringEngine: ObservableObject {
         refreshGuidedAccess()
     }
     private var guidedAccessForTesting: Bool?
+    /// Test-only (1.8.2's step 34): whether the phone has no passcode, as the engine reads it. The Simulator has one.
+    var devicePasscodeMissingForTesting: Bool?
     #endif
 
     // MARK: - Camera battery-readiness
@@ -1186,10 +1152,10 @@ final class MonitoringEngine: ObservableObject {
 
     /// Pro entitlement captured at arm and held for the whole armed session, so an
     /// entitlement change mid-watch never *downgrades* a live session (paywall spec §5).
-    private(set) var armedPro = false
+    var armedPro = false
     private var effectiveSensors: Set<SensorType> { settings.effectiveEnabledSensors(pro: armedPro) }
     private func sensorEnabled(_ t: SensorType) -> Bool { effectiveSensors.contains(t) }
-    private var effectiveCameraPosition: CameraChoice { settings.effectiveCameraPosition(pro: armedPro) }
+    var effectiveCameraPosition: CameraChoice { settings.effectiveCameraPosition(pro: armedPro) }
     private var effectiveCaptureMode: CaptureMode { settings.effectiveCaptureMode(pro: armedPro) }
 
     /// The capture mode to use for a capture happening *right now*.
@@ -1247,6 +1213,7 @@ final class MonitoringEngine: ObservableObject {
         // ("never armed while dry-running") hold without relying on UI modality.
         if dryRunActive { stopDryRun() }
         firstArmBriefing = nil   // a screen left from an earlier arm never shows on this one (item 131)
+        ratingRequestPending = false   // a rating request still waiting was for the calm watch before (codex-16)
         recordProtectionChanges()             // item 91: a change is on the record before the session starts
         armedPro = entitlements.proActive     // snapshot Pro for the whole session (trial began at launch)
         // The clip-audio decision must reach the camera on EVERY arm, not only when the
@@ -1304,11 +1271,11 @@ final class MonitoringEngine: ObservableObject {
         // believing the watch started, and it did not. Guided Access does not prevent it: it
         // locks the app to the foreground, not the display on. (Reported on device 2026-08-26.)
         refreshIdleTimer()
-        // Warm CloudKit while the user reads; sets up (or tears down) the cross-device push
-        // subscription per the user's preference. Cloud is a Pro feature — the free tier
-        // keeps evidence on-device, so skip it entirely (evidence still saves locally).
+        // Warm CloudKit while the user reads; sets up the cross-device push subscriptions while the
+        // owner's choice, asked again after each wait, wants them (codex-21), and never removes them.
+        // Cloud is a Pro feature — the free tier keeps evidence on-device, so skip it entirely.
         if armedPro {
-            Task { await cloud.warmUp(notifyOtherDevices: settings.notifyOtherDevicesEffective(pro: armedPro)) }
+            Task { await cloud.warmUp(alertsWanted: { [weak self] in self?.alertSubscriptionWanted ?? false }) }
         }
         // Note up front if "Both" can't use multi-cam on this device.
         cameraNotice = (effectiveCameraPosition == .both && !camera.supportsMultiCam)
@@ -1342,7 +1309,7 @@ final class MonitoringEngine: ObservableObject {
 
     /// Brings up the session for whichever camera(s) the settings select — used both
     /// for the pre-arm warm and when Auto flips back to warm (device plugged in).
-    private func warmActiveCamera() {
+    func warmActiveCamera() {
         guard settings.isEnabled(.camera) else { return }
         // Never asked yet (Guided Access blocked the ARM tap's ask, item 69): no warm-up and
         // no "camera unavailable" notice — the arming screen carries the honest one.
@@ -1491,6 +1458,7 @@ final class MonitoringEngine: ObservableObject {
             pro: entitlements.proActive,
             cloudReady: cloud.accountState.isReady,
             otherDeviceSeen: Self.otherDeviceSeen(events: eventStore.events, thisDevice: DeviceInfo.name),
+            verified: cloud.enrollment.enrolledAccount != nil,   // its durable grant (item 155's A11)
             hidden: OnboardingState.notificationAskHidden)
     }
 
@@ -1523,11 +1491,13 @@ final class MonitoringEngine: ObservableObject {
     /// alerts on — only while iOS has never been asked, only once evidence from ANOTHER device
     /// on this iCloud account has arrived in this device's log (a record stamped with another
     /// device's name — `otherDeviceSeen`; owner ask 2026-09-05 —
-    /// "that number will be very small for a while"), and not after the owner tapped Hide.
+    /// "that number will be very small for a while") or, since 1.8.2, once this installation has
+    /// been verified for iCloud (`verified`; item 155's A11: two devices with one name, or an
+    /// account with no events yet, never saw it), and not after the owner tapped Hide.
     nonisolated static func notificationAskIsDue(authUndetermined: Bool, notifyOtherDevices: Bool,
                                                  pro: Bool, cloudReady: Bool,
-                                                 otherDeviceSeen: Bool, hidden: Bool) -> Bool {
-        authUndetermined && notifyOtherDevices && pro && cloudReady && otherDeviceSeen && !hidden
+                                                 otherDeviceSeen: Bool, verified: Bool = false, hidden: Bool) -> Bool {
+        authUndetermined && notifyOtherDevices && pro && cloudReady && (otherDeviceSeen || verified) && !hidden
     }
 
     /// Whether a user-initiated arm is currently blocked for want of Guided Access.
@@ -1657,7 +1627,6 @@ final class MonitoringEngine: ObservableObject {
                 guard let self, let endsAt = self.graceEndsAt else { return }
                 let remaining = endsAt.timeIntervalSinceNow
                 self.graceRemaining = max(0, Int(remaining.rounded(.up)))
-                self.refreshSirenRouteWarning()   // headphones connected or put away during the countdown (fable-2)
                 if remaining <= 0 {
                     self.graceTimer?.invalidate(); self.graceTimer = nil
                     self.graceEndsAt = nil
@@ -1723,7 +1692,7 @@ final class MonitoringEngine: ObservableObject {
     }
 
     /// Turns the raw calibration numbers into plain-language quality labels.
-    private func makeCalibrationSummary() -> CalibrationSummary {
+    func makeCalibrationSummary() -> CalibrationSummary {
         var motionQ: String?, motionD: String?, audioQ: String?, audioD: String?
         if settings.isEnabled(.motion), let m = monitors[.motion] as? MotionMonitor {
             let n = m.calibratedNoiseFloor
@@ -1770,6 +1739,7 @@ final class MonitoringEngine: ObservableObject {
         if armedSince == nil {
             armedSince = Date()          // start of the watch
             markWatchLive()              // recoverable from THIS moment, not from covert (review 1, F1)
+            UserDefaults.standard.removeObject(forKey: Self.cancelRunKey)   // the next cancel is its own (item 169's codex-1)
             let armedRecord = logWatchStart()   // "armed", after an owed reinstall record (item 148's 5); once per watch
             startHeartbeat(session: armedRecord.id)     // item 52: its beats name this record
             unconsumedLiftLogged = false // the watch going live consumes the lift spree (R3-8, narrowed by item 73 R3.4)
@@ -1792,19 +1762,18 @@ final class MonitoringEngine: ObservableObject {
     private func refreshSirenVolumeWarning() {
         sirenVolumeLow = settings.responseMode == .siren
             && AVAudioSession.sharedInstance().outputVolume < 0.5
-        refreshSirenRouteWarning()   // and where the sound goes (fable-2)
     }
 
     /// End the calibration review and switch to the covert armed state. Also called
     /// early by fireTrigger when a tamper fires during the review.
-    private func goCovert() {
+    func goCovert() {
         showingCalibrationReview = false
         state = .armed
         engageCovertScreen()
         recheckBlackoutOnReturnToArmed()   // a path lost during the review (item 65, finding 8)
     }
 
-    private func applyEnabledAndSensitivity() {
+    func applyEnabledAndSensitivity() {
         // Use the effective (Pro-aware) set: the audio tripwire is Pro, so on the free tier
         // its monitor stays disabled (the other tripwires are always free).
         let active = effectiveSensors
@@ -1834,280 +1803,23 @@ final class MonitoringEngine: ObservableObject {
     /// The engine-side truth `syncVisionTap` hands the camera — also consulted directly
     /// where the engine used to read the camera's own flag back from the main actor
     /// (seventh review, #4: that read was half of the cross-queue race).
-    private var visionTapWanted: Bool {
+    var visionTapWanted: Bool {
         sensorEnabled(.vision) && settings.isEnabled(.camera)
     }
 
-    // MARK: - Screen brightness
-
-    /// Sets the display brightness from the current state — highest priority first:
-    /// capture flash → disarm PIN entry → tamper alert → recording → covert black.
-    private func refreshBrightness() {
-        // Covert enforcement belongs to the covert screen only. While disarmed, never force
-        // brightness (don't black out Home) — and during grace/calibration the normal arming
-        // UI is on screen: the countdown is the owner's cancel window (V-04), and blacking it
-        // out defeats it. Found on device 2026-08-29, the first time the recovery countdown
-        // appeared at cold launch: this used to gate on `state.isActive`, which includes
-        // `.arming`, so the scene-activation refresh landed mid-countdown and applied the
-        // ladder's black to the one screen the owner is supposed to read and cancel.
-        guard Self.enforcesCovertBrightness(state) else { return }
-        UIScreen.main.brightness = Self.brightnessLevel(captureFlash: captureFlash,
-                                                        padOpen: disarmEntryActive,
-                                                        alertActive: alertActive,
-                                                        recording: camera.isRecordingActive,
-                                                        previous: previousBrightness)
-    }
-
-    /// Pure (unit-tested): which states the covert brightness ladder applies to — exactly the
-    /// ones that render the covert screen. Everything else (Home, the arming flow) shows the
-    /// normal UI at the owner's own brightness. Deliberately narrower than `isActive`, which
-    /// exists for the app-switcher cover and answers a different question.
-    nonisolated static func enforcesCovertBrightness(_ state: MonitoringState) -> Bool {
-        state == .armed || state == .triggered
-    }
-
-    /// Pure (unit-tested). The covert screen's brightness ladder. The `recording` rung is
-    /// the 2.5.14 requirement: while any capture session is live the screen must never be
-    /// fully dark, or the REC indicator would be invisible and the app "blank during
-    /// recording". Only with the camera genuinely off does covert drop to true black.
-    nonisolated static func brightnessLevel(captureFlash: Bool, padOpen: Bool,
-                                            alertActive: Bool, recording: Bool,
-                                            previous: CGFloat) -> CGFloat {
-        if captureFlash { return 1.0 }
-        if padOpen { return max(previous, 0.6) }
-        if alertActive { return alertScreenBrightness }
-        if recording { return recordingScreenBrightness }
-        return 0
-    }
-
-    /// Restores/re-applies covert brightness across app backgrounding, so a
-    /// backgrounded-while-armed device isn't left globally dimmed (or, on return,
-    /// bright). Called from RootView on scene-phase changes.
-    func handleScenePhase(_ active: Bool) {
-        if active {
-            seedCloudOwnershipIfReadable()
-            // A launch recovery still waiting runs first (item 88): the passes below act on the
-            // flags it reads (the owed re-arm, the lapse-logged flag), and were written when it
-            // always ran inside `init`, before them. Cleared first, the lapse flag made the
-            // recovery record the same lapse twice. The app on screen ends its wait, as the
-            // notice would a moment later (item 85); the notice then finds nothing to do.
-            if launchRecoveryWaiting { runDeferredRecovery(appIsActive: true) }
-            // Run an owed crash-recovery re-arm now that the owner is actually looking, so
-            // the grace countdown's cancel window is visible (V-04). Reads the persisted flag
-            // so a re-arm deferred on a background launch — even across a terminate — is
-            // honored on the first foreground (M4). `performRecoveryReArm` re-checks and
-            // clears the flag, so this is idempotent if the phase fires more than once.
-            if state == .disarmed, UserDefaults.standard.bool(forKey: Self.pendingReArmKey) {
-                performRecoveryReArm()
-            }
-            // Flush anything still pending. A background-task expiration mid-upload leaves an
-            // event `.pending`, and the other retry paths are reconnect, crash recovery, and
-            // opening the Event Log — so a benign expiration on the owner's own device sat
-            // unsynced until they happened to browse the log (M3). No-op off Pro, and cheap
-            // when nothing is pending.
-            Task { await retryPendingSync() }
-            // Re-sample Guided Access (BACKLOG 24). `guidedAccessStatusDidChangeNotification`
-            // is only delivered to a running process, so a toggle made while the app was
-            // suspended is missed entirely and never replayed on resume. Without this, Home's
-            // "Guided Access ready / off" row kept showing the pre-background value until the
-            // owner happened to enter the arming flow, which is the one place that re-sampled.
-            // A security app showing a stale security indicator is the wrong kind of wrong.
-            refreshGuidedAccess()
-            // Back on screen disarmed under Guided Access (woken after a sleep, or launched into a
-            // session): the screen hold starts afresh (item 92).
-            if state == .disarmed, guidedAccessEnabled { resetGuidedAccessScreenHold() }
-            // The tripwires missed whatever happened while the process was suspended — a
-            // Guided Access lock, an answered call — and iOS replays none of it. Let each
-            // running monitor compare the live state with its baseline (review 3, R3.3): the
-            // power monitor trips on a plug or unplug that spanned the lapse.
-            if state.isActive {
-                for (_, m) in monitors where m.isEnabled { m.resumeAfterSuspension() }
-            }
-            // Enforce the automatic cloud-retention policy, at most daily (32.R2).
-            Task { await enforceCloudRetentionIfDue() }
-            // Notification permission may have changed in iOS Settings while suspended (34.H7).
-            Task { await refreshNotificationHealth() }
-            // Back in the foreground: any logged lapse has ended, so a kill from here is a
-            // separate interruption and must be recorded as one.
-            UserDefaults.standard.removeObject(forKey: Self.backgroundLapseLoggedKey)
-            refreshBrightness()                       // re-apply covert/alert
-        } else if state.isActive {
-            UIScreen.main.brightness = Self.restoredBrightness(previous: previousBrightness)   // don't leave system dimmed
-        }
-    }
-
-    /// Auto-lock is disabled for every state except `.disarmed`, and disarmed while the Guided
-    /// Access screen hold runs — see `keepsDeviceAwake`. Centralised so the flag can't be set in
-    /// one path and forgotten in another.
-    func refreshIdleTimer() {   // internal for MonitoringEngine+FirstArmBriefing.swift
-        UIApplication.shared.isIdleTimerDisabled = Self.keepsDeviceAwake(
-            state, guidedAccessOn: guidedAccessEnabled, holdRunning: guidedAccessScreenHoldTimer != nil,
-            briefingShowing: firstArmBriefing != nil)
-    }
-
-    /// Pure (unit-tested). Whether the display must be kept from sleeping.
-    ///
-    /// Every state but `.disarmed` keeps it awake. `.arming` and `.calibrating` are the ones worth
-    /// stating outright: they were missing, and their absence meant a phone set face down could
-    /// lock and suspend the app before the watch ever started. Disarmed hands auto-lock back,
-    /// except while the Guided Access screen hold runs (item 92); with Guided Access off,
-    /// whatever the hold says, it is handed back. While "Before you arm" shows, the arming flow
-    /// holds nothing either (ADR 0050's decision 8): the phone may sleep as on Home, and under
-    /// Guided Access item 92's hold applies as on Home.
-    nonisolated static func keepsDeviceAwake(_ state: MonitoringState, guidedAccessOn: Bool = false,
-                                             holdRunning: Bool = false, briefingShowing: Bool = false) -> Bool {
-        (state != .disarmed && !briefingShowing) || (guidedAccessOn && holdRunning)
-    }
+    // MARK: - Screen brightness, the idle timer, the covert screen, the boot stamp and the disarm entry's forwarding: in MonitoringEngine+Screen.swift; its state stays here
 
     /// The Guided Access screen hold's timer (nil: no hold running), and the number of the latest
     /// hold, so a hold whose end was already on its way never ends the one that replaced it.
-    private var guidedAccessScreenHoldTimer: Timer?
-    private var guidedAccessScreenHoldNumber = 0
+    var guidedAccessScreenHoldTimer: Timer?
 
-    /// Item 92: disarmed under Guided Access, keeps the screen on for
-    /// `timing.guidedAccessScreenHold` from now, replacing any hold already running; in any other
-    /// case, ends the hold. iOS can wake a phone that slept under Guided Access into a stuck
-    /// notification screen that only ending Guided Access clears (README, Known iOS quirks).
-    /// Called when Guided Access comes on or goes off, at the end of every disarm (a cancelled
-    /// countdown included), and when the app comes back on screen disarmed under Guided Access.
-    private func resetGuidedAccessScreenHold() {
-        guidedAccessScreenHoldTimer?.invalidate()
-        guidedAccessScreenHoldTimer = nil
-        if state == .disarmed, guidedAccessEnabled {
-            guidedAccessScreenHoldNumber += 1
-            let number = guidedAccessScreenHoldNumber
-            guidedAccessScreenHoldTimer = Timer.commonMode(interval: timing.guidedAccessScreenHold,
-                                                           repeats: false) { [weak self] _ in
-                Task { @MainActor in self?.endGuidedAccessScreenHold(number) }
-            }
-        }
-        refreshIdleTimer()
-    }
-
-    /// The hold numbered `number` has run its time, and the phone may sleep again, unless a
-    /// newer hold replaced it or Guided Access ended it first.
-    private func endGuidedAccessScreenHold(_ number: Int) {
-        guard number == guidedAccessScreenHoldNumber, guidedAccessScreenHoldTimer != nil else { return }
-        guidedAccessScreenHoldTimer = nil
-        refreshIdleTimer()
-    }
-
-    /// The persistent side of going live (review 1, F1): the armed marker — storing the
-    /// pre-arm brightness the next launch restores — and the boot stamp beside it, so a
-    /// force-quit, a Voice Control close, or a crash is detected and classified at the next
-    /// launch. Planted the moment the watch is live, under the calibration card, not when the
-    /// screen goes black six seconds later: the sensors are live and "armed" is on the record
-    /// from the earlier moment, and a kill inside that window used to leave nothing behind.
-    /// `previousBrightness` was captured at `beginArming` — deliberately not re-sampled here,
-    /// where the display may already have been dimmed by the ambient sensor.
-    private func markWatchLive() {
-        UserDefaults.standard.set(Double(previousBrightness), forKey: Self.armedMarkerKey)
-        plantBootStamp()   // beside the marker: lets the next launch tell a restart from a kill (53)
-        // The recovered watch is now protected; the armed marker covers it from here (F1).
-        UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)
-        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // the armed marker takes over (R3.2)
-    }
-
-    /// The display side of going covert: keep the device awake and take the screen to black.
-    /// Nothing persistent happens here any more — see `markWatchLive`.
-    private func engageCovertScreen() {
-        refreshIdleTimer()
-        refreshBrightness()
-    }
-
-    /// The display side of the disarm. Auto-lock is not touched here: the disarm hands it back
-    /// once the state is `.disarmed`, or holds it a while under Guided Access (item 92).
-    private func releaseCovertScreen() {
-        UIScreen.main.brightness = Self.restoredBrightness(previous: previousBrightness)   // the user's level, floored
-        UserDefaults.standard.removeObject(forKey: Self.armedMarkerKey)   // clean exit
-        UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)   // and no owed recovery (F1)
-        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // and no countdown in flight (R3.2)
-        clearBootStamp()
-    }
-
-    /// Stores the current boot stamp beside whichever persistent session marker is being set
-    /// (BACKLOG 53). A kernel that will not answer leaves no stamp, so the next launch
-    /// classifies nothing rather than guessing.
-    private func plantBootStamp() {
-        guard let stamp = BootStamp.current() else { clearBootStamp(); return }
-        UserDefaults.standard.set(stamp.bootTime, forKey: Self.armedBootTimeKey)
-        UserDefaults.standard.set(stamp.takenAt, forKey: Self.armedBootStampAtKey)
-    }
-
-    private func clearBootStamp() {
-        UserDefaults.standard.removeObject(forKey: Self.armedBootTimeKey)
-        UserDefaults.standard.removeObject(forKey: Self.armedBootStampAtKey)
-    }
-
-    /// Reads and clears the planted stamp; `nil` when none was planted (a marker from a build
-    /// before BACKLOG 53, or a kernel that would not answer at arm).
-    private func consumeBootStamp() -> BootStamp? {
-        defer { clearBootStamp() }
-        let defaults = UserDefaults.standard
-        guard let bootTime = defaults.object(forKey: Self.armedBootTimeKey) as? Double,
-              let takenAt = defaults.object(forKey: Self.armedBootStampAtKey) as? Double else { return nil }
-        return BootStamp(bootTime: bootTime, takenAt: takenAt)
-    }
-
-    /// Raise the screen so the hidden disarm PIN pad is actually visible.
-    /// NOTE: this does NOT stop the siren — only a verified PIN (disarm) does,
-    /// otherwise anyone could silence the alarm just by holding the screen.
-    /// The alert *message* is hidden during PIN entry by ArmedView's showPINPad.
-    /// Called on the disarm HOLD press-down (before the pad opens). Opens the owner-
-    /// attribution candidate window so the touch that starts the hold — and anything
-    /// captured during the 5 s hold — is attributed to the owner if a correct PIN follows.
-    /// Called on the disarm HOLD press-down (before the pad opens). Opens the owner-
-    /// attribution candidate window (R-02). Delegates to `DisarmEntryCoordinator`.
-    func noteDisarmCandidate() { disarmEntry.noteCandidate() }
-
-    /// The hold was released before the pad opened (a tap, not a disarm). No-op once open.
-    func cancelDisarmCandidate() { disarmEntry.cancelCandidate() }
-
-    /// The pad opened: raise brightness, pause proximity blanking, start the inactivity timer.
-    func beginDisarmEntry() { disarmEntry.begin() }
-
-    /// The PIN pad on each digit: keep the pad alive (R-09), bounded by the ceiling.
-    func noteDisarmActivity() { disarmEntry.noteActivity() }
-
-    /// PIN entry dismissed without a disarm (cancel or inactivity timeout): back to covert.
-    func endDisarmEntry() { disarmEntry.end() }
-
-    /// A wrong PIN on the armed screen's disarm pad (item 49): the attempt to defeat the alarm is
-    /// itself evidence. `KeychainService.verify` has already counted it for the lockout, which
-    /// this never touches. While a capture is running the attempt joins that record, like any
-    /// trip during a capture (the typing is its Touch); otherwise it mints its own record through
-    /// the trigger response — the fact first, pushed like any trip, then one front still.
-    /// Armed sessions only (the calibration review included, like `handleTrip`): the Home gate
-    /// and the other PIN pads stay lockout-only. The alarm and the flash keep their rule —
-    /// no fresh alarm or flash while the owner is typing (A-02); a running alarm is kept up.
-    func noteWrongDisarmPIN() {
-        guard !dryRunActive else { return }
-        if state == .triggered || capturePipeline.isCapturingUntilClear {
-            // An until-clear recording treats the attempt as activity, like any trip.
-            if capturePipeline.isCapturingUntilClear { capturePipeline.noteActivity() }
-            tripsDuringCapture[armSession, default: []].insert(.touch)
-            wrongPINsDuringCapture[armSession, default: 0] += 1
-            extendAlertWindow()
-            return
-        }
-        guard state == .armed || (state == .calibrating && showingCalibrationReview),
-              !isHandlingTrigger else { return }
-        if showingCalibrationReview { goCovert() }
-        isHandlingTrigger = true
-        state = .triggered
-        tripsDuringCapture[armSession] = nil
-        wrongPINsDuringCapture[armSession] = nil
-        let startDate = Date()
-        lastTriggerDate = startDate
-        let session = armSession
-        Task { await respond(triggeredSensors: [.touch], startDate: startDate, session: session, wrongPIN: true) }
-    }
+    var guidedAccessScreenHoldNumber = 0
 
     // MARK: - Heartbeat (item 52)
 
     /// The live watch's heartbeat: its session (the "armed" record's id), the last number used,
     /// and the interval's timer.
-    private var heartbeatSession: UUID?
+    var heartbeatSession: UUID?
     private var heartbeatSequence = 0
     private var heartbeatTimer: Timer?
 
@@ -2180,7 +1892,8 @@ final class MonitoringEngine: ObservableObject {
     /// Starting a *fresh* alert is gated on `activeEntry` — the owner appears to be TYPING
     /// their PIN right now (the pad is up AND a key was pressed within the last 20 s; see
     /// `DisarmEntryCoordinator.presentationSuppressed`, A-02) — so a legitimate disarm isn't spammed with alerts
-    /// fighting the raised pad brightness. Mere pad *openness* is deliberately not enough:
+    /// fighting the raised pad brightness. Held back, not dropped (`.deferred`, item 167's A1): it shows once the typing
+    /// stops (the same 20 s) or the pad closes without a correct PIN. Mere pad *openness* is deliberately not enough:
     /// the pad stays up for 30–150 s of inactivity, so gating on openness handed anyone
     /// willing to do the 5-second hold that much guaranteed silence. Nor is the broader
     /// "disarm candidate" window: that opens on any touch-down, and gating there let a snoop
@@ -2190,13 +1903,14 @@ final class MonitoringEngine: ObservableObject {
                                         activeEntry: Bool) -> AlertAction {
         guard showsMessage else { return .none }
         if alertActive { return .extend }
-        return activeEntry ? .none : .present
+        return activeEntry ? .deferred : .present
     }
 
     /// Shows the on-screen warning (and starts the siren in siren mode). Called
     /// after capture. Re-triggers / ongoing tamper extend the display window.
     private func presentAlert() {
         alertActive = true
+        endCaptureLightForTheWarning()   // a lit clip's white screen would cover it (codex-1)
         refreshBrightness()
         if settings.responseMode == .siren {
             // Ramp (opt-out): quiet for 10s, then rise to full over 10s. The owner's disarm
@@ -2211,7 +1925,7 @@ final class MonitoringEngine: ObservableObject {
     /// (Re)start the dismiss countdown so continued tampering keeps the alert /
     /// siren alive — including during a long "until clear" recording, where trips
     /// don't fire fresh events.
-    private func extendAlertWindow() {
+    func extendAlertWindow() {
         guard alertActive else { return }
         // Continued tampering is fresh evidence the incident is live: if siren activation
         // exhausted its retries against a held audio session, re-arm the attempt budget
@@ -2220,7 +1934,7 @@ final class MonitoringEngine: ObservableObject {
         scheduleAlertDismiss()
     }
 
-    private func scheduleAlertDismiss() {
+    func scheduleAlertDismiss() {
         alertDismissTimer?.invalidate()
         let interval = Self.alertDismissInterval(
             base: alertDuration,
@@ -2287,7 +2001,7 @@ final class MonitoringEngine: ObservableObject {
     /// safe: this trigger's evidence is already captured and pushed by the time any response
     /// fires. The wait is bounded since 1.8.1 (item 152's lead 6): a session queue that never
     /// answers must not keep the alarm silent, and a release that lands late restarts it.
-    private func soundSiren(fullVolume: Bool) {
+    func soundSiren(fullVolume: Bool) {
         if sensorEnabled(.audio) { monitors[.audio]?.stop() }
         audioPausedForSiren = true
         let mustReleaseMic = effectiveCaptureMode.isClip && settings.isEnabled(.camera)
@@ -2299,7 +2013,11 @@ final class MonitoringEngine: ObservableObject {
             if mustReleaseMic { _ = await releaseMicForSiren() }   // at most timing.sirenMicReleaseWait (item 152's lead 6)
             // The owner may have disarmed during the wait — don't resurrect the alarm.
             guard alertActive else { return }
-            if fullVolume { siren.goFullVolume() } else { siren.start(rampUp: settings.sirenRampUp) }
+            if fullVolume {   // from this iPhone's speaker in Siren mode (ADR 0062)
+                siren.goFullVolume(onSpeaker: sirenOnSpeaker)
+            } else {
+                siren.start(rampUp: settings.sirenRampUp, onSpeaker: sirenOnSpeaker)
+            }
             // The dismiss clock runs from the audible start (item 73, review 2 R2.4): the mic
             // release above took time the interval knew nothing about, and the full-volume
             // tail of the ramp lost exactly that much.
@@ -2308,7 +2026,7 @@ final class MonitoringEngine: ObservableObject {
     }
 
     /// Resume the Audio tripwire once the siren has released the audio session.
-    private func resumeAudioAfterSiren() {
+    func resumeAudioAfterSiren() {
         guard audioPausedForSiren else { return }
         audioPausedForSiren = false
         // `.triggered` counts as watching (item 65, finding 1): an alert window that ends while
@@ -2353,235 +2071,16 @@ final class MonitoringEngine: ObservableObject {
         state == .armed || state == .triggered
     }
 
-    // MARK: - Jamming response (connectivity blackout)
+    // MARK: - The jamming response (connectivity blackout): in MonitoringEngine+Jamming.swift
 
-    private func handleConnectivityChange(_ online: Bool) {
-        isOnline = online
-        if online {
-            offlineSince = nil
-            blackoutTimer?.invalidate(); blackoutTimer = nil
-            standDownBlackout()                 // benign outage resolved / jam lifted
-            Task { await retryPendingSync() }   // auto-flush the instant a path returns
-            // Recover the cross-device push subscription if it failed to set up at
-            // arm (network briefly down then) — otherwise the owner's other devices
-            // get no alert for the whole session. Idempotent; no-op if already set.
-            // `cloudAllowed` so a mid-session upgrade also gets the subscription (P-01).
-            if cloudAllowed && settings.notifyOtherDevices {
-                Task { await cloud.refreshSubscription(notifyOtherDevices: true) }
-            }
-        } else {
-            if offlineSince == nil { offlineSince = Date() }   // the transition, not a re-report
-            // Debounce a total loss before treating it as suspected jamming — for any live
-            // watch, not only while `.armed`: a loss that begins during a capture or the
-            // calibration review is looked at again the moment the engine is armed
-            // (`recheckBlackoutOnReturnToArmed`; item 65, finding 8). `evaluateBlackout`
-            // keeps the armed gate, so nothing escalates from a state that can't.
-            guard state.isActive, hadConnectivityAtArm, settings.jammingResponse else { return }
-            scheduleBlackoutCheck(after: blackoutDebounce)
-        }
-    }
-
-    private func scheduleBlackoutCheck(after delay: TimeInterval) {
-        blackoutTimer?.invalidate()
-        blackoutTimer = Timer.commonMode(interval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.evaluateBlackout() }
-        }
-    }
-
-    /// Item 65, finding 8: the canary's one-shot check fires on the debounce after the path
-    /// dropped; if the engine was busy then — a capture in flight, the calibration review — the
-    /// check declined and nothing looked again, so a loss in the last seconds of any capture
-    /// was never treated as jamming for that blackout. Called on every return to `.armed`:
-    /// with the path still down and nothing escalated, the check runs once the loss has
-    /// lasted the debounce — now, if it already has.
-    private func recheckBlackoutOnReturnToArmed() {
-        guard state == .armed, !connectivity.isOnline, let since = offlineSince,
-              !blackoutEscalated, hadConnectivityAtArm, settings.jammingResponse else { return }
-        scheduleBlackoutCheck(after: Self.blackoutRecheckDelay(offlineFor: Date().timeIntervalSince(since),
-                                                               debounce: blackoutDebounce))
-    }
-
-    /// Pure (unit-tested): the part of the debounce a loss still owes, never less than a beat.
-    nonisolated static func blackoutRecheckDelay(offlineFor: TimeInterval, debounce: TimeInterval) -> TimeInterval {
-        max(debounce - offlineFor, 0.05)
-    }
-
-    private func evaluateBlackout() {
-        guard Self.shouldEscalateBlackout(armed: state == .armed,
-                                          enabled: settings.jammingResponse,
-                                          online: connectivity.isOnline,
-                                          hadConnectivityAtArm: hadConnectivityAtArm,
-                                          stationary: isStationary,
-                                          alreadyEscalated: blackoutEscalated) else { return }
-        // This path has no triggering capture, so request a best-effort frame. All paths
-        // share the synchronous interference record written by `escalate` before alerting.
-        escalate(.blackout, captureBlackoutFrame: true)
-    }
-
-    /// Pure decision (unit-tested): a stationary armed device that had a path at arm
-    /// and has now totally lost it — feature on, not already escalated.
-    static func shouldEscalateBlackout(armed: Bool, enabled: Bool, online: Bool,
-                                       hadConnectivityAtArm: Bool, stationary: Bool,
-                                       alreadyEscalated: Bool) -> Bool {
-        armed && enabled && !online && hadConnectivityAtArm && stationary && !alreadyEscalated
-    }
-
-    /// The path must have been down at least this long before the trigger-time go-loud
-    /// trusts the instantaneous offline reading (39.R2.2): a WiFi↔cellular handoff can leave
-    /// the path unsatisfied for well under a second, and a genuine jam-then-grab timeline
-    /// runs seconds to minutes — a 2 s floor filters the coincidence while barely delaying
-    /// the deterrent. The 30 s blackout canary and the observed-failure path stand behind it.
-    nonisolated static let offlineBlipFilter: TimeInterval = 2
-
-    /// Pure decision (unit-tested): at trigger time, a real tamper whose evidence can't be
-    /// exfiltrated should abandon covertness and go loud — but ONLY when a path we HAD at
-    /// arm has since dropped (suspected jamming), and only once it has been down past the
-    /// blip filter, so a sub-second handoff flap plus a coincidental trigger can't sound the
-    /// siren (39.R2.2 — `jammingResponse` defaults ON, so the opt-in is soft). A device
-    /// armed offline in a benign dead zone must not force-siren; its evidence is simply
-    /// stored locally and uploads later. Mirrors `shouldEscalateBlackout`'s
-    /// `hadConnectivityAtArm` gate (V-03).
-    static func shouldGoLoudOnFailedExfil(jammingResponse: Bool, online: Bool,
-                                          hadConnectivityAtArm: Bool,
-                                          offlineFor: TimeInterval) -> Bool {
-        jammingResponse && !online && hadConnectivityAtArm && offlineFor >= offlineBlipFilter
-    }
-
-    private var isStationary: Bool {
-        lastMotionTrip.map { Date().timeIntervalSince($0) > stationaryWindow } ?? true
-    }
-
-    /// Abandon covertness. Each new blackout writes its signal-loss record before the
-    /// warning/siren, including trigger-time and observed-upload failures. Repeated requests
-    /// while escalated do not add records; reconnect/disarm allows a later incident.
-    /// Only the timed canary requests a frame: trigger/upload paths already have an event
-    /// and must not start another capture. Blackout lasts until disarm or reconnect; a flood
-    /// shows a warning (siren only in Siren mode) that extends while tampering continues.
-    private func escalate(_ reason: Escalation, captureBlackoutFrame: Bool = false) {
-        if escalation == .blackout { return }        // strongest state; don't downgrade
-        if escalation == reason {
-            if !reason.persists { scheduleAlertDismiss() }   // extend the flood window
-            return
-        }
-        // Snapshot cloud authorization with the record, before any asynchronous work.
-        let record = reason == .blackout ? logBlackoutRecord() : nil
-        let sessionAllowed = cloudAllowed
-        if reason == .blackout { blackoutEscalated = true }
-        escalation = reason
-        alertActive = true
-        refreshBrightness()
-        if reason.forcesSiren || settings.responseMode == .siren {
-            // No ramp on an escalation: suspected jamming means the evidence may never
-            // escape, and a flood is an active attack — both need to be loud NOW.
-            // goFullVolume() handles every prior state (not started, mid-ramp, or
-            // interrupted by a call), so it overtakes a ramping siren or (re)starts a
-            // stopped one at full volume.
-            soundSiren(fullVolume: true)
-        }
-        if !reason.persists { scheduleAlertDismiss() }
-        if let record {
-            Task {
-                if captureBlackoutFrame {
-                    await captureBlackoutEvidence(for: record, cloudAllowed: sessionAllowed)
-                } else {
-                    await exfiltrate(record, cloudAllowedOverride: sessionAllowed)
-                }
-            }
-        }
-    }
-
-    /// Stand down a *blackout* escalation when connectivity returns (a benign outage
-    /// resolved, or the jam lifted after doing its deterrent job). disarm() clears
-    /// everything separately; a flood fades on its own dismiss timer.
-    private func standDownBlackout() {
-        guard escalation == .blackout else { return }
-        escalation = nil
-        // Re-arm the escalation for the NEXT blackout. Without this the one-shot is
-        // spent for the whole session, so an attacker can burn it with a brief jam,
-        // let the path return (we stand down), then jam for real — silently.
-        blackoutEscalated = false
-        alertActive = false
-        siren.stop()
-        resumeAudioAfterSiren()
-        refreshBrightness()
-    }
-
-    /// Writes the sensorless "Signal loss" record synchronously before any interference
-    /// warning, even with the camera off, and schedules the Pro fact upload. Connectivity
-    /// reflects the observed path: a network-class upload failure can escalate while that
-    /// path still looks online, so it must not be labelled captured offline.
-    /// Sensor traces preserve context; this records suspected interference, not its cause.
-    private func logBlackoutRecord() -> Event {
-        let event = Event(startDate: Date(), endDate: Date(),
-                          triggeredSensors: [],
-                          motionTrace: monitors[.motion]?.recentTrace() ?? [],
-                          audioTrace: monitors[.audio]?.recentTrace() ?? [],
-                          visionTrace: monitors[.vision]?.recentTrace(),
-                          cloudSyncState: .pending,
-                          capturedOffline: !connectivity.isOnline,
-                          thermalState: Self.thermalStateName(thermalState()))   // item 38, choice 3
-        cloud.enrollment.registerLocalEvent(event)
-        eventStore.add(event)
-        eventCount = eventStore.events.count
-        pushFactIfCloud(event)   // get the fact out immediately (Pro only)
-        return event
-    }
-
-    /// The frame grab for a blackout record already in the log, pushed under the cloud
-    /// authorization decided with that record (P-01's live-session no-downgrade).
-    private func captureBlackoutEvidence(for logged: Event, cloudAllowed sessionAllowed: Bool) async {
-        let session = armSession
-        var event = logged
-
-        if settings.isEnabled(.camera),
-           Self.mayRunCadenceCapture(handlingTrigger: isHandlingTrigger,
-                                     capturingUntilClear: isCapturingUntilClear,
-                                     cadenceBusy: cadenceCaptureBusy) {
-            cadenceCaptureBusy = true
-            defer { cadenceCaptureBusy = false }
-            let cam: CameraChoice
-            switch effectiveCameraPosition {
-            case .rear: cam = .rear
-            case .auto: cam = resolveAutoCamera()
-            default:    cam = .front   // front / both → a single grab is enough here
-            }
-            // A still by construction (ADR 0003): a frame answers this record's purpose, and
-            // a still cannot contend for the movie output. In practice the blackout already
-            // forces stills via the escalation (F4); this makes it structural, not incidental.
-            let outcome = await capturePipeline.capture(from: cam, mode: .photo, illumination: settings.illumination, preservation: .init(event: event, store: eventStore))
-            if let cap = outcome.capture, let stored = await eventStore.store(cap.source, ext: cap.ext,
-                    attachingTo: event, camera: cap.camera.rawValue) {
-                event.mediaFilename = stored.filename
-                event.primaryCamera = cam.rawValue
-                event.thumbnailData = stored.thumbnail
-            } else {
-                event.captureFailure = (outcome.failure ?? .storageFailed).rawValue   // the why, on the record (54)
-            }
-            event.endDate = Date()
-            eventStore.updateAndReopenForReupload(event)   // the same for the blackout still (item 155's A1), in one write (S1)
-            #if DEBUG
-            await captureStoredForTesting?(event.id)
-            #endif
-            // Only this watch may stand its camera down. Storage may have suspended while
-            // the owner disarmed and started a replacement watch.
-            if session == armSession { standDownCameraIfNeeded() }
-        } else if settings.isEnabled(.camera) {
-            // A trigger capture owns the camera (34.H10) — the blackout RECORD above stands
-            // either way; only the frame grab yields.
-            Log.engine.info("Blackout frame skipped — a trigger capture owns the camera")
-        }
-        // Re-read the stored copy (monotonic-field preservation, sixth-review F2) and push
-        // under the authorization decided at creation.
-        let ev = eventStore.events.first { $0.id == event.id } ?? event
-        Task { await exfiltrate(ev, cloudAllowedOverride: sessionAllowed) }   // .localOnly now; retried on reconnect
-    }
+    // MARK: - The camera chosen for a capture
 
     /// Resolves the "Auto (Rear when face down)" camera: rear only when iOS reports
     /// `.faceDown` (screen hidden, rear lens up); front for every other orientation,
     /// including propped and standing — Auto cannot know which side of an upright phone
     /// faces the room (the short Settings label drops the "otherwise Front" that used to
     /// spell this out, because it was truncated in the settings row).
-    private func resolveAutoCamera() -> CameraChoice {
+    func resolveAutoCamera() -> CameraChoice {
         UIDevice.current.orientation == .faceDown ? .rear : .front
     }
 
@@ -2667,7 +2166,7 @@ final class MonitoringEngine: ObservableObject {
     }
 
     /// True while a blackout, flood-cadence or retry capture is using the camera (ADR 0003).
-    private var cadenceCaptureBusy = false {
+    var cadenceCaptureBusy = false {
         didSet {
             // The interruption's end may have arrived during a flood/blackout still.
             // Its release is the next opportunity; no polling or extra end is needed.
@@ -2810,7 +2309,7 @@ final class MonitoringEngine: ObservableObject {
         // here would never be retried (item 65, finding 3) — in the same write (item 155's S1).
         eventStore.updateAndReopenForReupload(event)
         let merged = eventStore.events.first { $0.id == event.id } ?? event
-        Task { await exfiltrate(merged, cloudAllowedOverride: retry.cloudAllowed) }
+        exfiltrateInBackground(merged, cloudAllowedOverride: retry.cloudAllowed)
     }
 
     /// Pure (unit-tested; item 65, finding 2). A shot that failed with no interruption live at
@@ -2826,124 +2325,7 @@ final class MonitoringEngine: ObservableObject {
         return CaptureFailureReason.forCaptureFailure(interruption: reason)
     }
 
-    // MARK: - Test Sensors (dry run)
-
-    /// Starts a live sensor test: calibrate, run the enabled monitors, and publish
-    /// their readings — but create no events and never engage the covert screen, so
-    /// the user can tune sensitivity and confirm placement without polluting the log.
-    func startDryRun() {
-        guard state == .disarmed, !dryRunActive else { return }
-        // Snapshot Pro for the dry run, exactly as beginArming does — otherwise `armedPro`
-        // is still false from launch and `effectiveSensors` would silently disable the
-        // (Pro) audio monitor for an in-trial user testing their sensors (P-03).
-        armedPro = entitlements.proActive
-        dryRunActive = true
-        dryRunReadings = [:]
-        dryRunTrips = [:]
-        dryRunCounts = [:]
-        lastCalibration = nil
-        applyEnabledAndSensitivity()
-        // The vision row needs frames: warm the camera for the test if vision is effective.
-        syncVisionTap()
-        if visionTapWanted { warmActiveCamera() }
-        // Settle window first (BACKLOG 12): count down visibly, THEN calibrate — the user is
-        // still holding the phone from tapping the button, and that handling is exactly the
-        // noise the calibration must not learn.
-        startDryRunSettle()
-    }
-
-    /// Re-learns the baselines without ending the test.
-    ///
-    /// Placement testing is iterative — set the phone down, read the numbers, move it, read
-    /// again — and every move invalidates the baseline those numbers are measured against.
-    /// Vision is the clearest case: its baseline *is* the scene, so after a move the row
-    /// reports a large permanent change that means nothing at all. The only way to re-baseline
-    /// used to be closing the sheet and reopening it, which also discarded the trip tally the
-    /// owner was watching.
-    ///
-    /// Trip counts are kept on purpose; the settle countdown runs again because tapping the
-    /// button is itself handling, and that is exactly the noise calibration must not learn.
-    func recalibrateDryRun() {
-        guard dryRunActive, dryRunCountdown == nil else { return }
-        dryRunGeneration += 1   // a calibration in flight is abandoned: its completion must not fire
-        for (_, m) in monitors { m.stop() }
-        dryRunTimer?.invalidate(); dryRunTimer = nil
-        dryRunTrips = [:]
-        lastCalibration = nil
-        startDryRunSettle()
-    }
-
-    /// The settle countdown, then calibration. Shared by the initial start and by a
-    /// re-calibration so the two can never drift apart.
-    private func startDryRunSettle() {
-        dryRunCountdown = Self.dryRunSettleSeconds
-        dryRunSettleTimer?.invalidate()
-        dryRunSettleTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.dryRunActive, let remaining = self.dryRunCountdown else { return }
-                if remaining > 1 {
-                    self.dryRunCountdown = remaining - 1
-                } else {
-                    self.dryRunSettleTimer?.invalidate(); self.dryRunSettleTimer = nil
-                    self.dryRunCountdown = nil
-                    self.beginDryRunCalibration()
-                }
-            }
-        }
-    }
-
-    /// The calibrate-then-watch half of the dry run, after the settle countdown has elapsed.
-    private func beginDryRunCalibration() {
-        for (_, m) in monitors where m.isEnabled && m.requiresCalibration { m.beginCalibration() }
-        let generation = dryRunGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + calibrationDuration) { [weak self] in
-            // Stale after a Recalibrate or a stop: the monitors were stopped and a new settle
-            // countdown is running — ending "this" calibration would end the NEW one early and
-            // start the monitors mid-settle (item 65, finding 17).
-            guard let self, self.dryRunActive, self.dryRunGeneration == generation else { return }
-            for (_, m) in self.monitors where m.isEnabled && m.requiresCalibration { m.endCalibration() }
-            self.lastCalibration = self.makeCalibrationSummary()
-            for (_, m) in self.monitors where m.isEnabled { m.start() }
-            self.dryRunTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.sampleDryRun() }
-            }
-        }
-    }
-
-    private func sampleDryRun() {
-        guard dryRunActive else { return }
-        var readings: [SensorType: SensorReading] = [:]
-        for type in SensorType.tripwires {
-            if let m = monitors[type], m.isEnabled, let r = m.liveReading() { readings[type] = r }
-        }
-        dryRunReadings = readings
-    }
-
-    func stopDryRun() {
-        dryRunActive = false
-        dryRunGeneration += 1   // no calibration completion outlives the dry run
-        dryRunTimer?.invalidate(); dryRunTimer = nil
-        dryRunSettleTimer?.invalidate(); dryRunSettleTimer = nil
-        dryRunCountdown = nil
-        camera.shutDown()   // the dry run may have warmed it for the vision row
-        for (_, m) in monitors { m.stop() }
-        dryRunReadings = [:]
-        dryRunTrips = [:]
-        dryRunCounts = [:]
-        // Release the dry run's Pro snapshot (32.R3). A dry run requires being disarmed, so
-        // no disarm() follows to clear it — and left set, `cloudAllowed` stayed true after a
-        // trial lapsed, letting a connectivity flap re-establish the push subscription for a
-        // now-free user: the same leak the disarm path already closed (P-01), reintroduced
-        // through the side door. Arming re-snapshots, so nothing else reads this stale.
-        armedPro = false
-    }
-
-    /// The test view's touch pad reports here. Touch has no switch (item 83), so every tap counts.
-    func dryRunReportTouch() {
-        guard dryRunActive else { return }
-        dryRunTrips[.touch] = Date()
-        dryRunCounts[.touch, default: 0] += 1
-    }
+    // MARK: - Test Sensors (the dry run): in MonitoringEngine+TestSensors.swift
 
     private func pruneStaleTrips() {
         let cutoff = Date().addingTimeInterval(-correlationWindow)
@@ -3071,6 +2453,11 @@ final class MonitoringEngine: ObservableObject {
         // record (evidence precedes response; item 65, finding 16).
         if sustainedEvent != nil, settings.jammingResponse { escalate(.flood) }
         if let held = sustainedEvent {
+            // A running alarm stays up while the flood goes on (item 152's lead 5; the owner's ruling (a)): with "Alarm
+            // on suspected attack" off nothing else extended it, and it went quiet one window in. Extend only: a faded
+            // alarm is not started again, and Stealth has none.
+            if Self.alertAction(showsMessage: settings.responseMode.showsMessage, alertActive: alertActive,
+                                activeEntry: disarmEntry.presentationSuppressed) == .extend { extendAlertWindow() }
             // Coalesce log spam, NOT evidence. Extend the one counter event, and still
             // capture on a bounded cadence so sustained real tampering keeps being shot.
             var ev = storedAnchor(held)   // the record as it is now, never the onset's copy (item 95)
@@ -3172,6 +2559,8 @@ final class MonitoringEngine: ObservableObject {
             visionTrace: monitors[.vision]?.recentTrace(),
             offline: !connectivity.isOnline)
         cloud.enrollment.registerLocalEvent(event)
+        beginBindingUse(event.id)   // through the capture, until the upload has it (codex-6 on 0ed887f)
+        defer { endBindingUse(event.id) }
         eventStore.add(event)
         eventCount = eventStore.events.count
         let fact = event
@@ -3201,7 +2590,7 @@ final class MonitoringEngine: ObservableObject {
         // Re-read the stored copy (sixth-review F2) and push under the creation-time
         // authorization (sixth-review F3).
         let ev = eventStore.events.first { $0.id == event.id } ?? event
-        Task { await exfiltrate(ev, cloudAllowedOverride: sessionAllowed) }
+        exfiltrateInBackground(ev, cloudAllowedOverride: sessionAllowed)
         if session == armSession { standDownCameraIfNeeded() }
     }
 
@@ -3228,8 +2617,8 @@ final class MonitoringEngine: ObservableObject {
 
     /// `wrongPIN`: the response to a wrong disarm PIN (item 49) — the record carries the attempt,
     /// and the capture is one front still whatever the settings say.
-    private func respond(triggeredSensors: [SensorType], startDate: Date, session: Int,
-                         sustained: Bool = false, wrongPIN: Bool = false) async {
+    func respond(triggeredSensors: [SensorType], startDate: Date, session: Int,
+                 sustained: Bool = false, wrongPIN: Bool = false) async {
         // 1. Record the event IMMEDIATELY (metadata + traces), before touching the
         //    camera — so a tamper is always logged even if capture is slow or fails.
         var event = Event(
@@ -3245,6 +2634,8 @@ final class MonitoringEngine: ObservableObject {
             wrongPINCount: wrongPIN ? 1 : nil,
             thermalState: Self.thermalStateName(thermalState()))   // item 38, choice 3
         cloud.enrollment.registerLocalEvent(event)
+        beginBindingUse(event.id)   // through the capture, until the upload has it (codex-6 on 0ed887f)
+        defer { endBindingUse(event.id) }
         eventStore.add(event)
         eventCount = eventStore.events.count
         // Captured during the owner's disarm flow (from the hold press-down through PIN
@@ -3388,8 +2779,7 @@ final class MonitoringEngine: ObservableObject {
         //    evidence must reach iCloud regardless; the media is already on disk,
         //    so this doesn't depend on the (possibly shut-down) camera. Only the
         //    re-arm/alert below are gated on the session still being live.
-        let ev = merged
-        Task { await exfiltrate(ev, cloudAllowedOverride: sessionAllowed) }
+        exfiltrateInBackground(merged, cloudAllowedOverride: sessionAllowed)
 
         // A replaced watch still saves and uploads its evidence, but no longer owns the
         // camera. Disarm and the pipeline handle the old attempt's shutdown; another shutdown
@@ -3420,27 +2810,30 @@ final class MonitoringEngine: ObservableObject {
         } else {
             switch Self.alertAction(showsMessage: settings.responseMode.showsMessage,
                                     alertActive: alertActive, activeEntry: disarmEntry.presentationSuppressed) {
-            case .present: presentAlert()          // start fresh (not during a disarm)
-            case .extend:  extendAlertWindow()     // keep a running alarm alive despite a screen touch
-            case .none:    break
+            case .present:  presentAlert()          // start fresh (not over the owner's typing)
+            case .extend:   extendAlertWindow()     // keep a running alarm alive despite a screen touch
+            case .deferred: alertOwedAfterEntry = true   // shown once the typing stops or the pad closes (item 167's A1)
+            case .none:     break
             }
         }
     }
 
     /// Uploads evidence even after disarm, retaining the record's creation-time cloud permission
     /// when supplied. Retries use current entitlement. Only a still-matching event snapshot
-    /// receives the completion's sync state and failure UI; newer evidence keeps its own state.
-    private func exfiltrate(_ event: Event, cloudAllowedOverride: Bool? = nil, disarmSignal: Bool = true) async {
+    /// receives the completion's sync state and failure UI; newer evidence keeps its own state. Answers whether the
+    /// upload's record reached iCloud, whether or not its copy could mark the row (item 170's codex-3).
+    @discardableResult
+    func exfiltrate(_ event: Event, cloudAllowedOverride: Bool? = nil, disarmSignal: Bool = true) async -> Bool {
         let allowed = cloudAllowedOverride ?? cloudAllowed
         guard backupAllows(event) else {   // item 115: backup is off, or was when this was recorded
             eventStore.setSyncState(.localOnly, for: event.id)
-            return
+            return false
         }
         // State changes use their own record type: a routine arm must not raise a tamper alert.
         if event.isStateChange {
             guard allowed else {
                 eventStore.setSyncState(.localOnly, for: event.id)
-                return
+                return false
             }
             eventStore.beginUpload(event.id)   // the log limit leaves an uploading status entry alone too (item 116, R5)
             defer { eventStore.endUpload(event.id) }
@@ -3450,19 +2843,23 @@ final class MonitoringEngine: ObservableObject {
             // this branch used to return before the handler, so an arm/disarm-only session
             // detected the reset and then ignored it: no requeue, cloud silently empty.
             handleEncryptedDataResetIfNeeded()
-            return
+            return pushed
         }
         // Free-tier evidence stays local. Creation-time permission preserves an armed Pro
         // session's upload after disarm; retries use current entitlement rather than armedPro.
         guard allowed else {
             eventStore.setSyncState(.localOnly, for: event.id)
-            return
+            return false
         }
         // Retention leaves this event and its media alone until the upload ends (item 114, F5).
         eventStore.beginUpload(event.id)
         defer { eventStore.endUpload(event.id) }
-        let mediaURL = event.mediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
-        let secondaryURL = event.secondaryMediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
+        // The files the log's copy names once the pin holds, not those of the copy this upload was handed: the byte limit
+        // may have discarded them in between, and a dropped file still on disk while its write fails must not land after
+        // the discard (item 166's codex-27). A row gone from the log keeps its copy's files, as before.
+        let attached = eventStore.events.first { $0.id == event.id } ?? event
+        let mediaURL = attached.mediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
+        let secondaryURL = attached.secondaryMediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
         let outcome: CloudExfiltrator.ExfilOutcome
         #if DEBUG
         if let push = evidencePushForTesting {
@@ -3475,7 +2872,8 @@ final class MonitoringEngine: ObservableObject {
         #endif
         let current = applyUploadCompletion(outcome.syncState, snapshot: event)
         handleEncryptedDataResetIfNeeded()
-        guard current else { return } // A stale verdict must not alter the newer response's failure UI.
+        let uploaded = outcome.syncState == .synced
+        guard current else { return uploaded } // A stale verdict must not alter the newer response's failure UI.
         if outcome.syncState == .synced { cloudPushRefused = false }
         // Only a network-class failure can suggest interference. Server refusals (quota,
         // authentication, schema or key reset) surface on Home without a siren. See ADR 0001.
@@ -3500,6 +2898,7 @@ final class MonitoringEngine: ObservableObject {
         case .stayQuiet:
             break
         }
+        return uploaded
     }
 
     /// What an observed push failure means (pure, unit-tested; 32.R1 / ADR 0001).
@@ -3547,7 +2946,9 @@ final class MonitoringEngine: ObservableObject {
         guard cloudAllowed else { return }
         let updated = eventStore.events.filter { ids.contains($0.id) && backupAllows($0) }   // item 115
         for ev in updated {
+            beginBindingUse(ev.id)   // its binding kept until the push ends (codex-6 on 1.8.2's step 17)
             Task {
+                defer { endBindingUse(ev.id) }
                 let landed = await cloud.pushFact(ev)
                 handleEncryptedDataResetIfNeeded()   // R3-2: fact pushes consume the reset flag too
                 if !landed { eventStore.reopenForReupload(ev.id) }
@@ -3641,7 +3042,8 @@ final class MonitoringEngine: ObservableObject {
     /// How a full-evidence download went: whether anything landed, and whether every
     /// candidate slot in iCloud was actually checked. `complete == false` means captures
     /// may exist beyond what came back (a per-ID fetch failure, or the fetch not running
-    /// at all) — the UI must not present that as "iCloud holds nothing" (R3-3).
+    /// at all), or a capture that came back could not be kept here (item 167's A2) — the UI
+    /// must not present that as "iCloud holds nothing" (R3-3).
     struct EvidenceDownload: Equatable {
         let landed: Bool
         let complete: Bool
@@ -3711,134 +3113,17 @@ final class MonitoringEngine: ObservableObject {
         Task { await retryPendingSync() }
     }
 
-    // MARK: - Cloud retention (32.R2)
+    // MARK: - Cloud retention (32.R2) and the beat trails' trim: in MonitoringEngine+CloudRetention.swift
 
-    /// Stamped only on an honestly-clean purge (the pre-R3-9 single stamp lives on as the
-    /// success key, so existing devices carry their cadence over without a re-purge storm).
-    private static let cloudRetentionLastRunKey = "com.malinois.cloudRetention.lastRun"
-    /// Stamped before every attempt — the short-backoff half of the R3-9 cadence.
-    private static let cloudRetentionLastAttemptKey = "com.malinois.cloudRetention.lastAttempt"
-
-    /// Pure (unit-tested): the automatic purge runs at most about daily on SUCCESS, and a
-    /// failed attempt retries after a short backoff instead of waiting the full day (R3-9)
-    /// — but never a hot loop: every attempt, failed included, backs off at least an hour.
-    nonisolated static func autoPurgeDue(lastSuccess: Date?, lastAttempt: Date?, now: Date) -> Bool {
-        if let lastSuccess, now.timeIntervalSince(lastSuccess) < 20 * 3600 { return false }
-        if let lastAttempt, now.timeIntervalSince(lastAttempt) < 3600 { return false }
-        return true
-    }
-
-    /// The most watches one retention pass hands over for trimming: a year of nightly watches is
-    /// hundreds, and each is a fetch and a delete, so a first pass works through them over a few
-    /// days (item 52's follow-up 2).
-    nonisolated static let beatTrimSessionsPerPass = 50
-
-    /// The watches waiting for their trails to be trimmed, shared with log migration.
-    static func beatSessions() -> [BeatSession] { BeatSessionRegistry.read() }
-
-    private static func saveBeatSessions(_ sessions: [BeatSession]) {
-        BeatSessionRegistry.save(sessions)
-    }
-
-    /// A Pro watch going live joins the list (a free watch never beats, so it never does), after
-    /// the log's own arm records if they were never added.
-    private func registerBeatSession(_ session: BeatSession) {
-        seedBeatSessionsIfNeeded()
-        var sessions = Self.beatSessions()
-        guard !sessions.contains(where: { $0.id == session.id }) else { return }
-        sessions.append(session)
-        Self.saveBeatSessions(sessions)
-    }
-
-    /// Pure (unit-tested): the watches waiting, with the log's own arm records added that are
-    /// not there yet (once, for watches from before the list existed). Another phone's arm
-    /// record is not this phone's watch.
-    nonisolated static func seededBeatSessions(_ sessions: [BeatSession], from events: [Event]) -> [BeatSession] {
-        BeatSessionRegistry.addingLegacyWatches(sessions, from: events)
-    }
-
-    /// Seeds legacy watches from a complete, readable log. EventStore normally does
-    /// this before count migration; the engine remains a fallback for a later readable
-    /// store. A sealed or fresh log cannot complete one-time seeding.
-    private func seedBeatSessionsIfNeeded() {
-        guard eventStore.hasReadTheLog else { return }
-        BeatSessionRegistry.seedIfNeeded(from: eventStore.events)
-    }
-
-    /// Pure (unit-tested): the watches due for a trim, oldest first: begun before `cutoff`, and
-    /// not the watch that is live. Whether a due watch's trail goes is the cloud's call, on the
-    /// server time of its last beat (`CloudExfiltrator.trimBeatTrails`).
-    nonisolated static func sessionsDueForBeatTrim(sessions: [BeatSession], cutoff: Date, live: UUID?) -> [BeatSession] {
-        sessions.filter { $0.start < cutoff && $0.id != live }.sorted { $0.start < $1.start }
-    }
-
-    /// Hands the due watches, oldest first and at most `beatTrimSessionsPerPass`, to the cloud,
-    /// and drops from the list those it trimmed. A watch whose last beat is still inside the
-    /// window, or whose trim failed, stays for a later pass; the pass's cadence is the media
-    /// purge's alone, so a trim's leftovers never make the pass run sooner.
-    private func trimOldBeatTrails(olderThan cutoff: Date, monthsOld months: Int) async {
-        seedBeatSessionsIfNeeded()
-        var candidates = Self.sessionsDueForBeatTrim(sessions: Self.beatSessions(), cutoff: cutoff, live: heartbeatSession)
-        #if DEBUG
-        let needsLease = beatTrailsTrimForTesting == nil || requiresCloudLeaseForTesting
-        #else
-        let needsLease = true
-        #endif
-        if needsLease {
-            guard let lease = await cloud.acquireCloudLease() else { return }
-            candidates = candidates.filter { cloud.enrollment.authorizeSession(session: $0.id, lease: lease) }
-        }
-        let due = Array(candidates.prefix(Self.beatTrimSessionsPerPass))
-        guard !due.isEmpty else { return }
-        let outcomes = await trimBeatTrails(due, monthsOld: months)
-        let trimmed = Set(outcomes.filter { $0.value == .trimmed }.map(\.key))
-        // Read again: a watch may have gone live and joined the list while the trims ran.
-        Self.saveBeatSessions(Self.beatSessions().filter { !trimmed.contains($0.id) })
-    }
-
-    /// The batch's trims: iCloud's, or the test's stand-in.
-    private func trimBeatTrails(_ sessions: [BeatSession], monthsOld months: Int) async -> [UUID: BeatTrimOutcome] {
-        #if DEBUG
-        if let trim = beatTrailsTrimForTesting { return await trim(sessions) }
-        #endif
-        return await cloud.trimBeatTrails(sessions, monthsOld: months)
-    }
-
-    /// Enforces the automatic cloud-retention policy (32.R2), quietly and at most daily.
-    /// Only the auto modes delete anything here — Manual deletes solely through the owner's
-    /// explicit Settings action, and Keep-forever never deletes at all. Pro-gated like every
-    /// cloud path, and never run while the settings wait for the unlock (ADR 0055: the
-    /// defaults' 12 months are not the owner's policy); device dates schedule attempts and shortlist sessions, but each deleting
-    /// call derives the policy and 30-day floor from CloudKit system timestamps. What it deletes: full-resolution media past the setting,
-    /// and (item 52's follow-up 2) the per-beat trails of this phone's watches whose last beat
-    /// is past it, each watch keeping its latest beat.
-    func enforceCloudRetentionIfDue() async {
-        guard entitlements.proActive, !settings.awaitingUnlock,   // the defaults are not the owner's policy (ADR 0055)
-              let months = settings.cloudRetention.autoMonths else { return }
-        let defaults = UserDefaults.standard
-        let lastSuccess = defaults.object(forKey: Self.cloudRetentionLastRunKey) as? Date
-        let lastAttempt = defaults.object(forKey: Self.cloudRetentionLastAttemptKey) as? Date
-        guard Self.autoPurgeDue(lastSuccess: lastSuccess, lastAttempt: lastAttempt,
-                                now: Date()) else { return }
-        // The attempt is stamped BEFORE the purge — a crash mid-purge must not hot-loop —
-        // and success only on an honestly-clean result (R3-3 made `failed` trustworthy:
-        // a walk that couldn't read every record now reports failure, so the retry it
-        // earns actually happens on the shorter cadence).
-        defaults.set(Date(), forKey: Self.cloudRetentionLastAttemptKey)
-        let cutoff = CloudExfiltrator.purgeCutoff(monthsOld: months, now: Date())
-        let result = await cloud.purgeFullMedia(monthsOld: months)
-        if !result.failed {
-            defaults.set(Date(), forKey: Self.cloudRetentionLastRunKey)
-        }
-        await trimOldBeatTrails(olderThan: cutoff, monthsOld: months)   // its progress is kept per watch, not in the stamp
-    }
+    // MARK: - The pending-upload sweep: in MonitoringEngine+PendingSweep.swift; its state stays here
 
     /// Single-flight guard for `retryPendingSync` (1.2 coordinator): foreground, reconnect
     /// and log-open can all fire it within a second of each other, and overlapping sweeps
     /// re-uploaded the same pending events. A caller arriving mid-sweep is served by the
     /// running one; an event added mid-sweep is caught by the next trigger's own push or
     /// the next sweep.
-    private var retryingSync = false
+    var retryingSync = false
+
     /// A sweep requested while one ran, owed when it ends (item 116, N1; `sweepAfterTheRunningOne`).
     var sweepRerunOwed = false
 
@@ -3846,217 +3131,13 @@ final class MonitoringEngine: ObservableObject {
     /// reconnect, the launch, or the Event Log (item 79). The log's banner used to show its
     /// spinner only for its OWN request, which the single-flight guard turns away at once when
     /// a sweep is already running: the spinner vanished while rows were still turning green.
-    @Published private(set) var pendingSweepActive = false
+    @Published var pendingSweepActive = false
+
     /// True while the sweep waits out a throttle or an outage between passes (item 79). The
     /// banner says so, because a count that has stopped moving otherwise reads as stuck.
-    @Published private(set) var pendingSweepWaiting = false
+    @Published var pendingSweepWaiting = false
 
-    /// The most passes one sweep may make, and how many in a row may land nothing (item 79).
-    nonisolated static let sweepMaxPasses = 20
-    nonisolated static let sweepMaxIdlePasses = 3
-    /// How many records in a row may fail, with no wait named by the server, before a pass
-    /// takes it for an outage and stops handing out more (item 79; see `sweepDoorClosed`).
-    nonisolated static let sweepMaxFailuresInARow = 3
-
-    /// Pure (unit-tested; item 79): after a pass, how long to wait before the next — or nil to
-    /// stop. Another pass is earned only by a TRANSIENT failure (a throttle, an outage, a lost
-    /// response) with a network path up: a refusal is an answer the next trigger can re-ask,
-    /// and an offline device has the reconnect trigger. The wait is the server's own
-    /// Retry-After when it sent one, else a doubling fallback, clamped to the timing's floor
-    /// and ceiling; the pass and idle-pass caps bound a sweep that is getting nowhere.
-    nonisolated static func sweepFollowUpDelay(remaining: Int,
-                                               transient: CloudExfiltrator.TransientFailure?,
-                                               online: Bool, pass: Int, idlePasses: Int,
-                                               floor: TimeInterval, ceiling: TimeInterval) -> TimeInterval? {
-        guard remaining > 0, let transient, online,
-              pass < sweepMaxPasses, idlePasses < sweepMaxIdlePasses else { return nil }
-        let wanted = transient.retryAfter ?? floor * pow(2, Double(idlePasses))
-        guard !wanted.isNaN else { return floor }   // never a number the sleep cannot take
-        return min(max(wanted, floor), ceiling)
-    }
-
-    /// The transient failure this pass has met, if any: the cloud sender's own report — or,
-    /// under the test seam, the closure's.
-    private var sweepTransient: CloudExfiltrator.TransientFailure? {
-        #if DEBUG
-        if sweepUploadForTesting != nil { return sweepTransientForTesting }
-        #endif
-        return cloud.lastTransientFailure
-    }
-
-    private func clearSweepTransient() {
-        #if DEBUG
-        sweepTransientForTesting = nil
-        #endif
-        cloud.clearTransientFailure()
-    }
-
-    /// What a pass learns from one record's upload (item 79): whether it landed, and the
-    /// transient failure standing in the pass so far, whichever record's save reported it.
-    private struct SweepUploadOutcome: Sendable {
-        let landed: Bool
-        let transient: CloudExfiltrator.TransientFailure?
-    }
-
-    /// Pure (unit-tested; item 79): whether a pass stops handing out records. The server
-    /// naming a wait closes the door at once: that answer is about this device, not about one
-    /// record, and everything handed out after it would spend its attempts for nothing. A
-    /// transient failure WITHOUT a named wait (a lost path, a lost response, a stalled save)
-    /// closes it only when several records in a row have failed with none landing in between,
-    /// which is what an outage looks like — one record that cannot get through, a large clip
-    /// on a slow link, must not hold the others back. Refusals never close it: each record
-    /// gets its one attempt, as before.
-    nonisolated static func sweepDoorClosed(transient: CloudExfiltrator.TransientFailure?,
-                                            failuresInARow: Int) -> Bool {
-        guard let transient else { return false }
-        return transient.retryAfter != nil || failuresInARow >= sweepMaxFailuresInARow
-    }
-
-    /// A disarm record sent later than this after it happened is "late" (item 74 line 9).
-    nonisolated static let lateDisarmSignalAge: TimeInterval = 600
-
-    /// Pure (unit-tested; item 74 line 9, the owner's ruling (a)): the late disarm records in one
-    /// sweep pass whose "disarmed" alert is skipped. A backlog of old disarms used to raise one
-    /// alert per record on the owner's other devices. A disarm (or cancelled countdown, which
-    /// writes the same signal) sent within `lateAfter` of happening always alerts; among the
-    /// late ones only the newest does, so the owner still learns once that protection stopped.
-    nonisolated static func mutedLateDisarmSignals(in pending: [Event], now: Date,
-                                                   lateAfter: TimeInterval) -> Set<UUID> {
-        let late = pending.filter { event in
-            guard let kind = event.stateChange, CloudExfiltrator.disarmSignalWanted(kind: kind) else { return false }
-            return now.timeIntervalSince(event.startDate) > lateAfter
-        }
-        guard let newest = late.max(by: { $0.startDate < $1.startDate }) else { return [] }
-        return Set(late.map(\.id)).subtracting([newest.id])
-    }
-
-    /// One record's upload inside the sweep.
-    /// `disarmSignal`: false for a late disarm this pass does not alert for (item 74 line 9).
-    private func sweepUpload(_ event: Event, disarmSignal: Bool) async -> SweepUploadOutcome {
-        #if DEBUG
-        sweepDisarmSignalsForTesting[event.id] = disarmSignal
-        if let upload = sweepUploadForTesting {
-            let outcome = await upload(event)
-            let current = applyUploadCompletion(outcome.state, snapshot: event)
-            if current, let transient = outcome.transient { sweepTransientForTesting = transient }
-            let landed = eventStore.events.first { $0.id == event.id }?.cloudSyncState == .synced
-            return SweepUploadOutcome(landed: landed, transient: sweepTransient)
-        }
-        #endif
-        await exfiltrate(event, disarmSignal: disarmSignal)
-        let landed = eventStore.events.first { $0.id == event.id }?.cloudSyncState == .synced
-        return SweepUploadOutcome(landed: landed, transient: sweepTransient)
-    }
-
-    /// Uploads whatever has not reached iCloud yet: the pending sweep. Started by the launch,
-    /// every foreground, a reconnect, an encrypted-data reset's requeue, and the Event Log
-    /// (opening it, pull-to-refresh, Retry). Single-flight — see `retryingSync`.
-    ///
-    /// Returns when the FIRST pass is done, as it always has: the Event Log and the launch
-    /// both follow it with a pull, which must not sit behind a throttle's waits. When a pass
-    /// ends on a transient failure with records left, the sweep carries on by itself (item
-    /// 79): follow-up passes on the engine's own task, each after the wait
-    /// `sweepFollowUpDelay` names, until nothing is left or that rule says stop.
-    /// `pendingSweepActive` covers the whole of it, `pendingSweepWaiting` the waits.
-    func retryPendingSync() async {
-        guard entitlements.proActive else { return }   // cloud backup is Pro
-        guard !retryingSync else { return }
-        retryingSync = true
-        pendingSweepActive = true
-        // The first pass makes the sweep's first identity lookup itself (item 155's S3, Codex's second look): a
-        // preflight lookup here used to record a throttle's wait, which the pass then cleared before looking up
-        // again at once. Now the pass's own lookup is the first: a throttle on it hands nothing out and its wait
-        // reaches the follow-up, as a lookup that failed for want of a network has since item 152's lead 1; no
-        // account ends the sweep at once, as before.
-        await runSweepPass(1, idlePasses: 0)
-    }
-
-    private func endPendingSweep() {
-        retryingSync = false
-        pendingSweepActive = false
-        guard sweepRerunOwed else { return }   // asked for while this one ran (item 116, N1)
-        sweepRerunOwed = false
-        Task { await retryPendingSync() }
-    }
-
-    /// One pass over what is pending right now; then the sweep either ends or schedules its
-    /// next pass. `idlePasses` counts the passes before this one that landed nothing, in a row.
-    private func runSweepPass(_ pass: Int, idlePasses: Int) async {
-        clearSweepTransient()
-        // Bounded concurrency: a day's worth of offline events, each doing up to a
-        // few retries, would take tens of seconds run strictly serially (and hang
-        // pull-to-refresh). Run a few at a time so badges clear quickly without
-        // flooding CloudKit.
-        var pending = Self.sweepOrder(eventStore.events.filter { $0.cloudSyncState != .synced && backupAllows($0) })   // items 115, 148
-        #if DEBUG
-        let needsLease = sweepUploadForTesting == nil || requiresCloudLeaseForTesting
-        #else
-        let needsLease = true
-        #endif
-        if needsLease {
-            if let lease = await cloud.acquireCloudLease() {
-                pending = pending.filter { cloud.enrollment.authorizeUpload(event: $0, lease: lease) }
-            } else if sweepTransient != nil {
-                // The lookup failed for want of a network (item 152's lead 1) or met a throttle (item 155's S3):
-                // nothing handed out; the follow-up below keeps its wait.
-                pending = []
-            } else {
-                endPendingSweep()
-                return
-            }
-        }
-        // One "disarmed" alert for a backlog of late disarms, not one per record (item 74 line 9).
-        let muted = Self.mutedLateDisarmSignals(in: pending, now: Date(), lateAfter: Self.lateDisarmSignalAge)
-        let maxConcurrent = 3
-        await withTaskGroup(of: SweepUploadOutcome.self) { group in
-            var next = pending.makeIterator()
-            for _ in 0..<maxConcurrent {
-                if let event = next.next() { group.addTask { await self.sweepUpload(event, disarmSignal: !muted.contains(event.id)) } }
-            }
-            // A throttle or an outage closes the door for this pass (item 79; the rule is
-            // `sweepDoorClosed`): what is in flight finishes, and the rest waits for the
-            // follow-up pass. It used to be handed out regardless, each record spending its
-            // three attempts against a server that had just said "not now", and failing until
-            // the next trigger.
-            var failuresInARow = 0
-            var doorClosed = false
-            while let outcome = await group.next() {
-                failuresInARow = outcome.landed ? 0 : failuresInARow + 1
-                doorClosed = doorClosed || Self.sweepDoorClosed(transient: outcome.transient,
-                                                                failuresInARow: failuresInARow)
-                if !doorClosed, let event = next.next() { group.addTask { await self.sweepUpload(event, disarmSignal: !muted.contains(event.id)) } }
-            }
-        }
-        // R3-2 backstop: a sweep whose only traffic was state records (their branch consumes
-        // now, but belt-and-braces) — and any flag raised between checks — is acted on at
-        // the tail of every pass, so no process ends holding a detected-but-ignored reset.
-        handleEncryptedDataResetIfNeeded()
-
-        let handedOut = Set(pending.map(\.id))
-        let landed = eventStore.events.filter { handedOut.contains($0.id) && $0.cloudSyncState == .synced }.count
-        let remaining = EventStore.unsyncedCount(in: eventStore.events)
-        let idle = landed > 0 ? 0 : idlePasses + 1
-        guard let wait = Self.sweepFollowUpDelay(remaining: remaining, transient: sweepTransient,
-                                                 online: connectivity.isOnline, pass: pass, idlePasses: idle,
-                                                 floor: timing.sweepWaitFloor,
-                                                 ceiling: timing.sweepWaitCeiling) else {
-            if pass > 1 || remaining > 0 {
-                Log.engine.info("Pending sweep ended at pass \(pass, privacy: .public): \(landed, privacy: .public) landed, \(remaining, privacy: .public) left")
-            }
-            endPendingSweep()
-            return
-        }
-        let asked = sweepTransient?.retryAfter.map { String(format: "%.0f s", $0) } ?? "no wait"
-        Log.engine.info("Pending sweep pass \(pass, privacy: .public): \(landed, privacy: .public) landed, \(remaining, privacy: .public) left; iCloud named \(asked, privacy: .public), next pass in \(wait, privacy: .public) s")
-        pendingSweepWaiting = true
-        // The follow-up pass belongs to the engine, not to whoever asked for the sweep: a
-        // screen's task is cancelled when the screen closes, and a cancelled wait is no wait.
-        Task {
-            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-            self.pendingSweepWaiting = false
-            await self.runSweepPass(pass + 1, idlePasses: idle)
-        }
-    }
+    // MARK: - Re-arm after a trigger
 
     private func reArm() {
         // Post-TRIGGER re-arm: clear each latch and let motion adopt the new resting
@@ -4075,13 +3156,22 @@ final class MonitoringEngine: ObservableObject {
 
     // MARK: - Disarm (PIN-gated by caller)
 
-    /// The UI must verify the PIN before calling this.
+    /// The UI must verify the PIN before calling this. An automatic re-arm stopped here before its
+    /// watch went live is recorded as a cancelled countdown (item 168's deepseek-5).
     func disarm() {
         // A live watch ended with the PIN (the armed screen's pad) is the hold learned: the tamper
         // warning drops its tip from then on (item 107). A countdown cancelled before going live
         // does not count. Recorded here, not by the screen, so a test can run it (the test-suite
         // audit's P4).
         if state == .armed || state == .triggered { OnboardingState.hasDisarmedOnce = true }
+        // The automatic re-arm stopped before its watch went live: only the PIN on its countdown
+        // reaches here then (`cancelArming` refuses it, R-04), and no "disarmed" record follows. On
+        // the record as a cancelled countdown is, written now, while the session's iCloud
+        // authorization holds, so on Pro the other devices hear of it the same way (item 168's
+        // deepseek-5: the stop left nothing).
+        if armWasAutoRecovered, armedSince == nil, state == .arming || state == .calibrating {
+            logStateChange("armingCancelled")
+        }
         armSession &+= 1   // invalidate any in-flight trigger response
         cameraWarmGeneration += 1   // a warm-up still answering is stale: its state writes are dropped (review 3, R3.1)
         // A correct PIN means the owner: anything captured while the pad was open was their
@@ -4109,6 +3199,7 @@ final class MonitoringEngine: ObservableObject {
         capturePipeline.cancelUntilClear()
         captureRetry = nil   // a retry never crosses a disarm (54)
         alertActive = false
+        alertOwedAfterEntry = false   // the owner's PIN: a warning the pad held back is owed no more (item 167's A1)
         alertDismissTimer?.invalidate(); alertDismissTimer = nil
         noteSirenExhaustionIfAny()
         siren.stop()
@@ -4145,18 +3236,22 @@ final class MonitoringEngine: ObservableObject {
             // the two leaves a recoverable session rather than neither the record nor the
             // marker (item 73, review 3 R11).
             logStateChange("disarmed", sessionCloudAllowed: sessionCloudAllowed)
+            noteDisarmForRatingRequest(watchStartedAt: armedSince)   // a calm watch may ask for a rating (item 137)
         }
         releaseCovertScreen()
         armedSince = nil
         stopHeartbeat()   // item 52
         recentTrips.removeAll()
         latchedSensors.removeAll()
-        tripsDuringCapture.removeAll()
-        // Not `wrongPINsDuringCapture`: the in-flight response folds it into its record (item 49).
+        // Not `tripsDuringCapture` nor `wrongPINsDuringCapture`: the in-flight response folds them into its record when
+        // its capture ends (item 49; item 152's lead 14), and each is its own session's.
         isHandlingTrigger = false
         state = .disarmed
         resetGuidedAccessScreenHold()   // auto-lock back, or held a while under Guided Access (item 92)
     }
+
+    /// Where a run of cancelled countdowns is kept between launches (item 169's codex-1): its record and its last cancel.
+    nonisolated static let cancelRunKey = "com.malinois.arming.cancelRun"
 
     /// Abort the arming flow (before Armed) without needing the PIN.
     func cancelArming() {
@@ -4169,8 +3264,43 @@ final class MonitoringEngine: ObservableObject {
         // Cancelling needs no PIN — unlike a disarm — and used to leave nothing; the owner who
         // watched the countdown start and walked away believed the phone was armed. Pushed to
         // the owner's other devices on Pro through the disarm alert (`disarmSignalWanted`).
-        if state == .arming || state == .calibrating { logStateChange("armingCancelled") }
+        if state == .arming || state == .calibrating { recordCancelledCountdown() }
         disarm()
+    }
+
+    /// The longest quiet between two cancels of one run (item 169's codex-1).
+    nonisolated static let cancelRunGap: TimeInterval = 600
+
+    /// How long a cancel that counts on its run's record waits for the log's queued write (item 171): a clip being
+    /// stored ahead of it can hold the queue for seconds, and the owner's cancel must not wait that out.
+    nonisolated static let cancelWriteWait: TimeInterval = 2
+
+    /// A cancelled countdown on the record, one record per run (item 169's codex-1): ARM then Cancel needs no PIN, and
+    /// each cancel used to add a status record and raise an alert, so a hundred cancels pushed the oldest status records
+    /// out of the log, those not yet uploaded with them. A cancel within `cancelRunGap` of the run's last, with no watch
+    /// live since, counts on the run's record instead: no new record, no new alert. The run is kept on disk
+    /// (`cancelRunKey`), so a relaunch continues it; a watch going live ends it. A cancel that counts on the run's record
+    /// has no journal line of its own, so it waits up to `cancelWriteWait` for the log's write (item 170's codex-2): on
+    /// disk when the cancel returns if the queue is through by then; if not (a clip being stored ahead of it), the write
+    /// lands after, and a kill before it loses this cancel's count (item 172's codex-1). The count stays on this phone,
+    /// iCloud and the other devices keeping the run's first cancel (item 170's codex-1, the owner's (c)).
+    private func recordCancelledCountdown(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        if let run = defaults.dictionary(forKey: Self.cancelRunKey),
+           let id = (run["record"] as? String).flatMap(UUID.init(uuidString:)),
+           let last = run["last"] as? TimeInterval,
+           now.timeIntervalSince1970 >= last,   // one dated before the run's last (the clock moved back): a run of its own (codex-6)
+           now.timeIntervalSince1970 - last < Self.cancelRunGap,
+           var record = eventStore.events.first(where: { $0.id == id }) {
+            record.cancelCount = (record.cancelCount ?? 1) + 1
+            record.endDate = now
+            eventStore.update(record)
+            eventStore.waitForQueuedWrites(atMost: Self.cancelWriteWait)   // no journal line of its own (codex-2)
+            defaults.set(["record": id.uuidString, "last": now.timeIntervalSince1970], forKey: Self.cancelRunKey)
+            return
+        }
+        let record = logStateChange("armingCancelled")
+        defaults.set(["record": record.id.uuidString, "last": now.timeIntervalSince1970], forKey: Self.cancelRunKey)
     }
 }
 
@@ -4230,7 +3360,24 @@ extension MonitoringEngine: DisarmEntryHost {
         // gate ever touched it.
         if sensorEnabled(.proximity) { monitors[.proximity]?.start() }
     }
-    func disarmPresentationChanged() { refreshBrightness() }
+    func disarmPresentationChanged() {
+        refreshBrightness()
+        presentOwedAlertIfDue()
+    }
+
+    /// Shows the warning the PIN pad's quiet window held back (item 167's A1), once that window has ended or the pad has
+    /// closed without a correct PIN, and not while the owner may still be typing, whatever repaints the screen; one
+    /// already up is kept alive instead. A disarm clears what is owed.
+    private func presentOwedAlertIfDue() {
+        guard alertOwedAfterEntry, !disarmEntry.presentationSuppressed else { return }
+        alertOwedAfterEntry = false
+        switch Self.alertAction(showsMessage: settings.responseMode.showsMessage, alertActive: alertActive,
+                                activeEntry: false) {
+        case .present: presentAlert()
+        case .extend: extendAlertWindow()
+        case .none, .deferred: break
+        }
+    }
 }
 
 // MARK: - Account-bound evidence
@@ -4240,21 +3387,16 @@ extension MonitoringEngine {
     /// preserving pending late evidence or a newer successful upload. Compare every field except
     /// sync state; the conservative comparison also covers future payload additions.
     @discardableResult
-    private func applyUploadCompletion(_ state: CloudSyncState, snapshot: Event) -> Bool {
+    func applyUploadCompletion(_ state: CloudSyncState, snapshot: Event) -> Bool {
         guard var current = eventStore.events.first(where: { $0.id == snapshot.id }) else { return false }
         var submitted = snapshot
         current.cloudSyncState = .pending
         submitted.cloudSyncState = .pending
+        current.uploadedMedia = nil   // noted by this upload as its files landed (item 166's codex-23)
+        submitted.uploadedMedia = nil
         guard current == submitted else { return false }
         eventStore.setSyncState(state, for: snapshot.id)
         return true
-    }
-
-    /// Seed known legacy ownership only after the complete log is readable. Unknown history stays local.
-    private func seedCloudOwnershipIfReadable() {
-        guard eventStore.hasReadTheLog else { return }
-        cloud.enrollment.seedLegacyEvents(eventStore.events,
-            knownAccount: UserDefaults.standard.string(forKey: Self.cloudAccountKey))
     }
 
     /// Downloads an event's full-resolution capture(s) from iCloud into the local store
@@ -4269,6 +3411,8 @@ extension MonitoringEngine {
     /// What lands counts toward the media byte limit (item 129, F4): the store runs the limit's
     /// pass as each file is attached, and on a phone over the limit it frees synced media oldest
     /// first, which can be the download itself; the iCloud copy stays, so it can be downloaded again.
+    /// A capture iCloud gave that cannot be kept here (it fails to stage or to store) leaves the download incomplete,
+    /// as an unchecked slot does: the rest is still to get (item 167's A2).
     func downloadFullEvidence(for id: UUID) async -> EvidenceDownload {
         guard entitlements.proActive else { return EvidenceDownload(landed: false, complete: true) }
         guard let event = eventStore.events.first(where: { $0.id == id }) else {
@@ -4284,7 +3428,7 @@ extension MonitoringEngine {
         guard let granted = await cloud.acquireCloudLease() else { return EvidenceDownload(landed: false, complete: false) }
         lease = granted
         #endif
-        guard let fetch = await fetchFullMedia(for: id, manifest: event.cloudMediaManifest) else {
+        guard let fetch = await fetchFullMedia(for: id, manifest: event.downloadManifest) else {
             // The fetch never ran (account, network, thrown) — nothing was checked.
             return EvidenceDownload(landed: false, complete: false)
         }
@@ -4293,6 +3437,7 @@ extension MonitoringEngine {
             return EvidenceDownload(landed: false, complete: fetch.complete)
         }
         var landed = false
+        var keptAll = true   // every capture that came back is on the record, or one in its place was already (A2)
         for item in fetch.media {
             // Skip known duplicates before copying bytes, but decide again after every await:
             // a cloud merge or another download may fill or name a slot while storage runs.
@@ -4304,9 +3449,9 @@ extension MonitoringEngine {
             }
             guard let before = eventStore.events.first(where: { $0.id == id }) else { break }
             guard placement(in: before) != .skip else { continue }
-            guard let staged = await Self.stageDownloadedAsset(at: item.fileURL) else { continue }
+            guard let staged = await Self.stageDownloadedAsset(at: item.fileURL) else { keptAll = false; continue }
             if let lease, !cloud.enrollment.isCurrent(lease) { return EvidenceDownload(landed: landed, complete: false) }
-            guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { continue }
+            guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { keptAll = false; continue }
             if let lease, !cloud.enrollment.isCurrent(lease) { return EvidenceDownload(landed: landed, complete: false) }
             guard var current = eventStore.events.first(where: { $0.id == id }) else { break }
             // Placement and attachment use one current snapshot with no suspension between
@@ -4327,7 +3472,7 @@ extension MonitoringEngine {
             eventStore.update(current)
             landed = true
         }
-        return EvidenceDownload(landed: landed, complete: fetch.complete)
+        return EvidenceDownload(landed: landed, complete: fetch.complete && keptAll)
     }
 
 }
@@ -4338,7 +3483,7 @@ extension MonitoringEngine: CapturePipelineHost {
     /// Return the camera to cold standby only when no newer response owns it. A cadence
     /// capture may finish storage after a trigger starts in the same watch; the trigger's
     /// completion handles standby instead. Callers also reject replaced watch sessions.
-    private func standDownCameraIfNeeded() {
+    func standDownCameraIfNeeded() {
         guard !cameraShouldBeWarm, !capturePipeline.isBusy,
               !isHandlingTrigger, !isCapturingUntilClear else { return }
         cameraStandbyTimer?.invalidate(); cameraStandbyTimer = nil
@@ -4346,6 +3491,26 @@ extension MonitoringEngine: CapturePipelineHost {
     }
 
     var captureSessionIsOver: Bool { state == .disarmed }
+    /// The armed screen draws a lit clip's white screen over the warning: when a warning starts during such a clip, the
+    /// light ends, or nobody would see it (codex-1 on 1.8.2's step 10). The clip goes on recording, unlit from here, and
+    /// a later capture is not lit while the warning is up (`mayFlashScreen`).
+    func endCaptureLightForTheWarning() {
+        if captureFlash { setCaptureFlash(false) }
+    }
+    /// Alert mode's first warning during a long Until clear clip (item 152's hardening (c)): shown once the clip has
+    /// recorded as long as the default 3-second clip, not when it ends, up to two minutes later while the tampering
+    /// itself keeps it recording. The clip goes on; the response's own decision after the capture extends the warning.
+    /// The usual rule decides it (held back while the owner types their PIN, and shown after: item 167's A1); Stealth
+    /// shows none, and Siren mode records no clip (F4).
+    func untilClearClipReachedWarningTime() {
+        guard state != .disarmed, settings.responseMode != .siren else { return }
+        switch Self.alertAction(showsMessage: settings.responseMode.showsMessage, alertActive: alertActive,
+                                activeEntry: disarmEntry.presentationSuppressed) {
+        case .present: presentAlert()
+        case .deferred: alertOwedAfterEntry = true   // shown once the typing stops or the pad closes (item 167's A1)
+        case .extend, .none: break
+        }
+    }
     /// Skipped while the disarm PIN pad is up (presentation suppressed) and while the tamper
     /// alert is already on screen — the first (pre-alert) capture got the lit shot, and a
     /// re-flash would tell the thief a photo is being taken right now.
@@ -4458,6 +3623,9 @@ struct EngineTiming: Sendable {
     var untilClearIdle: TimeInterval = 5
     var untilClearMax: TimeInterval = 120
     var untilClearPoll: TimeInterval = 0.4
+    /// How long an Until clear clip records before Alert mode's first warning: as long as the default 3-second clip
+    /// (item 152's hardening (c)), instead of the whole clip, up to `untilClearMax`.
+    var untilClearWarningAfter: TimeInterval = 3
     /// How long a camera warm-up may take before the caller stops waiting. Generous — a cold
     /// start takes ~0.5–2 s — because a false timeout costs one capture, while no bound at
     /// all is the H10 wedge shape: `AVCaptureSession.startRunning()` can block indefinitely,

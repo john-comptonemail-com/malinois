@@ -167,7 +167,7 @@ final class Item115CloudBackupTests: XCTestCase {
     /// The two entries read plainly here and on other devices.
     func testTheBackupEntriesReadPlainlyEverywhere() {
         XCTAssertEqual(stateEvent(Event.backupOffKind).sensorSummary,
-                       "iCloud backup turned off: events recorded while it is off stay on this iPhone")
+                       "iCloud backup turned off: events recorded while it is off are never uploaded")
         XCTAssertEqual(stateEvent(Event.backupOnKind).sensorSummary, "iCloud backup turned on")
         for kind in [Event.backupOffKind, Event.backupOnKind] {
             let record = CloudExfiltrator.makeStateRecord(stateEvent(kind), kind: kind, deviceName: "iPhone Air")

@@ -422,6 +422,7 @@ final class AppSettingsTests: XCTestCase {
         defer {
             if let saved { UserDefaults.standard.set(saved, forKey: key) }
             else { UserDefaults.standard.removeObject(forKey: key) }
+            UserDefaults.standard.removeObject(forKey: AppSettings.resetPendingKey)   // the reset's owed record
         }
 
         let blob = Data("{\"gracePeriodSeconds\":\"not a number\"}".utf8)

@@ -168,3 +168,40 @@ them until their fixes ship:
 - The stall deadline of the 2026-10-22 amendment is timed with `Date()`, and since that amendment every save waits
   through it, so a clock change during a stalled save moves it: set back, the wait lengthens by up to the change; set
   forward, the save is cut short. The fix times both instants on a monotonic clock.
+
+## Amendment (2026-10-24, 1.8.2): the stall deadline on a clock no setting moves
+
+The second limit of the 2026-10-23 amendment is fixed (BACKLOG 162's A11; item 163's step 13): `StallClock` times
+the start of a save's wait and each progress report on `ContinuousClock`, which no setting moves, so a clock changed
+during a stalled save neither lengthens its wait nor cuts it short. Codex's four cases from the full review of 1.8.1
+are its tests (`Item162SaveDeadlineClockTests`, on a clock the test moves). The first limit stands until its own fix
+(A10; step 14).
+
+## Amendment (2026-10-24, 1.8.2): one order per incident
+
+The first limit of the 2026-10-23 amendment is fixed (BACKLOG 162's A10; item 163's step 14). A push joins its event's
+chain before its identity lookup, which it makes when its turn comes, so the chain orders the writes by when they were
+asked for; and at its turn each writes the event as the engine's log holds it then (`storedEvent`, wired at the
+engine's init), so an older copy, the pending sweep's (read at its pass's start) included, cannot land after a fuller
+one. The first Consequence ("structurally impossible within a process") holds again. The background-task assertion of
+the 2026-10-22 amendment still covers each push from its first step, now the queue wait. Tests:
+`Item162UploadOrderTests` (Codex's probe A, an older copy, the engine's wiring).
+
+## Amendment (2026-10-26, 1.8.2): the files an upload sends, and the discard check's wait
+
+Codex's look at codex-24's fix (BACKLOG 166's codex-27): an upload is handed a copy of its event and takes its pin
+(`EventStore.beginUpload`, which the limits respect) only when its task runs; it sent the files that copy named. The
+byte limit could discard the capture in between, and while the log's write fails the dropped files stay on disk (item
+165's A1), so a photo could land after the discard, and after iCloud, asked, had been found to hold none of it. An
+upload now sends the files the log's copy names once its pin holds; a row gone from the log keeps its copy's files, as
+before. Tests: `Item166ReviewTests`.
+
+Codex's codex-28: the discard check (`checkDiscardedCaptures`, ADR 0006's codex-24 amendment) asks iCloud before the
+pass's uploads, and its fetch turned every failure into "no answer", so a throttle that named a wait went unrecorded
+and the pass handed out its uploads at once. A transient failure of the presence fetch now goes on record as a save's
+does, a wait iCloud named closes the pass's door before any upload (`sweepDoorClosed`), and a check still owed for a
+capture bound to the verified account counts toward the follow-up as a record still to upload does. Codex's codex-30:
+the fetch's results were read only up to the first failure, so one met first (a permanent failure, or a shorter
+wait) hid a throttle or a longer wait behind it; every result is read now, and every failure a partial one nests, and
+the longest wait stands (`transientFailures(in:)`). Any failure other than "no such record" still makes the answer
+inconclusive.

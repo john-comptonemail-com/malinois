@@ -11,8 +11,13 @@
 //  5. One event could alert twice when the watch app restarted between its live and queued copies.
 //  6. A held background wake had no end if activation failed or time ran out.
 //  Written before the fixes, red at that commit (against compile-only stubs).
+//  Item 155's A10 (BACKLOG 163's step 30): when the iPhone's link to its watch failed to activate, the alerts waiting for
+//  it were dropped and every later one with them, until the app launched again. Now they keep waiting, and a later send
+//  or a foreground asks WatchConnectivity to activate again, after a wait that doubles from 5 seconds up to 10 minutes.
+//  Written before the change, red at that commit (against stubs that keep the old behaviour).
 //
 
+import UIKit
 import WatchConnectivity
 import XCTest
 @testable import Malinois
@@ -173,6 +178,81 @@ final class Item57WatchReviewTests: XCTestCase {
         XCTAssertTrue(session.queued.isEmpty)
     }
 
+    // MARK: - Item 155's A10: a failed activation
+
+    /// A failed activation keeps the alerts waiting for the next one, instead of dropping them.
+    func testAFailedActivationKeepsTheAlertsWaiting() {
+        var outbox = WatchLinkOutbox()
+        let first = message()
+        XCTAssertTrue(outbox.holdIfActivating(first))
+        outbox.activationFailed(at: Date())
+        let second = message()
+        XCTAssertTrue(outbox.holdIfActivating(second), "still held after the failure")
+        XCTAssertEqual(outbox.activationCompleted(watchReady: true), [first, second])
+    }
+
+    /// A retry is due only after a failure, and no sooner than its wait: 5 s after the first failure, doubling with each
+    /// failure up to ten minutes; an attempt starts the wait again, and an activation ends the retries.
+    func testARetryIsDueOnlyAfterAFailureAndItsWait() {
+        var outbox = WatchLinkOutbox()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
+        XCTAssertFalse(outbox.retryDue(now: at(100)), "no failure, no retry")
+        outbox.activationFailed(at: at(0))
+        XCTAssertFalse(outbox.retryDue(now: at(4)), "not before its wait")
+        XCTAssertTrue(outbox.retryDue(now: at(5)))
+        XCTAssertFalse(outbox.retryDue(now: at(6)), "the attempt starts the wait again")
+        outbox.activationFailed(at: at(6))
+        XCTAssertFalse(outbox.retryDue(now: at(15)))
+        XCTAssertTrue(outbox.retryDue(now: at(16)), "the wait doubles: 10 s")
+        for failure in 1...12 { outbox.activationFailed(at: at(1_000 * Double(failure))) }
+        XCTAssertFalse(outbox.retryDue(now: at(12_000 + 599)))
+        XCTAssertTrue(outbox.retryDue(now: at(12_000 + 600)), "at most ten minutes")
+        _ = outbox.activationCompleted(watchReady: true)
+        XCTAssertFalse(outbox.retryDue(now: at(100_000)), "an activation ends the retries")
+    }
+
+    /// Through the link: alerts sent around a failed activation wait; the next send after the wait asks WatchConnectivity
+    /// to activate again, and when it does, every waiting alert goes out.
+    func testAFailedActivationIsRetriedOnTheNextSendAndTheAlertsGoOut() {
+        let session = StandInWatchSession()
+        session.ready = true
+        var reactivations = 0
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let link = WatchLink(session: { session }, reactivate: { reactivations += 1 }, now: { clock })
+        func alert() -> WatchAlertMessage { WatchAlertMessage(kind: .tamper, eventID: UUID(), at: Date()) }
+        let early = alert()
+        link.send(early)
+        session.state = .notActivated
+        link.activationCompleted(.notActivated, on: session)   // the activation failed
+        XCTAssertTrue(session.queued.isEmpty, "nothing goes out")
+        clock = clock.addingTimeInterval(6)
+        let later = alert()
+        link.send(later)
+        XCTAssertEqual(reactivations, 1, "the send after the wait asks again")
+        XCTAssertTrue(session.queued.isEmpty, "held until the link activates")
+        session.state = .activated
+        link.activationCompleted(.activated, on: session)
+        XCTAssertEqual(session.queued, [early.eventID, later.eventID], "both go out")
+    }
+
+    /// The app coming to the foreground asks again too, once the wait has passed.
+    func testAForegroundRetriesAFailedActivation() {
+        let session = StandInWatchSession()
+        var reactivations = 0
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = NotificationCenter()
+        let link = WatchLink(session: { session }, reactivate: { reactivations += 1 }, now: { clock })
+        link.observeForeground(center: center)
+        session.state = .notActivated
+        link.activationCompleted(.notActivated, on: session)
+        center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        XCTAssertEqual(reactivations, 0, "not before the wait")
+        clock = clock.addingTimeInterval(5)
+        center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        XCTAssertEqual(reactivations, 1)
+    }
+
     // MARK: - Finding 5: once per event across restarts
 
     /// The watch remembers the relayed alerts it showed, the newest `rememberedRelayLimit`, so a copy
@@ -214,9 +294,11 @@ final class Item57WatchReviewTests: XCTestCase {
 /// with the app installed; `queued` and `sentNow` are what the link handed it, by event.
 final class StandInWatchSession: WatchSessionPort {
     var ready = false
+    /// The session's activation state: activated unless a test says otherwise (item 155's A10).
+    var state: WCSessionActivationState = .activated
     private(set) var queued: [UUID] = []
     private(set) var sentNow: [UUID] = []
-    var activationState: WCSessionActivationState { .activated }
+    var activationState: WCSessionActivationState { state }
     var isPaired: Bool { ready }
     var isWatchAppInstalled: Bool { ready }
     var isReachable: Bool { ready }

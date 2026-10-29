@@ -26,7 +26,8 @@ protocol DisarmEntryHost: AnyObject {
     /// pause just that sensor while the pad is open, and restore it (Pro-aware) when it closes.
     func pauseProximityForEntry()
     func resumeProximityAfterEntry()
-    /// The pad opened or closed, or the flash/alert suppression changed — repaint the screen.
+    /// The pad opened or closed, or the flash/alert suppression changed (its quiet window ended) — repaint the screen,
+    /// and show a warning the quiet window held back (item 167's A1).
     func disarmPresentationChanged()
 }
 
@@ -46,6 +47,8 @@ final class DisarmEntryCoordinator {
     }
 
     private var timer: Timer?
+    /// Marks the end of the quiet window, which has no event of its own (item 167's A1).
+    private var quietTimer: Timer?
     private var startedAt: Date?
     /// When the owner's disarm HOLD began (press-down), before the pad opens 5 s later. The
     /// attribution window opens HERE, not at `begin()` — otherwise the very touch that starts a
@@ -78,7 +81,8 @@ final class DisarmEntryCoordinator {
     var inFlow: Bool { isActive || isCandidateActive }
 
     /// Whether the owner appears to be *actively* entering their PIN right now — the pad is
-    /// open AND a key was pressed within the grace. This is what suppresses a fresh alert and
+    /// open AND a key was pressed within the grace. This is what holds a fresh alert back (shown
+    /// once the grace ends or the pad closes without a correct PIN, item 167's A1) and suppresses
     /// the capture flash (A-02), both of which fight the raised pad brightness only while the
     /// owner is genuinely mid-entry.
     var presentationSuppressed: Bool {
@@ -116,8 +120,9 @@ final class DisarmEntryCoordinator {
     /// the first key as between keys — the pad opening is itself a deliberate 5-second act.
     /// (External review 2026-08-23: a deliberate, BOUNDED re-widening of A-02, not the
     /// pad-openness gating A-02 removed — one 20 s window, a logged 5 s hold to enter, not
-    /// renewable without another hold, suppressing only the flash and a fresh alert start;
-    /// evidence capture and push are never suppressed.)
+    /// renewable without another hold, suppressing only the flash and a fresh alert start, which
+    /// shows once the window ends or the pad closes (item 167's A1); evidence capture and push
+    /// are never suppressed.)
     func begin() {
         setActive(true)
         lastKeypress = Date()
@@ -125,6 +130,7 @@ final class DisarmEntryCoordinator {
         host?.disarmPresentationChanged()
         startedAt = Date()
         scheduleTimeout()
+        scheduleQuietEnd()
     }
 
     /// The PIN pad on each digit: reset the inactivity timer so a slow owner (dim screen,
@@ -135,6 +141,7 @@ final class DisarmEntryCoordinator {
         // Reflects "a key was just pressed" — what suppresses the alert and flash (A-02).
         // Updated even past the ceiling: the ceiling governs the pad's lifetime, not typing.
         lastKeypress = Date()
+        scheduleQuietEnd()
         if let startedAt, Date().timeIntervalSince(startedAt) > timing.disarmEntryCeiling { return }
         scheduleTimeout()
     }
@@ -143,6 +150,7 @@ final class DisarmEntryCoordinator {
     /// covert/alert. Whatever was captured while the pad was open stands as evidence.
     func end() {
         timer?.invalidate(); timer = nil
+        quietTimer?.invalidate(); quietTimer = nil
         startedAt = nil
         setActive(false)
         lastKeypress = nil
@@ -164,6 +172,7 @@ final class DisarmEntryCoordinator {
     /// handles. Returns an empty set when there is nothing to attribute.
     func takeOwnerEventsOnDisarm() -> Set<UUID> {
         timer?.invalidate(); timer = nil
+        quietTimer?.invalidate(); quietTimer = nil
         startedAt = nil
         setActive(false)
         lastKeypress = nil
@@ -177,5 +186,21 @@ final class DisarmEntryCoordinator {
         timer = Timer.commonMode(interval: timing.disarmEntryTimeout, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.end() }
         }
+    }
+
+    /// The quiet window ends `disarmActivityGrace` after the last keypress, or the pad opening, with no event of its
+    /// own: this timer marks it, so the screen can show what the window held back (item 167's A1).
+    private func scheduleQuietEnd() {
+        quietTimer?.invalidate()
+        quietTimer = Timer.commonMode(interval: timing.disarmActivityGrace, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.quietWindowEnded() }
+        }
+    }
+
+    /// The quiet window ended. The host decides what that shows (a keypress meanwhile keeps the owner's typing quiet); as
+    /// with the pad's timeout, nothing is touched after a disarm.
+    private func quietWindowEnded() {
+        guard host?.isSessionActive == true else { return }
+        host?.disarmPresentationChanged()
     }
 }

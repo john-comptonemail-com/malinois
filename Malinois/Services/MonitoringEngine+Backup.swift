@@ -10,8 +10,10 @@ import Foundation
 
 extension MonitoringEngine {
     /// Said on Home and on the arming and countdown screens while iCloud backup is off on Pro
-    /// (item 120, F1): Home's row said "iCloud ready" and the arming screens said nothing.
-    static let backupOffNotice = "iCloud backup is off: new events stay on this iPhone."
+    /// (item 120, F1): Home's row said "iCloud ready" and the arming screens said nothing. It says
+    /// what Malinois does: it said new events "stay on this iPhone", whose own backups (iCloud
+    /// Backup, a computer's) can copy them (item 168's deepseek-2).
+    static let backupOffNotice = "iCloud backup is off: Malinois won't upload new events."
 
     /// Home's notice when the launch check finds this phone's iCloud copies gone and queues them again (item 87). With
     /// iCloud backup off they upload only once it is turned back on; the notice said "uploading" (claude-1, found while
@@ -55,7 +57,8 @@ extension MonitoringEngine {
         return true
     }
 
-    /// Wires the switch into the three places that apply it (at init): the store marks an event
+    /// Wires the switch into the three places that apply it (first at init, before the settings' resolution can write a
+    /// record; codex-12 on 1.8.2): the store marks an event
     /// recorded while backup is off; the enrollment registers it to no account, which older
     /// versions honour too (item 116, R3); and the uploader reads the rule before every step
     /// (R2). Each reads the switch as known (`cloudBackupKnownOff`, `cloudBackupKnownOn`): while the

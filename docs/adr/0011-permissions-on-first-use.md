@@ -80,3 +80,15 @@ the arming-screen notice never had its condition. With the request skipped, the 
 unasked, the arming screen shows "Allow the camera first", and the prompt is available once
 Guided Access ends. A device where a blocked request already registered as a refusal shows the
 existing denied notice (iOS Settings, or a delete-and-reinstall, resets it).
+
+## Amendment (2026-10-24, 1.8.2): the ask after a verification
+
+Decision 5 waited for a record stamped with another device's name, so two devices with one name, or an account with
+no events yet, never saw the ask on Home (BACKLOG 155's A11). The owner ruled (item 163's step 25) that Home also
+offers it once this installation has been verified for iCloud (its durable grant, `CloudEnrollment.enrolledAccount`),
+every other condition kept: Pro, iCloud ready, Cross-device alerts on, iOS never asked, Hide not tapped. A device that
+only arms is now asked too once it is verified, though it has nothing to show until another device sends an alert;
+Hide keeps the line out of the way, and Settings → iCloud keeps the ask. Not under Guided Access: Home hides the line
+while it is on, where iOS shows no permission question (the 1.3 (41) amendment: it took the camera's as a refusal), and
+shows it again once Guided Access ends (Codex's note on step 25, which made the line likelier; its button had no such
+guard). Tests: `Item155NotificationAskTests`.

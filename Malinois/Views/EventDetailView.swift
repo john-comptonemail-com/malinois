@@ -119,11 +119,15 @@ struct EventDetailView: View {
             // The retrieval half of the Pro backup promise (34.B1): a restored or
             // byte-pruned event has no local media, but its full capture may still be in
             // iCloud — reachable by deterministic record ID, so this needs no schema work.
-            // An INCOMPLETE download (R3-3: some slots went unchecked) keeps the section
-            // up even after a capture landed, so the owner can retry for the rest. Offered only
-            // where a copy can exist (item 118): never after a capture that never happened, or
-            // for this iPhone's events that never uploaded.
-            if current.mediaFilename == nil || downloadIncomplete, !current.isStateChange,
+            // Offered while a file the record names is not here, on every visit (item 167's A2:
+            // a download that brought the front of a Both capture whose rear had not uploaded
+            // yet), and not once every named file is (codex-5: a capture whose only file is its
+            // rear); a copy that names none keeps the old rule. An INCOMPLETE download (R3-3:
+            // some slots went unchecked) keeps the section up even after a capture landed, so
+            // the owner can retry for the rest. Offered only where a copy can exist (item 118):
+            // never after a capture that never happened, or for this iPhone's events that never
+            // uploaded.
+            if current.mayLackAFileHere || downloadIncomplete, !current.isStateChange,
                entitlements.proActive, current.mediaDiscarded != true, current.fullCaptureMayBeInICloud {
                 downloadSection
             }

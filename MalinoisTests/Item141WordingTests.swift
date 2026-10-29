@@ -93,7 +93,7 @@ final class Item141WordingTests: XCTestCase {
     /// iCloud no longer holds this phone's records and backup is off: they are queued again, and Home says they wait
     /// for backup, not that they are uploading.
     func testWithBackupOffTheNoticeSaysTheRecordsWaitForBackup() async throws {
-        let engine = wipedEngine(backupOn: false)
+        let engine = try await wipedEngine(backupOn: false)
         await engine.checkCloudCopies()
         let notice = try XCTUnwrap(engine.cloudResetNotice)
         XCTAssertTrue(notice.contains("when iCloud backup is turned back on"), notice)
@@ -102,7 +102,7 @@ final class Item141WordingTests: XCTestCase {
 
     /// With backup on, the notice is as before.
     func testWithBackupOnTheNoticeSaysTheyAreUploading() async throws {
-        let engine = wipedEngine(backupOn: true)
+        let engine = try await wipedEngine(backupOn: true)
         await engine.checkCloudCopies()
         let notice = try XCTUnwrap(engine.cloudResetNotice)
         XCTAssertTrue(notice.contains("This phone is uploading 5 of them again."), notice)
@@ -111,7 +111,7 @@ final class Item141WordingTests: XCTestCase {
     /// Codex's codex-1 on 76: the notice follows the switch. Turned back on, as it asks, it says the records are
     /// uploading; it kept asking for what was already done. Turned off again, it says they wait.
     func testTheNoticeFollowsTheBackupSwitch() async throws {
-        let engine = wipedEngine(backupOn: false)
+        let engine = try await wipedEngine(backupOn: false)
         await engine.checkCloudCopies()
         XCTAssertTrue(engine.setCloudBackup(true))
         let on = try XCTUnwrap(engine.cloudResetNotice)
@@ -122,18 +122,26 @@ final class Item141WordingTests: XCTestCase {
         XCTAssertTrue(off.contains("5 of them will upload again when iCloud backup is turned back on."), off)
     }
 
-    /// Five of this phone's records went up under this account, and iCloud now holds none of them.
-    private func wipedEngine(backupOn: Bool) -> MonitoringEngine {
-        UserDefaults.standard.set("owner", forKey: Self.accountKey)
+    /// Five of this phone's records went up under this account, and iCloud now holds none of them. The installation
+    /// is verified for the account, and the records are bound to it as they are recorded (item 152's lead 13).
+    private func wipedEngine(backupOn: Bool) async throws -> MonitoringEngine {
+        let enrollment = CloudEnrollment(file: FileManager.default.temporaryDirectory
+            .appendingPathComponent("MalinoisItem141-" + UUID().uuidString).appendingPathComponent("enrollment.json"),
+                                         authenticate: { _ in true })
+        let verified = await enrollment.enroll(account: "owner", resolve: { "owner" })
+        try XCTSkipUnless(verified, "the enrollment could not be written")
         let store = EventStore()
         for minutes in (1...5).reversed() {
             let at = Date().addingTimeInterval(-Double(minutes) * 60)
-            store.add(Event(startDate: at, endDate: at, triggeredSensors: [.touch], cloudSyncState: .synced,
-                            stateChange: nil, sourceDevice: nil))
+            let event = Event(startDate: at, endDate: at, triggeredSensors: [.touch], cloudSyncState: .synced,
+                              stateChange: nil, sourceDevice: nil)
+            enrollment.registerLocalEvent(event)
+            store.add(event)
         }
         let settings = AppSettings()
         settings.cloudBackup = backupOn
-        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: CloudExfiltrator(),
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store,
+                                                          cloud: CloudExfiltrator(enrollment: enrollment),
                                                           camera: FakeCamera(), entitlements: ProEntitlements(resolvedAs: .trial),
                                                           timing: EngineCharacterizationTests.fastTiming))
         engine.cloudAccountForTesting = "owner"

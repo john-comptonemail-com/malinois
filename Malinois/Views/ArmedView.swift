@@ -50,8 +50,15 @@ struct ArmedView: View {
                 // Item 126: the armed time and, while a camera runs, the REC badge sit in rows of their
                 // own above the pad, so at any text size neither lies over its title (both were laid
                 // over the top of the pad, which scrolls at the largest sizes). The screen's own REC
-                // badge below steps aside for the pad's while the pad is up.
-                .safeAreaInset(edge: .top, spacing: 0) { armedDurationBadge }
+                // badge below steps aside for the pad's while the pad is up. So does the full-screen
+                // warning: a warning that is up while the pad is open shows in a row of its own under
+                // the armed time (codex-4 on 0920241, the owner's option 1).
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    VStack(spacing: 0) {
+                        armedDurationBadge
+                        padWarning
+                    }
+                }
                 .recordingBadge(whileLive: engine.camera.isRecordingActivePublisher)
                 .transition(.opacity)
             } else {
@@ -91,13 +98,11 @@ struct ArmedView: View {
             // press-and-hold to disarm still works underneath it. An escalation
             // (jamming blackout / tamper flood) shows its own aggressive warning.
             // Until the owner's first disarm it also says how to disarm (item 107).
+            // While the disarm pad is up it steps aside, and shows above the pad
+            // instead (`padWarning`, codex-4 on 0920241).
             if engine.alertActive && !engine.disarmEntryActive {
-                // Clamped at the render (R1-L4, the deviceLabel rule): bounded and
-                // never blank, whatever the stored value or decode admitted.
                 AlertMessageView(
-                    message: MonitoringEngine.sanitizedAlertMessage(
-                        engine.escalation?.message ?? settings.alertMessage,
-                        fallback: AppSettings.defaultAlertMessage),
+                    message: alertMessage,
                     disarmTip: DisarmTip.alertTip(hasDisarmedOnce: OnboardingState.hasDisarmedOnce))
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -164,6 +169,41 @@ struct ArmedView: View {
     /// rather than a disarm, so close the attribution window and let that touch stand as evidence.
     private func notePressUp() {
         if !engine.disarmEntryActive { engine.cancelDisarmCandidate() }
+    }
+
+    /// The warning's message, as both its views show it: an escalation's own, or the owner's. Clamped at the render
+    /// (R1-L4, the deviceLabel rule): bounded and never blank, whatever the stored value or decode admitted.
+    private var alertMessage: String {
+        MonitoringEngine.sanitizedAlertMessage(engine.escalation?.message ?? settings.alertMessage,
+                                               fallback: AppSettings.defaultAlertMessage)
+    }
+
+    /// The tamper warning while the disarm pad is open (codex-4 on 0920241, the owner's option 1, the armed time kept):
+    /// the full-screen warning steps aside for the pad, so a warning that is up while the pad is open (a new trip's on a
+    /// pad nobody is typing on, one the owner's typing held back once the typing stops, or one already up when the pad
+    /// opened) shows here, in a row of its own under the armed time, the keys clear. Its text stops growing where the
+    /// full-screen warning's does; a long message of the owner's own shrinks, then stops at four lines, and the
+    /// full-screen warning shows it whole if the pad closes while it is still up.
+    @ViewBuilder
+    private var padWarning: some View {
+        if engine.alertActive {
+            let message = alertMessage
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .lineLimit(4)
+                    .minimumScaleFactor(0.6)
+                    .reportedOnScreen(message)
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.white)
+            .dynamicTypeSize(...AlertMessageView.largestTextSize)
+            .accessibilityElement(children: .combine)
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .transition(.opacity)
+        }
     }
 
     /// Live "Armed for H:MM:SS" shown above the disarm pad.

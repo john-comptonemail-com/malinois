@@ -153,7 +153,7 @@ final class Item148DecoderFuzzTests: XCTestCase {
                                                                    : Self.randomCloudValue(&rng), &rng)
             Self.set(record, "triggeredSensors", Bool.random(using: &rng) ? Self.sensorList(&rng) as CKRecordValue
                                                                           : Self.randomCloudValue(&rng), &rng)
-            Self.set(record, "deviceName", Self.randomCloudValue(&rng), &rng)
+            Self.set(record, "deviceName", Self.deviceNameValue(&rng), &rng)
             Self.set(record, "revision", Bool.random(using: &rng) ? Self.extremeInt(&rng) as CKRecordValue
                                                                   : Self.randomCloudValue(&rng), &rng)
             Self.set(record, "ownerAttributed", Self.randomCloudValue(&rng), &rng)
@@ -180,6 +180,10 @@ final class Item148DecoderFuzzTests: XCTestCase {
             }
             findings.check(event.cloudMediaManifest.map { !$0.isEmpty && Set($0).isSubset(of: CloudExfiltrator.allowedMediaTokens) } ?? true,
                            input, "manifest not allow-listed")
+            findings.check(event.cloudMediaManifest.map { Set($0).count == $0.count } ?? true,
+                           input, "manifest names one camera twice (1.8.2's step 32)")
+            findings.check(Set(event.triggeredSensors).count == event.triggeredSensors.count,
+                           input, "a tripwire listed twice (1.8.2's step 32)")
             findings.check(event.thermalState.map { ["nominal", "fair", "serious", "critical"].contains($0) } ?? true,
                            input, "thermal state not allow-listed")
             findings.check(event.interruptionCause.map { causes.contains($0) } ?? true, input, "cause not allow-listed")
@@ -188,7 +192,8 @@ final class Item148DecoderFuzzTests: XCTestCase {
                 failures.allSatisfy { ["front", "rear"].contains($0.key) && reasons.contains($0.value) }
             } ?? true, input, "failures by camera not allow-listed")
             let device = event.sourceDevice ?? ""
-            findings.check(!device.isEmpty && device.count <= 64, input, "device name \(device.count) characters")
+            findings.check(!device.isEmpty && device.count <= 64 && device.utf8.count <= CloudExfiltrator.maxDeviceNameBytes,
+                           input, "device name \(device.count) characters, \(device.utf8.count) bytes")
             findings.check(event.cloudSyncState == .synced && event.mediaFilename == nil, input, "a mirror that claims a file")
             Self.touchEveryDisplayProperty(event)
         }
@@ -204,11 +209,22 @@ final class Item148DecoderFuzzTests: XCTestCase {
         let written = ["armed", "disarmed", "gaLifted", "cameraError", "armingCancelled", "armingInterrupted",
                        "thermalSerious", "thermalCritical", "soundUnavailable", "soundRestored", "unsyncedRemoved",
                        Event.backupOffKind, Event.backupOnKind, "motionStalled", "reinstalled",
-                       "pinChanged", "guidedAccessEnded"]   // item 153's MAL-03 and MAL-05
+                       "pinChanged", "guidedAccessEnded",   // item 153's MAL-03 and MAL-05
+                       "reArmSkipped", "settingsReset",   // item 153's MAL-10; codex-10 on 1.8.2
+                       Event.sirenElsewhereKind(device: "Owner's AirPods Pro"), Event.sirenElsewhereKind(device: "")]   // step 26
             + Event.protectionChangeKinds.sorted()
+        // Numbers padded with zeros or signed with a plus read as the same number: dropped (1.8.2's step 32).
+        let padded = ["clockChanged.060", "clockChanged.+60", "clockChanged.-060", "resumed.0252", "resumed.+252",
+                      "clockChanged." + String(repeating: "0", count: 300) + "60", "settingSet.gracePeriod.015"]
         let junk = ["", "armed ", "ARMED", "Armed", "clockChanged.", "clockChanged.abc", "clockChanged.0",
                     "clockChanged.\(Int.min)", "clockChanged.\(Int.max)", "clockChanged.3153600001",
-                    "settingOff.", "settingOff.unknown", "settingOn.touch", "someFutureKind", "signalLoss"]
+                    "settingOff.", "settingOff.unknown", "settingOn.touch", "someFutureKind", "signalLoss",
+                    "sirenElsewhere. Car", "sirenElsewhere.Car ", "sirenElsewhere.Car\u{0}",   // 1.8.2's step 26
+                    "sirenElsewhere." + String(repeating: "a", count: 41)] + padded
+        let longest = (written + [Event.clockChangeKind(seconds: -100 * 365 * 86_400),
+                                  Event.resumedKind(seconds: 100 * 365 * 86_400),
+                                  Event.sirenElsewhereKind(device: String(repeating: "\u{1F600}", count: 40))])
+            .map(\.utf8.count).max() ?? 0
         for input in 0..<2_000 {
             let kind: String
             var mustAdmit = false
@@ -230,17 +246,20 @@ final class Item148DecoderFuzzTests: XCTestCase {
                 Self.set(record, "startDate", Self.randomCloudValue(&rng), &rng)
             }
             Self.set(record, "kind", kind as CKRecordValue, &rng)
-            Self.set(record, "deviceName", Self.randomCloudValue(&rng), &rng)
+            Self.set(record, "deviceName", Self.deviceNameValue(&rng), &rng)
             let decoded = CloudExfiltrator.stateEvent(from: record)
             if identified && mustAdmit { findings.check(decoded != nil, input, "a kind this build writes was dropped: \(kind)") }
+            if padded.contains(kind) { findings.check(decoded == nil, input, "a padded number admitted: \(kind.prefix(30))") }
             guard let event = decoded else { continue }
+            findings.check(kind.utf8.count <= longest, input, "an admitted kind longer than any this build writes")
             findings.check(event.stateChange == kind && event.triggeredSensors.isEmpty, input, "the kind changed: \(kind)")
             findings.check(event.startDate <= Date().addingTimeInterval(86_400), input, "start not clamped")
             let words = event.sensorSummary
             findings.check(words != "Signal loss" && words != "Status entry this version of Malinois does not recognize",
                            input, "an admitted kind without words: \(kind)")
             let device = event.sourceDevice ?? ""
-            findings.check(!device.isEmpty && device.count <= 64, input, "device name \(device.count) characters")
+            findings.check(!device.isEmpty && device.count <= 64 && device.utf8.count <= CloudExfiltrator.maxDeviceNameBytes,
+                           input, "device name \(device.count) characters, \(device.utf8.count) bytes")
             Self.touchEveryDisplayProperty(event)
         }
         findings.report()
@@ -380,7 +399,16 @@ final class Item148DecoderFuzzTests: XCTestCase {
 
     private static func sensorList(_ rng: inout SeededGenerator) -> String {
         let tokens = SensorType.allCases.map(\.rawValue) + ["", "nonsense", "MOTION", " motion", "camera,"]
-        return (0..<Int.random(in: 0...6, using: &rng)).map { _ in tokens.randomElement(using: &rng)! }.joined(separator: ",")
+        let length = Int.random(in: 0...(Int.random(in: 0..<10, using: &rng) == 0 ? 60 : 6), using: &rng)
+        return (0..<length).map { _ in tokens.randomElement(using: &rng)! }.joined(separator: ",")
+    }
+
+    /// A device name: any cloud value, or now and then a heavy one, each character a letter with many accent marks
+    /// (1.8.2's step 32: 64 characters can be any number of bytes).
+    private static func deviceNameValue(_ rng: inout SeededGenerator) -> CKRecordValue? {
+        guard Int.random(in: 0..<10, using: &rng) == 0 else { return randomCloudValue(&rng) }
+        let character = "e" + String(repeating: "\u{301}", count: Int.random(in: 1...1_000, using: &rng))
+        return String(repeating: character, count: Int.random(in: 1...70, using: &rng)) as CKRecordValue
     }
 
     /// A value of a random type CloudKit accepts in either namespace, or none.
@@ -411,6 +439,7 @@ final class Item148DecoderFuzzTests: XCTestCase {
                     "secondaryCamera", "primaryDuration", "secondaryDuration", "mediaDiscarded", "captureFailure",
                     "captureFailuresByCamera", "wrongPINCount", "thermalState", "media"]
         let valid: [Any] = ["front", "rear", "primary", "serious", 2, 5.0, true, ["front", "rear"],
+                            ["front", "front", "rear", "front"],   // 1.8.2's step 32: each name kept once
                             ["front": CaptureFailureReason.allCases.first?.rawValue ?? "", "side": "x"],
                             InterruptionCause.allCases.first?.rawValue ?? ""]
         var object: [String: Any] = [:]

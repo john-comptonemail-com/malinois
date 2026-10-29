@@ -176,4 +176,46 @@ final class Item152BiometricBindingTests: XCTestCase {
                        + "the faces or fingers enrolled on this iPhone. Enter your PIN.")
         XCTAssertEqual(BiometricKind.faceID.bindingCaption(for: .bound), "", "nothing to say while bound")
     }
+
+    // MARK: - Item 153's MAL-12 (1.8.2's step 6): a Face ID answer counts for its own request only
+
+    /// The current request's answer counts, once.
+    func testTheCurrentRequestsAnswerCountsOnce() {
+        let requests = BiometricRequest()
+        let id = requests.begin(LAContext())
+        XCTAssertTrue(requests.finish(id))
+        XCTAssertFalse(requests.finish(id), "an answer counts once")
+    }
+
+    /// A newer request ends the earlier one: the earlier answer, arriving late, opens nothing, and its sheet is ended.
+    /// Red at the step's red commit: the pad acted on any answer.
+    func testALateAnswerToAnEarlierRequestOpensNothing() {
+        let requests = BiometricRequest()
+        let first = SpyContext()
+        let earlier = requests.begin(first)
+        let later = requests.begin(LAContext())
+        XCTAssertFalse(requests.finish(earlier), "the earlier request's answer is ignored")
+        XCTAssertTrue(first.invalidated, "the earlier request's sheet is ended")
+        XCTAssertTrue(requests.finish(later))
+    }
+
+    /// The pad going away, or the app going to the background, ends the request: an answer after that opens nothing.
+    func testAnAnswerAfterThePadWentAwayOpensNothing() {
+        let requests = BiometricRequest()
+        let context = SpyContext()
+        let id = requests.begin(context)
+        requests.cancel()
+        XCTAssertFalse(requests.finish(id))
+        XCTAssertTrue(context.invalidated)
+    }
+}
+
+/// An `LAContext` that notes being ended.
+private final class SpyContext: LAContext {
+    private(set) var invalidated = false
+
+    override func invalidate() {
+        invalidated = true
+        super.invalidate()
+    }
 }

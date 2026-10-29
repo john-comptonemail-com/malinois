@@ -3,13 +3,16 @@ import LocalAuthentication
 import UIKit
 
 /// Installation-bound permission to use one iCloud account. No PIN or evidence is stored here.
-/// The file is excluded from backup and disappears with the app container on uninstall.
+/// The file is excluded from backup and disappears with the app container on uninstall; a restore rebuilds it holding
+/// every restored record (`holdRestoredEvents`, codex-7).
 @MainActor
 final class CloudEnrollment: ObservableObject {
     private static let production = CloudEnrollment()
     #if DEBUG
     /// Tests inject a per-test file; already-created services retain their own policy instance.
     static var sharedForTesting: CloudEnrollment?
+    /// The writes synced to the storage medium this process (item 153's MAL-07).
+    nonisolated(unsafe) static var fullSyncsForTesting = 0
     #endif
     static var shared: CloudEnrollment {
         #if DEBUG
@@ -26,13 +29,13 @@ final class CloudEnrollment: ObservableObject {
     /// Presentation only; never grants cloud permission or changes an event's account binding.
     enum UploadHoldReason: String, CaseIterable {
         case unknownAccount, differentAccount, verificationRequired, unavailable
-        /// Recorded while iCloud backup was off (item 115): it stays on this device for good.
+        /// Recorded while iCloud backup was off (item 115): Malinois never uploads it.
         case backupOff
 
         var explanation: String {
             switch self {
             case .unknownAccount:
-                return "These events have no verified iCloud account. They stay on this device; Retry cannot upload them. Use Share on an event to save a copy elsewhere."
+                return "These events have no verified iCloud account. Malinois won't upload them, and Retry can't. Use Share on an event to save a copy elsewhere."
             case .differentAccount:
                 return "These events belong to a different iCloud account and cannot upload to the current account."
             case .verificationRequired:
@@ -40,7 +43,7 @@ final class CloudEnrollment: ObservableObject {
             case .unavailable:
                 return "Cloud verification information is unavailable. Unlock this device and check Settings → iCloud."
             case .backupOff:
-                return "These events were recorded while iCloud backup was off. They stay on this device for good, even after backup is turned back on. Use Share on an event to save a copy elsewhere."
+                return "These events were recorded while iCloud backup was off. Malinois will never upload them, even after backup is turned back on. Use Share on an event to save a copy elsewhere."
             }
         }
     }
@@ -71,6 +74,9 @@ final class CloudEnrollment: ObservableObject {
         var owners: [String: String] = [:]
         var remoteOwners: [String: String] = [:]
         var migrationSeeded = false
+        /// The first-hand records the restore's rebuild held, their upload history unknown (item 166's codex-29), written
+        /// with their bindings (codex-31). Optional: a file written before it has none.
+        var restoredHolds: Set<String>?
     }
 
     @Published private(set) var verified = false
@@ -202,7 +208,7 @@ final class CloudEnrollment: ObservableObject {
     /// Whether an event recorded now is tied to this installation's verified account, so it uploads once iCloud names
     /// that account again, with no new verification (item 140's codex-1): true while a verified installation waits
     /// for iCloud, offline or after a relaunch. False before the first verification, after another account was seen
-    /// and while iCloud backup is off: those events stay on this device. Presentation only; it grants nothing.
+    /// and while iCloud backup is off: Malinois does not upload those events. Presentation only; it grants nothing.
     var newEventsBindToVerifiedAccount: Bool {
         guard let account = state?.account, !account.isEmpty else { return false }
         return !holdsNewEvents
@@ -229,30 +235,47 @@ final class CloudEnrollment: ObservableObject {
         _ = commit(next)
     }
 
-    /// Migrates only records already tied to an account by the prior release. Unknown history is held locally.
-    /// Called once a complete local log is readable; a locked or partial log must not settle migration.
-    func seedLegacyEvents(_ events: [Event], knownAccount: String?) {
+    /// The bindings' one-time rebuild when their file is missing: after a restore from a device backup, which leaves this
+    /// file out, or an update from before 1.5.1. Called once a complete local log is readable; a locked or partial log
+    /// must not settle it. Hold rather than guess (codex-7 on 1.8.2, twice; the owner's ruling (a)): nothing the backup
+    /// keeps proves which account a restored record went to, or that it was held, so every first-hand record is held,
+    /// tied to no account; other devices' copies are left unbound, for the next fetch from the verified account to bind
+    /// (`registerRemoteEvents`). A binding already there is never relabelled. Each record it holds is noted as restored,
+    /// its upload history unknown (`restoredHolds`; item 166's codex-29), in the same write as its binding, so no kill
+    /// can keep one without the other (codex-31).
+    func holdRestoredEvents(_ events: [Event]) {
         guard load(), var next = state, !next.migrationSeeded else { return }
-        for event in events {
-            if event.isMirrored {
-                if next.remoteOwners[event.id.uuidString] == nil {
-                    next.remoteOwners[event.id.uuidString] = knownAccount ?? ""
-                }
-            } else if next.owners[event.id.uuidString] == nil {
-                next.owners[event.id.uuidString] = knownAccount ?? ""
-            }
+        var restored = next.restoredHolds ?? []
+        for event in events where !event.isMirrored && next.owners[event.id.uuidString] == nil {
+            next.owners[event.id.uuidString] = ""
+            restored.insert(event.id.uuidString)
         }
+        next.restoredHolds = restored.isEmpty ? nil : restored
         next.migrationSeeded = true
         _ = commit(next)
     }
 
-    /// Binds newly restored mirrors to the account that supplied them without relabeling existing evidence.
+    /// Whether this phone cannot know where its own record `event` went (item 166's codex-29): one the restore's rebuild
+    /// held (`holdRestoredEvents`), or one with no binding at all, as a restored record has until the rebuild runs, which
+    /// waits for a readable log (codex-32); every record this app makes is bound at birth. A record recorded while the
+    /// installation was not uploading is bound to no account at birth, and is not one of these: it never went up.
+    func uploadHistoryUnknown(for event: Event) -> Bool {
+        guard load(), let state, !event.isMirrored else { return false }
+        let key = event.id.uuidString
+        return state.owners[key] == nil || state.restoredHolds?.contains(key) == true
+    }
+
+    /// Binds newly restored mirrors to the account that supplied them without relabeling existing evidence. A fetch
+    /// that brings no new record leaves the file as it is (1.8.2's step 32, item 152's lead 20): every write reaches
+    /// the storage medium (item 153's MAL-07), and every push from iCloud runs a fetch.
     func registerRemoteEvents(_ events: [Event], lease: Lease) -> Bool {
         guard isCurrent(lease), var next = state else { return false }
+        var added = false
         for event in events where next.remoteOwners[event.id.uuidString] == nil {
             next.remoteOwners[event.id.uuidString] = lease.account
+            added = true
         }
-        return commit(next)
+        return !added || commit(next)
     }
 
     func authorizeUpload(event: Event, lease: Lease) -> Bool {
@@ -267,6 +290,39 @@ final class CloudEnrollment: ObservableObject {
 
     func authorizeSession(session: UUID, startedAt: Date? = nil, lease: Lease) -> Bool {
         isCurrent(lease) && state?.owners[session.uuidString] == lease.account
+    }
+
+    /// The account this installation is verified for (its durable grant), or nil before the first verification or
+    /// while the grant cannot be read. The iCloud-copies check reads it (item 152's lead 13); it grants nothing.
+    var enrolledAccount: String? {
+        guard load(), let account = state?.account, !account.isEmpty else { return nil }
+        return account
+    }
+
+    /// Whether `event` was bound to `account` as it was recorded (`registerLocalEvent`): the records that may go up to
+    /// that account, and the ones the iCloud-copies check looks for there (item 152's lead 13). Never a mirror. It
+    /// grants nothing: an upload still needs a current lease (`authorizeUpload`).
+    func isBound(_ event: Event, to account: String) -> Bool {
+        guard load(), !event.isMirrored, !account.isEmpty else { return false }
+        return state?.owners[event.id.uuidString] == account
+    }
+
+    /// Prunes the bindings no record needs any longer (item 153's MAL-08): one was kept per record ever recorded, and
+    /// the whole file is rewritten at every new one. `keeping` is every ID that may still need its binding: the log's
+    /// records (its own and copies), uploads under way, and the watches whose heartbeat records iCloud may hold. The
+    /// hold rule stands for what the log holds; a record gone from it that comes back from iCloud comes back as a copy,
+    /// bound to the account that supplies it (ADR 0039). Call only with the complete log read. Returns how many went.
+    @discardableResult
+    func pruneBindings(keeping: Set<UUID>) -> Int {
+        guard load(), var next = state else { return 0 }
+        let keep = Set(keeping.map(\.uuidString))
+        let before = next.owners.count + next.remoteOwners.count
+        next.owners = next.owners.filter { keep.contains($0.key) }
+        next.remoteOwners = next.remoteOwners.filter { keep.contains($0.key) }
+        next.restoredHolds = next.restoredHolds.map { $0.filter(keep.contains) }   // the notes go with their bindings
+        let pruned = before - next.owners.count - next.remoteOwners.count
+        guard pruned > 0, commit(next) else { return 0 }
+        return pruned
     }
 
     /// Read failures remain unresolved and are retried after unlock; corrupt or future-version files are never overwritten.
@@ -300,7 +356,11 @@ final class CloudEnrollment: ObservableObject {
         }
     }
 
-    /// Atomic, protected, non-backed-up installation state. A failed write never opens the cloud gate.
+    /// Atomic, protected, non-backed-up installation state. A failed write never opens the cloud gate. The write
+    /// reaches the storage medium before it returns (`F_FULLFSYNC`, as the journal's append does; item 153's MAL-07):
+    /// an event's binding is written before its journal line, and left in the OS's caches, a forced restart within
+    /// seconds of a trip could keep the line and lose the binding, the event then held as unknown account. A sync that
+    /// fails is logged: the state written still survives a kill, not a power cut.
     nonisolated static func write(_ data: Data, to file: URL) throws {
         var directory = file.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -309,6 +369,19 @@ final class CloudEnrollment: ObservableObject {
         values.isExcludedFromBackup = true
         try directory.setResourceValues(values)
         try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        guard let handle = try? FileHandle(forUpdating: file) else {
+            Log.cloud.error("Enrollment full sync skipped: the file could not be opened — the state survives a kill, not a power cut")
+            return
+        }
+        defer { try? handle.close() }
+        guard fcntl(handle.fileDescriptor, F_FULLFSYNC) != -1 else {
+            let failure = errno
+            Log.cloud.error("Enrollment full sync failed (errno \(failure, privacy: .public)) — the state survives a kill, not a power cut")
+            return
+        }
+        #if DEBUG
+        fullSyncsForTesting += 1
+        #endif
     }
 
     /// Face ID, Touch ID or the passcode, asked only while the app is active. Under Guided Access iOS holds the

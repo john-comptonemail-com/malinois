@@ -397,7 +397,7 @@ final class Item77RegressionTests: XCTestCase {
     func testABlackoutThatBeginsDuringTheCalibrationReviewIsStillCaught() {
         var timing = EngineCharacterizationTests.fastTiming
         timing.blackoutDebounce = 0.2
-        timing.calibrationReview = 0.5
+        timing.calibrationReview = 1.0   // long enough to act in (item 168's deepseek-flash-2: it was 0.5 s)
         let rig = makeRig(timing: timing) { $0.jammingResponse = true }
         rig.engine.simulateConnectivityForTesting(online: true)
         rig.engine.beginArming()

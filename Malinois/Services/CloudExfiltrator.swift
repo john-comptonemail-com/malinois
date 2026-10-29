@@ -66,6 +66,13 @@ final class CloudExfiltrator: ObservableObject {
     var backupPermits: (Event) -> Bool = { _ in true }
     /// Whether iCloud backup is on (item 115), read before a heartbeat is sent: it carries no event.
     var backupOn: () -> Bool = { true }
+    /// The engine's log's copy of an event as it is now (item 162's A10), wired at the engine's init: a push reads it
+    /// when its turn comes in the event's queue, so it writes the event as the log holds it then, never an older copy
+    /// (the pending sweep's, read at its pass's start). Nil until wired, and for an event the log no longer holds.
+    var storedEvent: (UUID) -> Event? = { _ in nil }
+    /// Told when a capture's full file has reached iCloud, with its camera token (item 166's codex-23): the engine notes it
+    /// on the event (`Event.uploadedMedia`).
+    var mediaLanded: (UUID, String, Int?) -> Void = { _, _, _ in }
     private var identityGeneration = UUID()
     private var resolvedAccount: String?
     // NotificationCenter's token is only registered/removed here; it has no actor-bound state.
@@ -139,12 +146,17 @@ final class CloudExfiltrator: ObservableObject {
     func enqueueAuthorized<T: Sendable>(_ id: UUID, lease: CloudEnrollment.Lease, declined: T,
                                         _ operation: @escaping @MainActor () async -> T) async -> T {
         guard enrollment.isCurrent(lease) else { return declined }
-        return await enqueue(id) { [self] in
-            guard enrollment.isCurrent(lease), !Task.isCancelled else { return declined }
-            let result = await operation()
-            guard enrollment.isCurrent(lease), !Task.isCancelled else { return declined }
-            return result
-        }
+        return await enqueue(id) { [self] in await underLease(lease, declined: declined, operation) }
+    }
+
+    /// Runs `operation` while `lease` stays current: declined when the lease has lapsed, or the task was cancelled, on
+    /// either side of it.
+    private func underLease<T: Sendable>(_ lease: CloudEnrollment.Lease, declined: T,
+                                         _ operation: @MainActor () async -> T) async -> T {
+        guard enrollment.isCurrent(lease), !Task.isCancelled else { return declined }
+        let result = await operation()
+        guard enrollment.isCurrent(lease), !Task.isCancelled else { return declined }
+        return result
     }
 
     #if DEBUG
@@ -162,6 +174,20 @@ final class CloudExfiltrator: ObservableObject {
     var submitForTesting: (@MainActor (CKModifyRecordsOperation) -> Void)?
     /// A test's stall and asset cap, in place of the production 20 s and 600 s.
     var saveDeadlinesForTesting: (stall: TimeInterval, assetCap: TimeInterval)?
+    /// Replace the account's subscriptions as CloudKit lists them, one subscription's save, and a removal (item 165's
+    /// A3, Codex's codex-19 and codex-21): the Simulator has no container. The lease and the choice of what to save run
+    /// as shipped.
+    var existingSubscriptionsForTesting: (@MainActor () async throws -> [CKSubscription])?
+    var subscriptionSaveForTesting: (@MainActor (CKQuerySubscription) async -> Bool)?
+    var subscriptionRemovalForTesting: (@MainActor ([String]) async -> Bool)?
+    /// Told when an automatic setup of the alert subscriptions (the arm's warm-up, a reconnect's refresh) begins and
+    /// when it has finished (Codex's note on 946b248..b00a120): a test waits on these instead of sleeping.
+    var automaticSetupBeganForTesting: (@MainActor () -> Void)?
+    var automaticSetupFinishedForTesting: (@MainActor () -> Void)?
+    /// Replaces only the presence check's database fetch (item 166's codex-28): each name's result, in the order given
+    /// (CloudKit's own order is a dictionary's, with none to rely on: codex-30), or a thrown error. The lease and the
+    /// reading of the results run as shipped.
+    var presenceFetchForTesting: (@MainActor ([String]) async throws -> [(String, Result<Void, any Error>)])?
     #endif
 
     // MARK: - Record types
@@ -333,36 +359,70 @@ final class CloudExfiltrator: ObservableObject {
 
     // MARK: - Warm-up
 
-    /// Called on arm: check account status and (if enabled) set up the push
+    /// Settings' switch (`setCrossDeviceAlerts`) counts each change of the owner's alerts choice as it begins and as it
+    /// ends, and how many are under way (codex-21). The switch reads the owner's old choice until a change lands, so an
+    /// automatic setup (the arm's warm-up, a reconnect's refresh) that has seen a change begin or end since it began,
+    /// or that reaches a step while one is under way, is superseded: it saves nothing more.
+    private var alertsChoiceChanges = 0
+    private var alertsChoiceChangesUnderWay = 0
+
+    /// An automatic setup's live choice: the caller's (`wanted`, asked each time), while no change of the owner's
+    /// choice has begun or ended since this setup began, and none is under way.
+    private func automaticSetupWanted(_ wanted: @escaping @MainActor () -> Bool) -> @MainActor () -> Bool {
+        let changesAtStart = alertsChoiceChanges
+        return { [self] in
+            alertsChoiceChanges == changesAtStart && alertsChoiceChangesUnderWay == 0 && wanted()
+        }
+    }
+
+    /// Called on arm: check account status and (if the owner wants alerts) set up the push
     /// subscription after verifying this installation's current enrollment, so other devices
     /// are alerted the moment a trip lands. Warms the connection to cut cold-start latency at trigger time.
-    func warmUp(notifyOtherDevices: Bool) async {
-        guard let lease = await acquireCloudLease(), let database else { return }
-        switch Self.subscriptionActionOnArm(notifyWanted: notifyOtherDevices) {
-        case .ensure:     await ensureSubscription(lease: lease)
+    /// `alertsWanted` is the owner's live choice, asked after the account lookup, after the listing and before each
+    /// save, and a change made with the switch meanwhile supersedes it: an arm whose warm-up waits must not set the
+    /// subscriptions up again once the owner has turned alerts off (codex-21). Never removes: automatic paths never
+    /// perform account-wide OFF. Only the no-op query needs the database here: the subscription steps check for it
+    /// themselves (without one the listing fails and nothing is saved), so the Simulator's seams reach them.
+    func warmUp(alertsWanted: @escaping @MainActor () -> Bool) async {
+        signalAutomaticSetup(finished: false)
+        defer { signalAutomaticSetup(finished: true) }
+        let stillWanted = automaticSetupWanted(alertsWanted)
+        guard let lease = await acquireCloudLease() else { return }
+        switch Self.subscriptionActionOnArm(notifyWanted: stillWanted()) {
+        case .ensure:     await ensureSubscription(lease: lease, stillWanted: stillWanted)
         case .remove:     break // Automatic paths never perform account-wide OFF.
         case .leaveAlone: break
         }
         // A cheap no-op query to establish the connection early, only while enrolled.
-        guard enrollment.isCurrent(lease) else { return }
+        guard enrollment.isCurrent(lease), let database else { return }
         _ = try? await database.records(
             matching: CKQuery(recordType: Self.metaRecordTypeV2,
                               predicate: NSPredicate(value: false)),
             resultsLimit: 1)
     }
 
-    /// Re-establish (or tear down) the cross-device push subscription after a
-    /// connectivity restore. `warmUp` sets this up at arm, but if the network was
-    /// down then the setup silently failed and the owner's other devices would get
-    /// no push for the entire armed session. Calling this the moment a path returns
-    /// recovers it. Idempotent — `ensureSubscription` no-ops if it already exists.
-    func refreshSubscription(notifyOtherDevices: Bool) async {
-        guard let lease = await acquireCloudLease() else { return }
-        switch Self.subscriptionActionOnArm(notifyWanted: notifyOtherDevices) {
-        case .ensure:     await ensureSubscription(lease: lease)
-        case .remove:     break // Automatic paths never perform account-wide OFF.
-        case .leaveAlone: break
-        }
+    /// Re-establish the cross-device push subscription after a connectivity restore. `warmUp`
+    /// sets this up at arm, but if the network was down then the setup silently failed and the
+    /// owner's other devices would get no push for the entire armed session. Calling this the
+    /// moment a path returns recovers it. Idempotent — `ensureSubscription` saves only what is
+    /// missing. `stillWanted` is the owner's live choice, asked before and after each wait: a
+    /// refresh nobody wants any more (the switch turned off, or the stored settings loaded with it
+    /// off, meanwhile) sets nothing up (item 165's A3, Codex's codex-19), nor one that a change made
+    /// with the switch has superseded, an "off" still waiting on Face ID included (codex-21). Never
+    /// removes: automatic paths never perform account-wide OFF.
+    func refreshSubscription(stillWanted wanted: @escaping @MainActor () -> Bool) async {
+        signalAutomaticSetup(finished: false)
+        defer { signalAutomaticSetup(finished: true) }
+        let stillWanted = automaticSetupWanted(wanted)
+        guard stillWanted(), let lease = await acquireCloudLease(), stillWanted() else { return }
+        _ = await ensureSubscription(lease: lease, stillWanted: stillWanted)
+    }
+
+    /// Tells a test that an automatic setup of the alert subscriptions began or finished; nothing outside Debug.
+    private func signalAutomaticSetup(finished: Bool) {
+        #if DEBUG
+        (finished ? automaticSetupFinishedForTesting : automaticSetupBeganForTesting)?()
+        #endif
     }
 
     /// How long the account-status preflight may wait for cloudd's answer. It runs INSIDE
@@ -428,8 +488,11 @@ final class CloudExfiltrator: ObservableObject {
     /// its entry. Every CloudKit write for one event runs strictly after the previous write
     /// for that event has FINISHED — which closes review B2's residual race for good: two
     /// writes can no longer both preflight before either lands, so a stale fact retry can
-    /// never overwrite a richer record from this process. Chains for different events stay
-    /// concurrent; `retryPendingSync`'s bounded parallelism is unaffected.
+    /// never overwrite a richer record from this process. Since 1.8.2 (item 162's A10) a push
+    /// joins its event's chain before its identity lookup, which it makes at its turn, so the
+    /// writes go out in the order they were asked for, not in the order their lookups answered;
+    /// and each writes the log's copy of the event as it is then (`storedEvent`). Chains for
+    /// different events stay concurrent; `retryPendingSync`'s bounded parallelism is unaffected.
     private var uploadChains: [UUID: Task<Void, Never>] = [:]
     private var uploadChainTokens: [UUID: Int] = [:]
 
@@ -507,15 +570,19 @@ final class CloudExfiltrator: ObservableObject {
     /// `.synced` can reopen it for the sweep when it did not (item 65, finding 3).
     @discardableResult
     func pushFact(_ event: Event) async -> Bool {
-        // Held from the first step, the identity lookup included (item 153's MAL-01): a push begun as the phone is
-        // locked or the app killed runs under iOS's extra time, not only once its lease and queue wait are over.
+        // Held from the first step, the queue wait and the identity lookup included (item 153's MAL-01): a push begun as
+        // the phone is locked or the app killed runs under iOS's extra time.
         let assertion = BackgroundAssertion.begin("malinois-fact")
         defer { assertion.end() }
-        guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return false }
-        return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
-            // Ownership and enrollment are checked again after the per-event queue wait.
-            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
-            return await pushMetaRecord(event, lease: lease) == nil
+        // The event's queue first, the identity lookup at its turn (item 162's A10): the writes for one event go out in
+        // the order they were asked for, not in the order their lookups answered, each with the log's copy as it is then.
+        return await enqueue(event.id) { [self] in
+            guard let lease = await acquireCloudLease() else { return false }
+            let current = storedEvent(event.id) ?? event
+            return await underLease(lease, declined: false) {
+                guard mayUpload(current, lease: lease) else { return false }
+                return await pushMetaRecord(current, lease: lease) == nil
+            }
         }
     }
 
@@ -525,17 +592,22 @@ final class CloudExfiltrator: ObservableObject {
     /// `secondaryMediaURL` is the second capture from the "Both" camera option.
     func exfiltrate(_ event: Event, fullMediaURL: URL?, secondaryMediaURL: URL? = nil) async -> ExfilOutcome {
         let declined = ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: nil)
-        let assertion = BackgroundAssertion.begin("malinois-evidence")   // from the lease attempt on (item 153's MAL-01)
+        let assertion = BackgroundAssertion.begin("malinois-evidence")   // from the queue wait on (item 153's MAL-01)
         defer { assertion.end() }
-        let attempt = await leaseAttempt()
-        guard let lease = attempt.lease, mayUpload(event, lease: lease) else {
-            // A lookup that failed for want of a network is this push's network-class failure (item 152's lead 1), and
-            // one the server throttled is a refusal (item 155's A3): the escalation's verdict hears each as it would a
-            // save's (ADR 0001). A hold is no verdict, as before.
-            return attempt.transient ? ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: attempt.interference) : declined
-        }
-        return await enqueueAuthorized(event.id, lease: lease, declined: declined) { [self] in
-            await exfiltrateNow(event, fullMediaURL: fullMediaURL, secondaryMediaURL: secondaryMediaURL, lease: lease)
+        // The event's queue first, the identity lookup at its turn, and the log's copy (item 162's A10), as `pushFact`.
+        return await enqueue(event.id) { [self] in
+            let attempt = await leaseAttempt()
+            guard let lease = attempt.lease else {
+                // A lookup that failed for want of a network is this push's network-class failure (item 152's lead 1),
+                // and one the server throttled is a refusal (item 155's A3): the escalation's verdict hears each as it
+                // would a save's (ADR 0001). A hold is no verdict, as before.
+                return attempt.transient ? ExfilOutcome(syncState: .localOnly, metaFailureWasInterference: attempt.interference) : declined
+            }
+            let current = storedEvent(event.id) ?? event
+            // `exfiltrateNow` declines an upload the event's account or the backup switch does not allow.
+            return await underLease(lease, declined: declined) {
+                await exfiltrateNow(current, fullMediaURL: fullMediaURL, secondaryMediaURL: secondaryMediaURL, lease: lease)
+            }
         }
     }
 
@@ -552,14 +624,19 @@ final class CloudExfiltrator: ObservableObject {
         // ---- Shot 2: full-resolution follow-up(s) ----
         // Record names carry the camera ("photo-front" / "photo-rear") so they're
         // easy to tell apart in the CloudKit Console.
+        // Each file that lands is noted on the event (`mediaLanded`), so a capture part of which is in iCloud is never
+        // marked lost before upload (item 166's codex-23).
         var fullLanded = true
         if let url = fullMediaURL {
             fullLanded = await pushPhotoRecord(event, mediaURL: url,
                                                suffix: "photo-\(event.primaryMediaToken)", lease: lease)
+            if fullLanded { mediaLanded(event.id, event.primaryMediaToken, event.receiptEpoch) }
         }
         if let url = secondaryMediaURL {
-            fullLanded = await pushPhotoRecord(event, mediaURL: url,
-                                               suffix: "photo-\(event.secondaryMediaToken)", lease: lease) && fullLanded
+            let landed = await pushPhotoRecord(event, mediaURL: url,
+                                               suffix: "photo-\(event.secondaryMediaToken)", lease: lease)
+            if landed { mediaLanded(event.id, event.secondaryMediaToken, event.receiptEpoch) }
+            fullLanded = landed && fullLanded
         }
 
         if let metaError {
@@ -594,13 +671,17 @@ final class CloudExfiltrator: ObservableObject {
     ///
     /// Derived from the event rather than passed in by the caller, so it cannot disagree with
     /// what is actually being written: the sparse pre-capture fact is 1; each camera slot
-    /// carrying evidence adds 1 (the first slot: a thumbnail or a stored media file; the second:
-    /// its stored file or its camera's name, which survives the media byte cap's eviction); an
+    /// carrying evidence adds 1 (the first slot: a thumbnail, a stored media file, or one the media
+    /// byte cap discarded before it uploaded; the second: its stored file or its camera's name,
+    /// which survives the byte cap's eviction); an
     /// owner attribution adds 1. So a one-camera capture is 2, both cameras 3, and an
     /// owner-attributed re-push one more. The slots count separately because the second
     /// camera's evidence can arrive after the first's, as late evidence (item 108, CE-02): a
     /// device holding the first copy refused the copy that added the other camera, its equal
-    /// revision. Every component only ever becomes true, so the number only ever rises.
+    /// revision. Every component only ever becomes true, so the number only ever rises: a discard
+    /// keeps the first slot (item 166's A2, Codex's codex-2), or a capture without a thumbnail went
+    /// back a revision when the byte cap took its file, and the copy that says the photo was lost
+    /// was refused as older, here and on the other devices.
     ///
     /// The capture stage is keyed on **evidence actually attached — never on `endDate`**
     /// (34-review B2). It used to be `endDate > startDate`, and the real fact is *born* that
@@ -611,13 +692,15 @@ final class CloudExfiltrator: ObservableObject {
     /// revisions 2 and 3 present, none stuck at 1 — was the flaw's own fingerprint: no
     /// record was ever 1.
     ///
-    /// Known residual, recorded in BACKLOG 34: a camera-off event's rich push stays at
-    /// revision 1 (equal to its fact, so only its endDate/duration can regress). The
-    /// same-revision preflight race is CLOSED as of 1.2 — every write for one event runs
-    /// through the per-event chain (`enqueue`), strictly after the previous one finished.
+    /// A camera-off event's rich push stays at revision 1, equal to its fact (BACKLOG 34), so
+    /// revisions cannot order those two; the per-event chain (`enqueue`) does. Every write for
+    /// one event runs through it, strictly after the previous one finished (1.2), in the order
+    /// the pushes were asked for, each writing the log's copy as it is at its turn (1.8.2, item
+    /// 162's A10: before, a push's identity lookup came first, so a slow one let the sparse
+    /// fact land after the richer record and take back what the trip had added).
     nonisolated static func metaRevision(for event: Event) -> Int {
         var revision = 1
-        if event.thumbnailData != nil || event.mediaFilename != nil { revision += 1 }
+        if event.thumbnailData != nil || event.mediaFilename != nil || event.mediaDiscarded == true { revision += 1 }
         if event.secondaryMediaFilename != nil || event.secondaryCamera != nil { revision += 1 }
         if event.ownerAttributed == true { revision += 1 }
         return revision
@@ -707,26 +790,66 @@ final class CloudExfiltrator: ObservableObject {
 
     /// Item 87: which of these record names the private database still holds, fetching no fields;
     /// nil when the answer is not conclusive (no account, a network error, any failure other
-    /// than "no such record").
+    /// than "no such record"). A transient failure goes on record for the pending sweep, as a
+    /// save's does (item 166's codex-28).
     func presentRecordNames(_ names: [String]) async -> Set<String>? {
         guard !names.isEmpty else { return [] }
-        guard let lease = await acquireCloudLease(), let database else { return nil }
+        guard let lease = await acquireCloudLease() else { return nil }
+        return await presentRecordNames(names, lease: lease)
+    }
+
+    /// The same under a lease the caller holds, with no identity lookup of its own (item 166's codex-24: the pending
+    /// sweep's pass asks under its own lease); nil too when that lease is no longer current.
+    func presentRecordNames(_ names: [String], lease: CloudEnrollment.Lease) async -> Set<String>? {
+        guard !names.isEmpty else { return [] }
+        guard enrollment.isCurrent(lease) else { return nil }
         do {
-            let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) }, desiredKeys: [])
+            guard let results = try await presenceResults(names) else { return nil }
             try requireCurrent(lease)
             var present = Set<String>()
-            for (id, result) in results {
+            var conclusive = true
+            // Every result is read, so each failure's wait goes on record: one met first hides none after it (codex-30).
+            for (name, result) in results {
                 switch result {
                 case .success:
-                    present.insert(id.recordName)
+                    present.insert(name)
                 case .failure(let error):
-                    guard (error as? CKError)?.code == .unknownItem else { return nil }
+                    if (error as? CKError)?.code == .unknownItem { continue }
+                    noteIfTransient(error)
+                    conclusive = false
                 }
             }
-            return present
+            return conclusive ? present : nil
         } catch {
+            noteIfTransient(error)
             return nil
         }
+    }
+
+    /// A transient failure of the presence fetch goes on record for the pending sweep, as a save's does (item 79): a
+    /// wait iCloud named reaches the follow-up, and closes the pass's door before its uploads (item 166's codex-28).
+    /// Each failure a partial one nests is read, and the longest wait stands (codex-30).
+    private func noteIfTransient(_ error: Error) {
+        for transient in Self.transientFailures(in: error) { noteTransientFailure(transient) }
+    }
+
+    /// Pure (unit-tested; item 166's codex-30): the transient failures `error` carries: its own, or each one a partial
+    /// failure nests, where `transientFailure(from:)` reads only the first it finds.
+    nonisolated static func transientFailures(in error: Error) -> [TransientFailure] {
+        if let ck = error as? CKError, ck.code == .partialFailure, let nested = ck.partialErrorsByItemID?.values {
+            return nested.flatMap { transientFailures(in: $0) }
+        }
+        return transientFailure(from: error).map { [$0] } ?? []
+    }
+
+    /// The presence check's fetch, fieldless: each name's result from the private database; nil with no database.
+    private func presenceResults(_ names: [String]) async throws -> [(String, Result<Void, any Error>)]? {
+        #if DEBUG
+        if let fetch = presenceFetchForTesting { return try await fetch(names) }
+        #endif
+        guard let database else { return nil }
+        let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) }, desiredKeys: [])
+        return results.map { ($0.key.recordName, $0.value.map { _ in () }) }
     }
 
     /// What an identity lookup found (item 152's lead 1; ADR 0039 amended for 1.8.1).
@@ -951,12 +1074,36 @@ final class CloudExfiltrator: ObservableObject {
         }
     }
 
+    /// The disarm signal alone, for a late disarm whose audit record has already landed: the pending sweep's one
+    /// "disarmed" alert, when the newest late disarm of the pass, which was to carry it, did not land (item 162's
+    /// ds4f1-1017-6). As in `pushStateChange`, its failure is logged and otherwise ignored.
+    func pushDisarmSignal(_ event: Event) async {
+        guard let kind = event.stateChange, Self.disarmSignalWanted(kind: kind) else { return }
+        let assertion = BackgroundAssertion.begin("malinois-state")
+        defer { assertion.end() }
+        guard let lease = await acquireCloudLease(), mayUpload(event, lease: lease) else { return }
+        _ = await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
+            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
+            let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
+            do {
+                try await save([signal], lease: lease, permitted: { backupPermits(event) })
+                return true
+            } catch {
+                Log.cloud.error("Late disarm signal push failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
+                return false
+            }
+        }
+    }
+
     // MARK: - Reading back (BACKLOG 9b)
 
-    /// A thumbnail is a few KB by construction (`CameraController.thumbnail`, JPEG q0.4 at
-    /// ≤200 px). A fetched "thumbnail" beyond this is not one — a corrupted or hand-crafted
-    /// record — and inlining it would bloat the log the mirror fetch is meant to keep small.
-    nonisolated static let maxThumbnailBytes = 512 * 1024
+    /// A thumbnail is at most 200 px, a JPEG at q0.4 (a still's, `CameraController.thumbnail`)
+    /// or q0.5 (a clip's, `videoThumbnail`): a few KB for a real scene, and about 21 KB and
+    /// 27 KB for pure noise, the most one can be. A fetched "thumbnail" beyond 64 KiB is not
+    /// one — a corrupted or hand-crafted record — and inlining it would bloat the log the
+    /// mirror fetch is meant to keep small. The bound was 512 KiB until 1.8.2's step 32 (item
+    /// 152's lead 9): each copy could then add about 683 KB to the log every launch reads whole.
+    nonisolated static let maxThumbnailBytes = 64 * 1024
 
     /// Upper bounds for cloud scalars (sixth review, F6). Generous by orders of magnitude —
     /// real revisions are 1–3 and counts grow one per trip — but bounded, because a giant
@@ -1001,11 +1148,25 @@ final class CloudExfiltrator: ObservableObject {
         min(start, (recordCreated ?? now).addingTimeInterval(86_400))
     }
 
+    /// A device label's bytes (1.8.2's step 32, item 152's lead 9): 64 characters can be any number of bytes, since
+    /// a letter with any number of accent marks is one character. 2,048 hold any real label (a phone sends at most 40
+    /// characters).
+    nonisolated static let maxDeviceNameBytes = 2_048
+
     /// Device labels from the cloud are display strings, not protocol — cap them (F6; the
-    /// outbound side is already sanitized at entry, this bounds a hand-crafted record).
+    /// outbound side is already sanitized at entry, this bounds a hand-crafted record): 64
+    /// characters and, since 1.8.2's step 32, `maxDeviceNameBytes`, cut between characters.
+    /// A label with nothing left reads as an empty one does.
     nonisolated static func sanitizedDeviceName(_ raw: String?) -> String {
         guard let raw, !raw.isEmpty else { return "another device" }
-        return String(raw.prefix(64))
+        var kept = ""
+        var bytes = 0
+        for character in raw.prefix(64) {
+            bytes += character.utf8.count
+            guard bytes <= maxDeviceNameBytes else { break }
+            kept.append(character)
+        }
+        return kept.isEmpty ? "another device" : kept
     }
 
     /// File size via metadata, checked BEFORE any read (sixth review, F6): a hostile
@@ -1047,11 +1208,12 @@ final class CloudExfiltrator: ObservableObject {
 
         // Unknown raw values are dropped: SensorType is a closed enum, so an older build
         // merging from a newer one cannot represent a sensor it has never heard of. Dropping
-        // loses a detail; inventing a case would corrupt the record.
-        let sensors = ((customField("triggeredSensors", of: record) as? String) ?? "")
+        // loses a detail; inventing a case would corrupt the record. Each tripwire is kept
+        // once (1.8.2's step 32, item 152's lead 12): a list naming one thousands of times
+        // names that one.
+        let sensors = Self.uniqueSensors(((customField("triggeredSensors", of: record) as? String) ?? "")
             .split(separator: ",")
-            .compactMap { SensorType(rawValue: String($0)) }
-            .sorted { $0.rawValue < $1.rawValue }
+            .compactMap { SensorType(rawValue: String($0)) })
 
         // The few-KB thumbnail rides the meta record, in the plain namespace in both
         // generations — a CKAsset cannot be encrypted, and does not need to be. The
@@ -1105,8 +1267,7 @@ final class CloudExfiltrator: ObservableObject {
             wrongPINCount = Self.validWrongPINCount(obj["wrongPINCount"] as? Int)
             thermalState = Self.validThermalState(obj["thermalState"] as? String)
             if let raw = obj["media"] as? [Any] {
-                let tokens = raw.compactMap { $0 as? String }
-                                .filter { Self.allowedMediaTokens.contains($0) }
+                let tokens = Self.uniqueMediaTokens(raw.compactMap { $0 as? String })
                 manifest = tokens.isEmpty ? nil : tokens
             }
         }
@@ -1153,6 +1314,37 @@ final class CloudExfiltrator: ObservableObject {
     /// construction on the retrieval side, so anything else is dropped, not obeyed (the
     /// validation-caps rule: allow-list whatever becomes an identifier).
     nonisolated static let allowedMediaTokens: Set<String> = ["front", "rear", "primary", "secondary"]
+
+    /// Pure (unit-tested): a media list's allowed names, each once, in the order it first came: four at most (1.8.2's
+    /// step 32, item 152's lead 11). The decoder's rule, and the download's (codex-13: whatever list a record holds).
+    nonisolated static func uniqueMediaTokens(_ raw: [String]) -> [String] {
+        var tokens: [String] = []
+        for token in raw where allowedMediaTokens.contains(token) && !tokens.contains(token) {
+            tokens.append(token)
+        }
+        return tokens
+    }
+
+    /// Pure (unit-tested): each tripwire once, in the decoder's order (1.8.2's step 32, item 152's lead 12).
+    nonisolated static func uniqueSensors(_ sensors: [SensorType]) -> [SensorType] {
+        Set(sensors).sorted { $0.rawValue < $1.rawValue }
+    }
+
+    /// A copy from iCloud held to what a real record carries, as the decoder holds a record it reads (1.8.2's step 32):
+    /// each tripwire and each media name once, a thumbnail of at most `maxThumbnailBytes`, a device name within
+    /// `sanitizedDeviceName`'s limits, and a status kind's number in its canonical form (`Event.canonicalStatusKind`).
+    /// For the copies an older version saved before those limits (codex-13 on 1.8.2, twice): the log applies it as it
+    /// loads. This iPhone's own records pass unchanged.
+    nonisolated static func boundedCopy(_ event: Event) -> Event {
+        guard event.isMirrored else { return event }
+        var copy = event
+        copy.triggeredSensors = uniqueSensors(event.triggeredSensors)
+        copy.cloudMediaManifest = event.cloudMediaManifest.map(uniqueMediaTokens).flatMap { $0.isEmpty ? nil : $0 }
+        if let thumbnail = event.thumbnailData, thumbnail.count > maxThumbnailBytes { copy.thumbnailData = nil }
+        copy.sourceDevice = sanitizedDeviceName(event.sourceDevice)
+        copy.stateChange = event.stateChange.map(Event.canonicalStatusKind)
+        return copy
+    }
     /// Camera display fields are narrower still: only the two real cameras.
     nonisolated static func validCameraToken(_ raw: String?) -> String? {
         raw.flatMap { $0 == "front" || $0 == "rear" ? $0 : nil }
@@ -1192,9 +1384,13 @@ final class CloudExfiltrator: ObservableObject {
                "reinstalled",   // item 148's 5
                "pinChanged", "guidedAccessEnded",   // item 153's MAL-03 and MAL-05
                "unsyncedRemoved",   // item 114
+               "reArmSkipped",   // item 153's MAL-10
+               "settingsReset",   // codex-10
                Event.backupOffKind, Event.backupOnKind].contains(kind)   // item 115
-                || Event.protectionChangeKinds.contains(kind)   // item 91
+                || Event.isProtectionChangeKind(kind)   // item 91; the seven settings since 1.8.2's step 22
                 || Event.clockChangeSeconds(kind: kind) != nil   // item 113
+                || Event.resumedSeconds(kind: kind) != nil   // item 153's MAL-06
+                || Event.sirenElsewhereDevice(kind: kind) != nil   // 1.8.2's step 26 (ADR 0062)
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,
@@ -1353,7 +1549,8 @@ final class CloudExfiltrator: ObservableObject {
     /// name from unvalidated input.
     nonisolated static func fullMediaRecordNames(for eventID: UUID,
                                                  manifest: [String]? = nil) -> [String] {
-        let slots = manifest ?? ["front", "rear", "primary", "secondary"]
+        // Each allowed name once, whatever list the record holds (codex-13 on 1.8.2: a list saved before the limits).
+        let slots = manifest.map(uniqueMediaTokens) ?? ["front", "rear", "primary", "secondary"]
         return slots.map { "photo-\($0)-v2-" + eventID.uuidString }
              + slots.map { "photo-\($0)-" + eventID.uuidString }
     }
@@ -1398,6 +1595,9 @@ final class CloudExfiltrator: ObservableObject {
         guard let lease = await acquireCloudLease(), enrollment.authorizeRecord(eventID, lease: lease),
               let database else { return nil }
         let names = Self.fullMediaRecordNames(for: eventID, manifest: manifest)
+        // No name to ask for (this iPhone's record that names no camera, `Event.downloadManifest`):
+        // every candidate is checked, and none holds a capture.
+        guard !names.isEmpty else { return FullMediaFetch(media: [], complete: true) }
         do {
             let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) })
             try requireCurrent(lease)
@@ -1613,7 +1813,10 @@ final class CloudExfiltrator: ObservableObject {
     /// (`beatTrimStep`, `beatTailVerdict`), whatever the caller asks (as in `purgeFullMedia`), so
     /// every beat newer than it is kept, in any mode. The month policy is evaluated against
     /// a CloudKit system-date lower bound; device time only influences the caller's scheduling.
-    func trimBeatTrails(_ sessions: [BeatSession], monthsOld months: Int) async -> [UUID: BeatTrimOutcome] {
+    /// `stillWanted`: whether the owner's setting still asks for this trim, asked before each batch of deletions (item
+    /// 169's codex-2): a setting changed while the trim waits on iCloud stops what it has not sent.
+    func trimBeatTrails(_ sessions: [BeatSession], monthsOld months: Int,
+                        stillWanted: @MainActor () -> Bool = { true }) async -> [UUID: BeatTrimOutcome] {
         var outcomes: [UUID: BeatTrimOutcome] = [:]
         guard !sessions.isEmpty else { return outcomes }
         guard let access = await retentionAccess() else {
@@ -1631,7 +1834,8 @@ final class CloudExfiltrator: ObservableObject {
                 outcomes[session.id] = .failed
                 continue
             }
-            outcomes[session.id] = await trimBeatTrail(session, requestedCutoff: cutoff, now: serverDate, using: access)
+            outcomes[session.id] = await trimBeatTrail(session, requestedCutoff: cutoff, now: serverDate, using: access,
+                                                       stillWanted: stillWanted)
         }
         let done = outcomes.values.filter { $0 == .trimmed }.count
         Log.cloud.info("Beat trails: \(done, privacy: .public) of \(sessions.count, privacy: .public) watch(es) trimmed")
@@ -1644,7 +1848,7 @@ final class CloudExfiltrator: ObservableObject {
     /// fetch or a delete failed or stalled, or its latest record came back without its time or
     /// its number.
     private func trimBeatTrail(_ session: BeatSession, requestedCutoff: Date, now: Date,
-                               using access: RetentionAccess) async -> BeatTrimOutcome {
+                               using access: RetentionAccess, stillWanted: @MainActor () -> Bool) async -> BeatTrimOutcome {
         guard access.isCurrent(), access.permitsSession(session) else { return .failed }
         let latestName = Self.latestBeatRecordName(session: session.id)
         guard let latest = await access.beatRecords([latestName], false), access.isCurrent() else { return .failed }
@@ -1667,7 +1871,7 @@ final class CloudExfiltrator: ObservableObject {
         let ids = Self.beatTrailRecordNames(session: session.id, through: upper).map { CKRecord.ID(recordName: $0) }
         var failed = false
         for chunk in stride(from: 0, to: ids.count, by: 200).map({ Array(ids[$0..<min($0 + 200, ids.count)]) }) {
-            guard access.isCurrent() else { return .failed }
+            guard access.isCurrent(), stillWanted() else { return .failed }
             failed = await access.delete(chunk).failed || failed
         }
         return (failed || !access.isCurrent()) ? .failed : .trimmed
@@ -1888,7 +2092,10 @@ final class CloudExfiltrator: ObservableObject {
     /// (indexed) meta records oldest-first, and their photo records are addressed by their
     /// deterministic names — the same no-query, no-schema-dependency trick as retrieval
     /// (ADR 0002), so this touches nothing that could fail silently in Production.
-    func purgeFullMedia(monthsOld months: Int) async -> CloudPurgeResult {
+    /// `stillWanted`: whether the owner's setting still asks for this purge, asked before each batch of deletions (item
+    /// 169's codex-2): Keep forever, Manual or another period chosen while the purge waits on iCloud stops what it has
+    /// not sent. The owner's explicit purge in Settings asks nothing more.
+    func purgeFullMedia(monthsOld months: Int, stillWanted: @MainActor () -> Bool = { true }) async -> CloudPurgeResult {
         guard let access = await retentionAccess() else {
             return CloudPurgeResult(eventsExamined: 0, recordsDeleted: 0, failed: true)
         }
@@ -1922,7 +2129,7 @@ final class CloudExfiltrator: ObservableObject {
         var deleteFailed = false
         for chunk in stride(from: 0, to: photoIDs.count, by: 200)
             .map({ Array(photoIDs[$0..<min($0 + 200, photoIDs.count)]) }) {
-            guard access.isCurrent() else {
+            guard access.isCurrent(), stillWanted() else {
                 return CloudPurgeResult(eventsExamined: eventIDs.count, recordsDeleted: deleted, failed: true)
             }
             let result = await access.delete(chunk)
@@ -2190,9 +2397,11 @@ final class CloudExfiltrator: ObservableObject {
 
     /// Races an operation against a stall deadline (`awaitWithDeadline`'s shape, with progress; item 152's lead 2):
     /// the clock restarts whenever `progressed` is called, and `cap` bounds the whole wait. With no progress
-    /// reported, or a cap equal to the stall, it is the fixed deadline it replaces.
+    /// reported, or a cap equal to the stall, it is the fixed deadline it replaces. Timed on `ContinuousClock`, which
+    /// no setting moves (item 162's A11); `now` is for tests.
     static func awaitWithStallDeadline<T: Sendable>(
         stall: TimeInterval, cap: TimeInterval,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
         onDeadline: @escaping @Sendable () -> Void,
         timeoutError: Error,
         start: (_ resume: @escaping @Sendable (Result<T, Error>) -> Void,
@@ -2200,7 +2409,7 @@ final class CloudExfiltrator: ObservableObject {
     ) async throws -> T {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
             let latch = ResumeLatch()
-            let clock = StallClock()
+            let clock = StallClock(now: now)
             start({ result in
                 guard latch.claim() else { return }
                 cont.resume(with: result)
@@ -2219,19 +2428,28 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     /// The stall deadline's clock: when the wait began, and when progress was last reported (CloudKit's progress
-    /// block runs off the main actor).
-    private final class StallClock: @unchecked Sendable {
+    /// block runs off the main actor), on `ContinuousClock`. On the calendar clock (item 162's A11), a clock set back
+    /// during a stalled save lengthened its wait by up to the change, and one set forward cut the save short.
+    final class StallClock: @unchecked Sendable {
         private let lock = NSLock()
-        private let began = Date()
-        private var lastProgress = Date()
+        private let now: @Sendable () -> ContinuousClock.Instant
+        private let began: ContinuousClock.Instant
+        private var lastProgress: ContinuousClock.Instant
 
-        func noteProgress() { lock.withLock { lastProgress = Date() } }
+        /// `now` is for tests.
+        init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
+            self.now = now
+            began = now()
+            lastProgress = began
+        }
+
+        func noteProgress() { lock.withLock { lastProgress = now() } }
 
         /// Seconds until the deadline: the stall since the last progress, within the cap since the start.
         func remaining(stall: TimeInterval, cap: TimeInterval) -> TimeInterval {
             lock.withLock {
-                let now = Date()
-                return min(stall - now.timeIntervalSince(lastProgress), cap - now.timeIntervalSince(began))
+                let instant = now()
+                return min(stall - (instant - lastProgress) / .seconds(1), cap - (instant - began) / .seconds(1))
             }
         }
     }
@@ -2502,7 +2720,15 @@ final class CloudExfiltrator: ObservableObject {
     /// the change landed so Settings can say so — a failed OFF has no backstop (arm and
     /// reconnect are create-only), so the owner must retry the flip. OFF requires fresh
     /// device-owner authentication and an unchanged account; background paths never prompt.
+    /// A change under way supersedes the automatic setups in flight (`automaticSetupWanted`,
+    /// codex-21): the switch reads the old choice until this returns.
     func setCrossDeviceAlerts(_ enabled: Bool) async -> Bool {
+        alertsChoiceChanges += 1
+        alertsChoiceChangesUnderWay += 1
+        defer {
+            alertsChoiceChangesUnderWay -= 1
+            alertsChoiceChanges += 1
+        }
         guard let lease = await acquireCloudLease() else { return false }
         if enabled { return await ensureSubscription(lease: lease) }
         guard let control = await enrollment.authorizeAccountControl(account: lease.account),
@@ -2520,10 +2746,11 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     /// Pure (unit-tested): the disarm subscription (BACKLOG 59) — `disarmSignalRecordTypeV2`,
-    /// match everything (only disarms are ever written to it), the same static shape.
+    /// match everything (only disarms and cancelled countdowns are written to it), the same static
+    /// shape; its sentence names both (item 156, the owner's wording).
     nonisolated static func makeDisarmSubscription() -> CKQuerySubscription {
         makeSubscription(recordType: disarmSignalRecordTypeV2, id: disarmSubscriptionID,
-                         body: "Malinois was disarmed on one of your devices.")
+                         body: "Malinois was disarmed, or arming was cancelled, on one of your devices.")
     }
 
     private nonisolated static func makeSubscription(recordType: String, id: String,
@@ -2545,24 +2772,43 @@ final class CloudExfiltrator: ObservableObject {
         return subscription
     }
 
-    /// Pure (unit-tested): which of the two current subscriptions to save, given each existing ID
-    /// and whether it already sends mutable pushes, in the order they are established — tamper
-    /// first, so the alert that has shipped since 1.0 never waits on the newer one. A missing one
-    /// is created; one without mutable pushes (made by 1.3.x) is saved again under its own ID
-    /// (item 76), which replaces it: a new ID would make a device still on 1.3.x, which creates
-    /// only missing IDs, add the old one back, and a mixed account would get two alerts per event.
-    nonisolated static func subscriptionsToSave(existing: [String: Bool]) -> [CKQuerySubscription] {
-        [makeTamperSubscription(), makeDisarmSubscription()].filter { existing[$0.subscriptionID] != true }
+    /// Pure (unit-tested): which of the two current subscriptions to save, given what the account
+    /// already has, in the order they are established — tamper first, so the alert that has
+    /// shipped since 1.0 never waits on the newer one. A missing one is created; one without
+    /// mutable pushes (made by 1.3.x) is saved again under its own ID (item 76), which replaces
+    /// it: a new ID would make a device still on 1.3.x, which creates only missing IDs, add the
+    /// old one back, and a mixed account would get two alerts per event. One that alerts with a
+    /// retired sentence is saved again the same way (item 156), and only a sentence this build
+    /// knows to be retired: a later build's is left alone, so devices on two builds never take
+    /// turns saving their own.
+    nonisolated static func subscriptionsToSave(existing: [String: StoredSubscription]) -> [CKQuerySubscription] {
+        [makeTamperSubscription(), makeDisarmSubscription()].filter { wanted in
+            guard let stored = existing[wanted.subscriptionID] else { return true }
+            return !stored.mutable || stored.body.map(retiredSubscriptionBodies.contains) == true
+        }
+    }
+
+    /// Sentences an earlier build's subscriptions alerted with (item 156): 1.8.1's disarm sentence,
+    /// which did not say that a cancelled countdown sends the alert too.
+    nonisolated static let retiredSubscriptionBodies: Set<String> = ["Malinois was disarmed on one of your devices."]
+
+    /// What `subscriptionsToSave` reads of a subscription the account already has: whether it sends mutable pushes,
+    /// and the sentence it alerts with.
+    struct StoredSubscription: Equatable, Sendable {
+        let mutable: Bool
+        let body: String?
     }
 
     @discardableResult
-    private func ensureSubscription(lease: CloudEnrollment.Lease) async -> Bool {
-        guard enrollment.isCurrent(lease), let database else { return false }
+    private func ensureSubscription(lease: CloudEnrollment.Lease,
+                                    stillWanted: @MainActor () -> Bool = { true }) async -> Bool {
+        guard enrollment.isCurrent(lease) else { return false }
         let existing: [CKSubscription]
         do {
-            existing = try await database.allSubscriptions()
+            existing = try await allSubscriptions()
             try requireCurrent(lease)
         } catch { return false }
+        guard stillWanted() else { return false }   // asked again after the fetch, and before each save (codex-19)
         let existingIDs = Set(existing.map(\.subscriptionID))
         // The 1.0 subscription watched the plaintext meta type, which nothing writes to any
         // more. Left in place it would sit there firing on nothing, so it goes as soon as its
@@ -2576,16 +2822,31 @@ final class CloudExfiltrator: ObservableObject {
         // may not be deployed yet (BACKLOG 59's Production prerequisite), and its failure must
         // not take the tamper alert down with it. The result reported to Settings is the
         // combined result; either subscription's failure remains visible and retryable.
-        let mutableByID = Dictionary(existing.map { ($0.subscriptionID, $0.notificationInfo?.shouldSendMutableContent ?? false) },
-                                     uniquingKeysWith: { first, _ in first })
-        for subscription in Self.subscriptionsToSave(existing: mutableByID) {
+        let storedByID = Dictionary(existing.map { subscription in
+            (subscription.subscriptionID, StoredSubscription(mutable: subscription.notificationInfo?.shouldSendMutableContent ?? false,
+                                                             body: subscription.notificationInfo?.alertBody))
+        }, uniquingKeysWith: { first, _ in first })
+        for subscription in Self.subscriptionsToSave(existing: storedByID) {
+            guard stillWanted() else { return false }
             let saved = await saveSubscription(subscription, lease: lease)
             allSucceeded = saved && allSucceeded
         }
         return allSucceeded && enrollment.isCurrent(lease)
     }
 
+    /// The account's subscriptions, as CloudKit lists them.
+    private func allSubscriptions() async throws -> [CKSubscription] {
+        #if DEBUG
+        if let existing = existingSubscriptionsForTesting { return try await existing() }
+        #endif
+        guard let database else { throw CKError(.notAuthenticated) }
+        return try await database.allSubscriptions()
+    }
+
     private func saveSubscription(_ subscription: CKQuerySubscription, lease: CloudEnrollment.Lease) async -> Bool {
+        #if DEBUG
+        if let save = subscriptionSaveForTesting { return enrollment.isCurrent(lease) ? await save(subscription) : false }
+        #endif
         guard enrollment.isCurrent(lease), let database else { return false }
         do {
             let op = CKModifySubscriptionsOperation(subscriptionsToSave: [subscription])
@@ -2628,6 +2889,9 @@ final class CloudExfiltrator: ObservableObject {
     /// to remove — which is why this is safe to call speculatively.
     @discardableResult
     private func deleteSubscriptions(_ ids: [String], lease: CloudEnrollment.Lease) async -> Bool {
+        #if DEBUG
+        if let remove = subscriptionRemovalForTesting { return enrollment.isCurrent(lease) ? await remove(ids) : false }
+        #endif
         guard enrollment.isCurrent(lease), let database else { return false }
         let op = CKModifySubscriptionsOperation(subscriptionIDsToDelete: ids)
         op.qualityOfService = .utility

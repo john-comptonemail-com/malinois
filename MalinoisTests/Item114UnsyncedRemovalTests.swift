@@ -111,7 +111,7 @@ final class Item114UnsyncedRemovalTests: XCTestCase {
 
     // MARK: - The marker
 
-    /// Only first-hand incidents this phone was meant to upload count.
+    /// Only first-hand records this phone was meant to upload count; since 1.8.2 status records too (item 169's codex-1).
     func testOnlyEvidenceMeantForICloudCounts() {
         let meant = incident()
         let synced = incident(sync: .synced)
@@ -125,8 +125,8 @@ final class Item114UnsyncedRemovalTests: XCTestCase {
         let missed = MonitoringEngine.missedUploads(
             in: [meant, synced, mirrored, flood, status, unknownAccount, differentAccount, unverified],
             holdReason: { holds[$0.id] })
-        XCTAssertEqual(Set(missed.map(\.id)), [meant.id, unverified.id],
-                       "pending and waiting-for-verification count; held-for-good, synced, mirrored, flood and status do not")
+        XCTAssertEqual(Set(missed.map(\.id)), [meant.id, unverified.id, status.id],
+                       "pending, waiting-for-verification and status count; held-for-good, synced, mirrored and flood do not")
     }
 
     /// One marker per watch; while disarmed, one a day.

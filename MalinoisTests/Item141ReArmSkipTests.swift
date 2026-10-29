@@ -6,7 +6,9 @@
 //  crash-loop guard declines an automatic re-arm (two attempts within 90 seconds), nothing said so; Home showed at most
 //  "Recovered an interrupted armed session". Now Home says the re-arm was skipped, and why; a re-arm that runs says
 //  nothing of the kind, and the owner's next arm clears it. Driven through a real engine's launch recovery. Written
-//  before the change, red at that commit (against compile-only stubs).
+//  before the change, red at that commit (against compile-only stubs). Item 132's remainder and item 153's MAL-10
+//  (1.8.2's step 20): the skip also leaves a silent record in the Event Log, read back on the owner's other devices
+//  with no alert; those tests too were red at their commit.
 //
 
 import SwiftUI
@@ -68,6 +70,40 @@ final class Item141ReArmSkipTests: XCTestCase {
     func testTheNoticeGivesTheRule() {
         XCTAssertTrue(HomeView.reArmSkippedNotice.contains("90 seconds"), HomeView.reArmSkippedNotice)
         XCTAssertTrue(HomeView.reArmSkippedNotice.contains("Arm it again"), HomeView.reArmSkippedNotice)
+    }
+
+    // MARK: - The Event Log's record (item 132's remainder; item 153's MAL-10)
+
+    /// The skip leaves a quiet status entry, in Home's words.
+    func testASkippedReArmLeavesARecordInTheLog() {
+        owe(lastAttemptSecondsAgo: 10)
+        let rig = launch()
+        XCTAssertTrue(pump(until: { rig.engine.reArmSkipped }, timeout: 3))
+        let record = rig.store.events.first { $0.stateChange == "reArmSkipped" }
+        XCTAssertNotNil(record, "the skip is in the log")
+        XCTAssertEqual(record?.sensorSummary,
+                       "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming itself")
+    }
+
+    /// A re-arm that runs leaves no such record.
+    func testAReArmThatRunsLeavesNoRecord() {
+        owe(lastAttemptSecondsAgo: 600)
+        let rig = launch()
+        XCTAssertTrue(pump(until: { rig.engine.state == .arming }, timeout: 3))
+        XCTAssertFalse(rig.store.events.contains { $0.stateChange == "reArmSkipped" })
+        rig.engine.disarm()
+    }
+
+    /// The owner's other devices read it back from iCloud, with no alert there or on the watch; it has an icon of its own.
+    func testTheRecordIsReadBackElsewhereWithNoAlert() {
+        let event = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .pending,
+                          stateChange: "reArmSkipped")
+        let record = CloudExfiltrator.makeStateRecord(event, kind: "reArmSkipped", deviceName: "iPhone Air")
+        XCTAssertEqual(CloudExfiltrator.stateEvent(from: record)?.stateChange, "reArmSkipped")
+        XCTAssertFalse(CloudExfiltrator.disarmSignalWanted(kind: "reArmSkipped"), "no disarm alert through iCloud")
+        XCTAssertTrue(WatchAlertRelay.alerts(for: [event], alertsOn: true, proActive: true).isEmpty, "nothing to the watch")
+        XCTAssertEqual(EventRow.placeholderIcon(for: "reArmSkipped"), "exclamationmark.arrow.triangle.2.circlepath",
+                       "Home's notice's own symbol")
     }
 
     // MARK: - Helpers

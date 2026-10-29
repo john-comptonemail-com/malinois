@@ -9,8 +9,9 @@
 //  new PIN, "guidedAccessEnded" when Guided Access goes from on to off while the watch is live (not while disarmed,
 //  not during the countdown, not for off to on, once per ending), both allow-listed in the cloud decoder, with their
 //  log sentences and icons, no alert anywhere. The rigs are trial installs verified on "account-A" with saves landing
-//  at once, so the push can be seen land (CloudKit is absent from the Simulator). ChangePINView's call is checked
-//  in its source. Written before the change, red at that commit (against compile-only stubs).
+//  at once, so the push can be seen land (CloudKit is absent from the Simulator). Written before the change, red at
+//  that commit (against compile-only stubs). Item 162's G1 (1.8.2's step 21): ChangePINView's call was checked in its
+//  source; Change PIN's save and its record are now one engine step (`changePIN`), driven here, red at its commit too.
 //
 
 import XCTest
@@ -40,7 +41,8 @@ final class Item153StatusRecordsTests: XCTestCase {
     // MARK: - Helpers
 
     /// A trial install verified on "account-A" whose saves land at once; Guided Access not required, no grace unless asked.
-    private func makeRig(grace: Int = 0) async -> Rig {
+    /// `review`: the calibration review's length, for a test that acts during it (the fast timing holds it 0.1 s).
+    private func makeRig(grace: Int = 0, review: TimeInterval? = nil) async -> Rig {
         let root = EventStore.rootOverrideForTesting ?? FileManager.default.temporaryDirectory
         let enrollment = CloudEnrollment(file: root.appendingPathComponent("enrollment-153/state.json"),
                                          authenticate: { _ in true })
@@ -52,11 +54,12 @@ final class Item153StatusRecordsTests: XCTestCase {
         settings.requireGuidedAccess = false
         settings.responseMode = .alert
         let store = EventStore()
+        var timing = EngineCharacterizationTests.fastTiming
+        if let review { timing.calibrationReview = review }
         let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: cloud,
                                                           camera: FakeCamera(),
                                                           entitlements: ProEntitlements(resolvedAs: .trial),
-                                                          timing: EngineCharacterizationTests.fastTiming,
-                                                          thermalState: { .nominal }))
+                                                          timing: timing, thermalState: { .nominal }))
         let enrolled = await cloud.enrollCloudAccess()
         XCTAssertTrue(enrolled, "the verification succeeded")
         await engine.cloudAccessVerified()
@@ -89,25 +92,32 @@ final class Item153StatusRecordsTests: XCTestCase {
 
     // MARK: - A PIN change
 
-    /// A change saved in Settings leaves one "pinChanged" status entry.
+    /// A change saved in Settings leaves one "pinChanged" status entry: Change PIN saves through the engine, which
+    /// records the change as it saves it (item 162's G1).
     func testAPINChangeWritesOneRecord() async {
         let rig = await makeRig()
-        rig.engine.notePINChanged()
+        XCTAssertTrue(rig.engine.changePIN(to: "4821", save: { _ in true }), "saved")
         let written = records(rig, "pinChanged")
         XCTAssertEqual(written.count, 1, "one record")
         XCTAssertTrue(written.first?.isStateChange == true, "a status entry, not an event")
     }
 
-    /// ChangePINView tells the engine when the new PIN is saved, before it dismisses (checked in its source: the view
-    /// needs a PIN pad and a Keychain).
-    func testChangePINTellsTheEngineWhenTheNewPINIsSaved() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Malinois/Views/SettingsView.swift"), encoding: .utf8)
-        let view = try XCTUnwrap(source.range(of: "struct ChangePINView: View {"), "the view is where it was")
-        let body = String(source[view.upperBound...].prefix(1_200))
-        let note = try XCTUnwrap(body.range(of: "engine.notePINChanged()"), "the view tells the engine")
-        let dismiss = try XCTUnwrap(body[note.upperBound...].range(of: "dismiss()"), "and then dismisses")
-        XCTAssertLessThan(note.lowerBound, dismiss.lowerBound)
+    /// A save that fails changes nothing and records nothing; Change PIN's pad then asks again.
+    func testAFailedPINSaveWritesNoRecord() async {
+        let rig = await makeRig()
+        XCTAssertFalse(rig.engine.changePIN(to: "4821", save: { _ in false }), "not saved")
+        XCTAssertTrue(records(rig, "pinChanged").isEmpty, "nothing changed, nothing recorded")
+    }
+
+    /// Change PIN saves in the Keychain unless told otherwise: the new PIN then opens the pads, and the change is on
+    /// the record.
+    func testChangePINSavesTheNewPINInTheKeychain() async throws {
+        defer { KeychainService.wipeStalePINData() }
+        try XCTSkipUnless(KeychainService.setPIN("1111"), "Keychain unavailable")
+        let rig = await makeRig()
+        XCTAssertTrue(rig.engine.changePIN(to: "4821"), "saved")
+        XCTAssertTrue(KeychainService.verify("4821"), "the new PIN opens the pads")
+        XCTAssertEqual(records(rig, "pinChanged").count, 1, "on the record")
     }
 
     // MARK: - Guided Access ending during a watch
@@ -202,7 +212,7 @@ final class Item153StatusRecordsTests: XCTestCase {
     /// record, once; reaching armed and a later re-sample add none. Red at the step's red commit: the record came
     /// only while armed or triggered.
     func testGuidedAccessEndingDuringTheCalibrationReviewIsRecorded() async {
-        let rig = await makeRig()
+        let rig = await makeRig(review: 2)   // long enough to act in, short enough to reach armed (item 168's deepseek-flash-2)
         defer { rig.engine.disarm() }
         rig.engine.simulateGuidedAccessForTesting(on: true)
         rig.engine.beginArming()

@@ -75,6 +75,62 @@ final class Item57WatchRelayTests: XCTestCase {
         XCTAssertEqual(sent.map(\.kind), [.tamper, .disarm])
     }
 
+    // MARK: - Item 152's lead 19 (1.8.2's step 11): the launch window before the first Pro check
+
+    private func makeRelay(_ entitlements: ProEntitlements, store: EventStore,
+                           into sent: @escaping (WatchAlertMessage) -> Void) -> WatchAlertRelay {
+        let settings = AppSettings()
+        settings.notifyOtherDevices = true
+        let relay = WatchAlertRelay(store: store, settings: settings, entitlements: entitlements, send: sent)
+        relay.start()
+        return relay
+    }
+
+    /// An incident logged before the first Pro check resolves (a cold launch's interruption record) is held, not
+    /// dropped, and sent once the check says Pro is on; later incidents go as before. Red at the step's red commit: it
+    /// was marked handled while Pro still read as off, and never sent.
+    func testAnIncidentLoggedBeforeTheProCheckIsSentOnceItResolves() {
+        let store = EventStore()
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        var sent: [WatchAlertMessage] = []
+        let relay = makeRelay(entitlements, store: store) { sent.append($0) }
+        let record = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], interrupted: true)
+        store.add(record)
+        XCTAssertTrue(sent.isEmpty, "not before the check says whether Pro is on")
+        entitlements.resolveForTesting(as: .earlyAccess)
+        XCTAssertEqual(sent.map(\.eventID), [record.id], "sent once it resolves")
+        let trip = event()
+        store.add(trip)
+        XCTAssertEqual(sent.map(\.eventID), [record.id, trip.id], "and the relay goes on as before")
+        withExtendedLifetime(relay) {}
+    }
+
+    /// What waits for the first Pro check is bounded, as the watch link's own outbox is: at most 20, the newest kept
+    /// (Codex's note on step 11).
+    func testAtMostTwentyIncidentsWaitForTheProCheck() {
+        let store = EventStore()
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        var sent: [WatchAlertMessage] = []
+        let relay = makeRelay(entitlements, store: store) { sent.append($0) }
+        let incidents = (0..<25).map { _ in event() }
+        for incident in incidents { store.add(incident) }
+        entitlements.resolveForTesting(as: .earlyAccess)
+        XCTAssertEqual(sent.map(\.eventID), incidents.suffix(20).map(\.id))
+        withExtendedLifetime(relay) {}
+    }
+
+    /// A check that resolves without Pro sends nothing for the held incident, as for any incident without Pro.
+    func testAnIncidentHeldForAProCheckThatFindsNoProIsNotSent() {
+        let store = EventStore()
+        let entitlements = ProEntitlements.unresolvedForTesting()
+        var sent: [WatchAlertMessage] = []
+        let relay = makeRelay(entitlements, store: store) { sent.append($0) }
+        store.add(event())
+        entitlements.resolveForTesting(as: .free)
+        XCTAssertTrue(sent.isEmpty)
+        withExtendedLifetime(relay) {}
+    }
+
     // MARK: - The message
 
     /// The watch shows the iCloud alerts' own fixed texts: no device, sensor or evidence detail.

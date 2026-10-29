@@ -591,6 +591,168 @@ final class EventTests: XCTestCase {
         XCTAssertEqual(relaunched.events.first?.mediaFilename, media.filename)
     }
 
+    // MARK: - codex-18: the load's write-back and a journal-only incident's photo
+
+    /// An incident only the birth journal knows (its log write was lost), its photo saved and committed, beside another
+    /// device's status copy in the old log.
+    private struct JournalOnlyIncident {
+        let event: Event
+        let media: EventStore.StoredMedia
+        let manifest: URL
+        let log: URL
+        let copy: Event
+    }
+
+    /// The fixture of Codex's codex-18 on ab40872: the old log holds only the other device's copy, with the status kind
+    /// `copyKind` (by default one an older version saved with its number padded, which the load writes back in its
+    /// canonical form); the journal holds the incident; its photo's attachment intent is `intentAge` old and the photo
+    /// two days old.
+    @MainActor
+    private func oldLogWithAJournalOnlyIncident(copyKind: String = "clockChanged." + String(repeating: "0", count: 1_000) + "60",
+                                                intentAge: TimeInterval = 31 * 86_400) async throws -> JournalOnlyIncident {
+        let (original, event, media, manifest) = try await pendingRecovery()
+        original.drainIOForTesting()
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let log = root.appendingPathComponent("events.json")
+        let at = event.startDate.addingTimeInterval(-60)
+        let copy = Event(startDate: at, endDate: at, triggeredSensors: [], cloudSyncState: .synced,
+                         stateChange: copyKind, sourceDevice: "iPad")
+        try JSONEncoder().encode([copy]).write(to: log, options: .atomic)
+        try XCTUnwrap(EventStore.journalLine(for: event)).write(to: root.appendingPathComponent("events.journal"))
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -intentAge)],
+                                              ofItemAtPath: manifest.path)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -2 * 86_400)],
+                                              ofItemAtPath: original.mediaDirectory.appendingPathComponent(media.filename).path)
+        return JournalOnlyIncident(event: event, media: media, manifest: manifest, log: log, copy: copy)
+    }
+
+    /// The incident keeps its photo, in memory, on disk and in the log on disk, and the copy is on disk in its
+    /// canonical form.
+    @MainActor
+    private func assertKeepsItsPhoto(_ store: EventStore, _ fixture: JournalOnlyIncident,
+                                     file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertEqual(store.events.first { $0.id == fixture.event.id }?.mediaFilename, fixture.media.filename,
+                       "the incident keeps its photo", file: file, line: line)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.mediaDirectory.appendingPathComponent(fixture.media.filename).path),
+                      "the photo is kept", file: file, line: line)
+        let onDisk = try JSONDecoder().decode([Event].self, from: Data(contentsOf: fixture.log))
+        XCTAssertEqual(onDisk.first { $0.id == fixture.event.id }?.mediaFilename, fixture.media.filename,
+                       "the log on disk holds the attachment", file: file, line: line)
+        XCTAssertEqual(onDisk.first { $0.id == fixture.copy.id }?.stateChange, "clockChanged.60",
+                       "and the copy, in its canonical form", file: file, line: line)
+    }
+
+    /// codex-18 on ab40872: the load wrote the held copy back before journal and attachment recovery, and that write's
+    /// checkpoint aged out the photo's attachment intent (the incident was not in what it wrote), so the photo left the
+    /// record and the launch's sweep deleted it. Now the incident keeps its photo.
+    @MainActor
+    func testANormalizedOldLogKeepsAJournalOnlyIncidentsPhoto() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident()
+        let relaunched = EventStore()
+        relaunched.drainIOForTesting()
+        try assertKeepsItsPhoto(relaunched, fixture)
+    }
+
+    /// codex-18, the launch before the first unlock: the log and the journal sealed, the load waits, and at the unlock
+    /// the incident keeps its photo too.
+    @MainActor
+    func testANormalizedOldLogKeepsAJournalOnlyIncidentsPhotoAfterTheUnlock() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident()
+        let journal = fixture.log.deletingLastPathComponent().appendingPathComponent("events.journal")
+        let oldLog = try Data(contentsOf: fixture.log)
+        let oldJournal = try Data(contentsOf: journal)
+        try FileManager.default.removeItem(at: fixture.log)
+        try FileManager.default.createDirectory(at: fixture.log, withIntermediateDirectories: false)   // cannot be read
+        try FileManager.default.removeItem(at: journal)
+        let locked = EventStore(protectedDataAvailable: { false })
+        XCTAssertFalse(locked.hasReadTheLog, "the load waits for the unlock")
+        try FileManager.default.removeItem(at: fixture.log)
+        try oldLog.write(to: fixture.log)
+        try oldJournal.write(to: journal)
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        for _ in 0..<100 where !locked.hasReadTheLog {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(locked.hasReadTheLog, "the unlock runs the load")
+        locked.drainIOForTesting()
+        try assertKeepsItsPhoto(locked, fixture)
+    }
+
+    /// codex-18 at the unlock with a record queued while locked (Codex's coverage note on b4d59c5): the record, held only
+    /// in memory because the journal could not be written either, is in the log the unlock writes, and the journal-only
+    /// incident keeps its photo; the held copy's write-back comes before the write that adds the queued record.
+    @MainActor
+    func testANormalizedOldLogKeepsAJournalOnlyIncidentsPhotoAfterTheUnlockWithARecordQueued() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident()
+        let journal = fixture.log.deletingLastPathComponent().appendingPathComponent("events.journal")
+        let oldLog = try Data(contentsOf: fixture.log)
+        let oldJournal = try Data(contentsOf: journal)
+        for url in [fixture.log, journal] {   // the log cannot be read, nor the journal written
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        }
+        let locked = EventStore(protectedDataAvailable: { false })
+        let queued = logEntry(1, stateChange: "interrupted")
+        locked.add(queued)   // as a launch before the first unlock records an interrupted session
+        XCTAssertFalse(locked.hasReadTheLog, "the load waits for the unlock")
+        for url in [fixture.log, journal] { try FileManager.default.removeItem(at: url) }
+        try oldLog.write(to: fixture.log)
+        try oldJournal.write(to: journal)
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        for _ in 0..<100 where !locked.hasReadTheLog {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(locked.hasReadTheLog, "the unlock runs the load")
+        locked.drainIOForTesting()
+        try assertKeepsItsPhoto(locked, fixture)
+        let onDisk = try JSONDecoder().decode([Event].self, from: Data(contentsOf: fixture.log))
+        XCTAssertTrue(onDisk.contains { $0.id == queued.id }, "the record queued while locked is in the log on disk")
+    }
+
+    /// codex-18 across a failed write: while the log cannot be replaced no write's checkpoint runs, so the launch keeps
+    /// the photo in memory and its attachment intent, as before the fix; once the folder is writable again, the next
+    /// launch keeps it too, and writes both back.
+    @MainActor
+    func testANormalizedOldLogKeepsAJournalOnlyIncidentsPhotoAcrossAFailedWrite() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident()
+        let root = fixture.log.deletingLastPathComponent()
+        let oldLog = try Data(contentsOf: fixture.log)
+        let permissions = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions])
+        defer { try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+        XCTAssertThrowsError(try oldLog.write(to: fixture.log, options: .atomic), "replacement must actually fail")
+        let interrupted = EventStore()
+        interrupted.drainIOForTesting()
+        XCTAssertEqual(interrupted.events.first { $0.id == fixture.event.id }?.mediaFilename, fixture.media.filename,
+                       "the photo attached in memory")
+        XCTAssertEqual(try Data(contentsOf: fixture.log), oldLog, "the log as it was")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.manifest.path), "the attachment intent kept")
+        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path)
+        let relaunched = EventStore()
+        relaunched.drainIOForTesting()
+        try assertKeepsItsPhoto(relaunched, fixture)
+    }
+
+    /// The control: a copy the load leaves as it is (its kind already canonical) is not written back; the incident
+    /// keeps its photo, before codex-18's fix as after.
+    @MainActor
+    func testAnUnchangedOldLogKeepsAJournalOnlyIncidentsPhoto() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident(copyKind: "clockChanged.60")
+        let relaunched = EventStore()
+        relaunched.drainIOForTesting()
+        try assertKeepsItsPhoto(relaunched, fixture)
+    }
+
+    /// The control: an attachment intent under 30 days old is not aged out by any write; the incident keeps its photo,
+    /// before codex-18's fix as after.
+    @MainActor
+    func testANormalizedOldLogKeepsAYoungIntentsPhoto() async throws {
+        let fixture = try await oldLogWithAJournalOnlyIncident(intentAge: 86_400)
+        let relaunched = EventStore()
+        relaunched.drainIOForTesting()
+        try assertKeepsItsPhoto(relaunched, fixture)
+    }
+
     private func sparseRecoveryFile(at url: URL, bytes: UInt64) throws {
         XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
         let handle = try FileHandle(forWritingTo: url)
@@ -628,8 +790,11 @@ final class EventTests: XCTestCase {
         try await assertStagingBudgetRefuses(pendingSizes: [1_100_000_000, 1_100_000_000], incomingBytes: 3)
     }
 
+    /// A leftover staging file that cannot be read is counted by its size, not opened (1.8.2's step 63, the owner's option
+    /// 1: a phone locked past its grace period cannot open one, and refusing every save then lost the new evidence). The
+    /// budget still refuses an overfull staging area and a link (the tests beside this one).
     @MainActor
-    func testRecoveryStagingBudgetRefusesUnreadablePendingFile() async throws {
+    func testRecoveryStagingBudgetCountsAnUnreadablePendingFileBySize() async throws {
         let (store, event, _, manifest) = try await pendingRecovery()
         let pending = manifest.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".pending")
         try Data([1]).write(to: pending)
@@ -638,8 +803,8 @@ final class EventTests: XCTestCase {
         let source = manifest.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("next.mov")
         try Data([1, 2, 3]).write(to: source)
         let stored = await store.store(.clip(source), ext: "mov", attachingTo: event, secondary: true, camera: "rear")
-        XCTAssertNil(stored)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertNotNil(stored, "its one byte fits the budget")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pending.path), "the unreadable file is left as it was")
     }
 
     @MainActor

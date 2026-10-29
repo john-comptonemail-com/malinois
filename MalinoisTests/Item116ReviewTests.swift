@@ -521,9 +521,9 @@ final class Item116ReviewTests: XCTestCase {
     // MARK: - Q1: a trim of one incident among many status entries
 
     /// One trim before anyone listens removes the oldest unsynced incident and 600 newer status
-    /// entries: the incident is kept for the marker, without its thumbnail, and the status entries,
-    /// which it can never count, are not.
-    func testAMixedTrimKeepsTheIncidentNotTheStatusEntries() async {
+    /// entries: all are kept for the marker, the incident without its thumbnail. Before 1.8.2 the
+    /// status entries were not, the marker never counting them (item 169's codex-1).
+    func testAMixedTrimKeepsItsRemovalsForTheMarker() async {
         let store = EventStore()
         let day = Date().addingTimeInterval(-86_400)
         var oldest = Event(startDate: day.addingTimeInterval(-60), endDate: day, triggeredSensors: [.motion], cloudSyncState: .pending)
@@ -540,8 +540,11 @@ final class Item116ReviewTests: XCTestCase {
         var delivered: [Event] = []
         store.onCountEviction = { removed, _ in delivered.append(contentsOf: removed) }
         await waitUntil(timeout: 2) { !delivered.isEmpty }
-        XCTAssertEqual(delivered.map(\.id), [oldest.id], "the incident, and none of the status entries")
-        XCTAssertNil(delivered.first?.thumbnailData, "kept without its evidence")
+        let statusIDs = Set(statuses.map(\.id))
+        XCTAssertTrue(delivered.contains { $0.id == oldest.id }, "the incident")
+        XCTAssertEqual(delivered.filter { statusIDs.contains($0.id) }.count, 600, "and the status entries removed")
+        XCTAssertEqual(delivered.count, 601)
+        XCTAssertNil(delivered.first { $0.id == oldest.id }?.thumbnailData, "kept without its evidence")
     }
 
     /// Codex's case through the engine: the log left on disk holds 501 unsynced incidents and 700
@@ -579,9 +582,10 @@ final class Item116ReviewTests: XCTestCase {
         _ = engine
     }
 
-    /// The rule the store keeps removals by: only a first-hand incident not fully backed up and not
-    /// kept on this device by choice could be a missed upload.
-    func testOnlyAnUnsyncedFirstHandIncidentCouldBeAMissedUpload() {
+    /// The rule the store keeps removals by: only a first-hand record not fully backed up and not
+    /// kept on this device by choice could be a missed upload; since 1.8.2 status entries and
+    /// interruptions as well as incidents (item 169's codex-1).
+    func testOnlyAnUnsyncedFirstHandRecordCouldBeAMissedUpload() {
         func event(_ change: (inout Event) -> Void) -> Event {
             var e = Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .pending)
             change(&e)
@@ -592,10 +596,10 @@ final class Item116ReviewTests: XCTestCase {
         XCTAssertFalse(event { $0.cloudSyncState = .synced }.mayBeAMissedUpload, "synced")
         XCTAssertFalse(event { $0.sourceDevice = "iPhone Air" }.mayBeAMissedUpload, "another device's copy")
         XCTAssertFalse(event { $0.sustainedCount = 3 }.mayBeAMissedUpload, "a flood record")
-        XCTAssertFalse(event { $0.interrupted = true }.mayBeAMissedUpload, "an interruption record")
+        XCTAssertTrue(event { $0.interrupted = true }.mayBeAMissedUpload, "an interruption record")
         XCTAssertFalse(event { $0.keptLocal = true }.mayBeAMissedUpload, "kept on this device by choice")
-        XCTAssertFalse(Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .pending,
-                             stateChange: "armed").mayBeAMissedUpload, "a status entry")
+        XCTAssertTrue(Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .pending,
+                            stateChange: "armed").mayBeAMissedUpload, "a status entry")
     }
 
     // MARK: - N1's owed sweep: one more pass, never a loop

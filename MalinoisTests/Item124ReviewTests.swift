@@ -63,7 +63,7 @@ final class Item124ReviewTests: XCTestCase {
         let backupOff = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .pending,
                               stateChange: "backupOff")
         XCTAssertEqual(backupOff.shareSentence(timestamp: Self.when),
-                       "Malinois log entry on Oct 17, 2026 at 9:15 PM: iCloud backup turned off: events recorded while it is off stay on this iPhone.")
+                       "Malinois log entry on Oct 17, 2026 at 9:15 PM: iCloud backup turned off: events recorded while it is off are never uploaded.")
     }
 
     func testShareCallsAnInterruptionRecordALogEntry() {
@@ -131,8 +131,8 @@ final class Item124ReviewTests: XCTestCase {
         XCTAssertFalse(entitlements.contains("com.apple.developer.icloud"), entitlements)
     }
 
-    /// It compiles its own file only, not the app's model files it no longer uses. Read from the project
-    /// file, the one place that says what a target compiles.
+    /// It compiles its own files only (since 1.8.2 its own and the burst rule's), not the app's model files it no
+    /// longer uses. Read from the project file, the one place that says what a target compiles.
     func testTheAlertExtensionCompilesOnlyItsOwnFile() throws {
         let project = try text("Malinois.xcodeproj/project.pbxproj")
         let start = try XCTUnwrap(project.range(of: "71B2C3D4E5F6000000000041 /* Sources */ = {"),
@@ -140,8 +140,10 @@ final class Item124ReviewTests: XCTestCase {
         let phase = project[start.upperBound...].prefix { $0 != "}" }
         let files = phase.split(separator: "\n").filter { $0.contains(" in Sources */") }
             .map { $0.trimmingCharacters(in: .whitespaces) }
-        XCTAssertEqual(files.count, 1, "the extension compiles: \(files)")
-        XCTAssertTrue(files.first?.contains("NotificationService.swift") == true, "\(files)")
+        // Since 1.8.2 also the burst rule (`AlertBurst`, ADR 0061): pure, no app, model or cloud code (item 169's codex-4).
+        let names = files.compactMap { line in ["NotificationService.swift", "AlertBurst.swift"].first { line.contains($0) } }
+        XCTAssertEqual(files.count, 2, "the extension compiles: \(files)")
+        XCTAssertEqual(Set(names), ["NotificationService.swift", "AlertBurst.swift"], "\(files)")
     }
 
     // MARK: - The Touch gaps

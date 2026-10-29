@@ -12,7 +12,15 @@ import UserNotifications
 struct SettingsView: View {
     /// The iCloud backup switch's caption (item 115). It also names the iPhone's own backups, which it does not
     /// control (Fable's fable-1 on 1.8 (75)).
-    static let backupCaption = "Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off stay on this iPhone, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly. This switch does not change your iPhone's own backups (iCloud Backup, or a backup made with a computer), which include Malinois's evidence when they are on."
+    static let backupCaption = "Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off are never uploaded, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly. This switch does not change your iPhone's own backups (iCloud Backup, or a backup made with a computer), which include Malinois's evidence when they are on."
+    /// The Cross-device alerts switch's caption, reported on screen for the tests that read Settings as shown. It names both
+    /// paths (item 166's B2, Codex's codex-4): the account's iCloud alerts, which the switch removes for every device, and
+    /// each iPhone's own alerts to its watch, which follow that iPhone's switch (ADR 0043).
+    static let alertsCaption = "Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. Turning this off needs fresh device authentication and removes the account's iCloud alerts for every device; turning it on restores them. Another device with alerts on may restore them, and each iPhone keeps sending its own alerts to its own Apple Watch until its own switch is off. An Apple Watch gets these alerts after Malinois has been opened on it once."
+    /// The Require Guided Access switch's caption, reported on screen for the tests that read Settings as shown. It names
+    /// the power-off slider, which Guided Access hides; a forced restart still ends the watch (item 168's deepseek-3: it
+    /// said "powering the device off").
+    static let requireGuidedAccessCaption = "Refuse to arm unless Guided Access is on. It's what stops a snoop swiping the app away or using the power-off slider. On by default; while you're still testing, the arming screen can lift it for one arm."
     /// The iCloud section's footer on the free tier: Malinois uploads no evidence, but the iPhone's own backups can hold the
     /// evidence (fable-1; it said the evidence was "on this device only").
     static let freeTierNote = "iCloud backup and cross-device alerts are Pro. On the free tier, Malinois uploads no evidence; your iPhone's own backups (iCloud Backup, or a computer) can still include it."
@@ -215,7 +223,7 @@ struct SettingsView: View {
 
     private var sensitivitySection: some View {
         Section("Sensitivity") {
-            ForEach(SensorType.tripwires.filter { $0 != .power && $0 != .proximity }) { sensor in
+            ForEach(SensorType.sensitivityTripwires) { sensor in
                 Picker(selection: sensitivityBinding(for: sensor)) {
                     ForEach(Sensitivity.allCases) { Text($0.displayName).tag($0) }
                 } label: {
@@ -323,10 +331,13 @@ struct SettingsView: View {
         }
     }
 
-    private var responseHint: String {
-        switch settings.responseMode {
+    private var responseHint: String { Self.responseHint(for: settings.responseMode) }
+
+    /// The caption under the response mode's picker (unit-tested: the words must say what the code does).
+    nonisolated static func responseHint(for mode: ResponseMode) -> String {
+        switch mode {
         case .alert:   return "Evidence is captured silently, then a warning appears on screen - a deterrent that also serves as the disarm prompt."
-        case .stealth: return "Covert: no warning appears and the screen stays dark, apart from the REC badge and the iOS recording indicator while the camera records. Evidence is still captured and uploaded."
+        case .stealth: return "Covert: no warning appears and the screen stays dark, apart from the REC badge and the iOS recording indicator while the camera records. Evidence is still captured, and uploaded when iCloud backup is on (Pro)."
         case .siren:   return "Captures evidence, shows the warning, and sounds a loud alarm (plays even on silent) until the tamper stops or you disarm."
         }
     }
@@ -427,8 +438,9 @@ struct SettingsView: View {
                 set: { settings.requireGuidedAccess = $0 })) {
                 VStack(alignment: .leading) {
                     Text("Require Guided Access")
-                    Text("Refuse to arm unless Guided Access is on. It's what stops a snoop swiping the app away or powering the device off. On by default; while you're still testing, the arming screen can lift it for one arm.")
+                    Text(Self.requireGuidedAccessCaption)
                         .font(.caption).foregroundStyle(.secondary)
+                        .reportedOnScreen(Self.requireGuidedAccessCaption)
                 }
             }
             Toggle(isOn: Binding(
@@ -522,8 +534,9 @@ struct SettingsView: View {
                 set: { applyCrossDeviceAlerts($0) })) {
                 VStack(alignment: .leading) {
                     HStack { Text("Cross-device alerts"); proMark }
-                    Text("Alert every device on this iCloud account the moment any of them is triggered - and the moment any of them is disarmed. One switch for the whole account: off requires fresh device authentication and removes alerts for all devices. On restores them. Another device with alerts enabled may restore the subscriptions. An Apple Watch gets these alerts after Malinois has been opened on it once.")
+                    Text(Self.alertsCaption)
                         .font(.caption).foregroundStyle(.secondary)
+                        .reportedOnScreen(Self.alertsCaption)
                 }
             }
             .disabled(cloudControlBusy)
@@ -758,10 +771,9 @@ struct ChangePINView: View {
                     stage = .setNew
                 } onCancel: { dismiss() }
             case .setNew:
-                PINSetupView {
-                    engine.notePINChanged()   // the change on the record, before the view goes (item 153's MAL-03)
-                    dismiss()
-                }
+                // The save and its record are one engine step (item 153's MAL-03; item 162's G1): a failed save
+                // records nothing, and a saved one is on the record before the view goes.
+                PINSetupView(savePIN: { engine.changePIN(to: $0) }, onDone: { dismiss() })
             }
         }
     }

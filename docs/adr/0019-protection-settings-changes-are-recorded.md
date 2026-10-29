@@ -51,3 +51,39 @@ establishes a missing or unreadable baseline before editing is possible, preserv
 one. This corrects the intended first-launch adoption rule above; it adds no new record kind,
 CloudKit field, alert or settings permission. Regression tests fail before the fix and pass
 after it, including a first-visit undo and an unreported edit across relaunch.
+
+## Amendment (2026-10-24, 1.8.2): seven more settings leave a record
+
+Decision 1 left out settings that change whether the next session catches or tells anything: a quieter response mode,
+a lower sensitivity, a longer grace period, the camera cold on battery, no illumination, Face ID unlock and a shorter
+iCloud retention (BACKLOG 153's MAL-09, item 155's A15; SECURITY.md said so). The owner took all seven (item 163's
+step 22). Each change now leaves one record the same way (decisions 2 to 4), in the order of the Settings screen:
+switched on or off for Face ID unlock (`settingOn.biometricUnlock`; its "off" does not say "in Settings", since it also
+switches off by itself when the enrolled faces or fingers change, ADR 0056), and set to a value for the others
+(`settingSet.<name>.<value>`: "Response mode set to Stealth (covert) in Settings"), sensitivity per tripwire where
+Settings offers one. The iCloud decoder admits a value kind only with a value this build knows (a grace period as whole
+seconds up to an hour), by the rule that gives the log its words. A baseline recorded before 1.8.2 lacks the seven:
+none is compared with it, and launch fills them in as they are, without a record, so the first visit after the update
+is still caught (decision 3's first look). The rest of Settings (the capture mode and lens, clip audio, the siren's
+ramp, the alert's words, the PIN pad's scramble, the device's label) leaves no record. Tests:
+`Item153SettingsRecordsTests`.
+
+## Amendment (2026-10-24, 1.8.2): a settings reset is its own record
+
+When the stored settings cannot be decoded, the launch resets them to their defaults (ADR 0049), and the next arm
+compared those defaults with the surviving baseline: each difference became a record "in Settings" ("Arming grace
+period set to 15 s in Settings"), an edit nobody made (Codex's codex-10). The owner ruled (2026-10-24, option (a)) that
+the reset leaves its own record instead, "Settings couldn't be read and were reset to their defaults", once, when the
+settings resolve (`AppSettings.wasResetAtLoad`, per loaded object), and that the reset settings become the baseline
+then, so the records after it show only real edits. The record is a quiet status entry like the others: uploaded on
+Pro, no alert, read back by the owner's other devices. With iCloud backup off it stays on the phone for good, as every
+record made then does: the engine installs the backup-off rules before the settings can resolve, since a launch's
+resolution writes this record at once (Codex's codex-12 found it written first, bound to the account and sent once
+backup was on). The reset is noted as it saves the defaults, before they are saved (`AppSettings.resetPendingKey`), and
+the note goes once the record and the baseline are written: the app ending in between leaves the next launch owing
+them rather than reading the saved defaults as the owner's (Codex's residual of codex-10). The note holds the record's
+identity, which the record takes: only that record stands for the reset, so one written before the app ended is not
+written again, while another device's copy of its own reset, or an earlier reset dated ahead, never stands in (Codex's
+codex-17 found a date check taking them). A note that holds no identity (a timestamp, as development builds of 1.8.2
+wrote it, or damage) is given one before the record is written, so a retry finds that record too (codex-17's
+residual). Tests: `Item163SettingsResetTests`.

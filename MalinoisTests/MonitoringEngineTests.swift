@@ -342,8 +342,8 @@ final class MonitoringEngineTests: XCTestCase {
         // Start fresh unless the PIN pad is actually open.
         XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: false), .present,
                        "a touch alone must never hold off the first alert")
-        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: true), .none,
-                       "the owner's own disarm stays quiet once the pad is up")
+        XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: false, activeEntry: true), .deferred,
+                       "held back while the owner types, owed until the typing stops or the pad closes (item 167's A1)")
         // A running alarm is kept alive regardless of a screen touch — the N-01 fix.
         XCTAssertEqual(MonitoringEngine.alertAction(showsMessage: true, alertActive: true, activeEntry: true), .extend,
                        "holding the screen can't starve a running siren")

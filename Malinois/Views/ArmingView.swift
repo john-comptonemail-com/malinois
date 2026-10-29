@@ -45,7 +45,10 @@ struct ArmingView: View {
             }
         }
         .onChange(of: reviewPress) { _, down in if down { engine.reportTouch() } }
-        .onAppear { engine.refreshGuidedAccess() }
+        .onAppear {
+            engine.refreshGuidedAccess()
+            engine.refreshDevicePasscode()   // the no-passcode line (1.8.2's step 34)
+        }
         // An unused lift must not linger past the arming screen (M2): leaving without
         // arming expires it, so a later arm re-asserts the owner's requirement.
         .onDisappear { engine.clearGuidedAccessLift() }
@@ -61,6 +64,20 @@ struct ArmingView: View {
         if engine.armWasAutoRecovered { showCancelPIN = true }
         else { engine.cancelArming() }
     }
+
+    /// The Vision tripwire's sentences on the arming screen. Never silently unprotected: say plainly when this tripwire
+    /// won't be running, and which reason applies. The tap's own failure comes first: the device's answer, whether the
+    /// tap actually came up, beats predicting it from the camera setting. Then the lens Vision watches through with
+    /// Both, and whether the camera is kept warm for it, whatever the lens: with Both the caveat used to be left out,
+    /// though Battery saver and Auto on battery keep that camera cold too (item 165's A2). Pure (unit-tested).
+    nonisolated static func visionGuidance(tapUnavailable: Bool, both: Bool, readiness: CameraReadiness) -> [String] {
+        if tapUnavailable { return [visionUnavailableNote] }
+        return (both ? [visionBothNote] : []) + (readiness != .instant ? [visionWarmOnlyNote] : [])
+    }
+
+    nonisolated static let visionUnavailableNote = "Vision detection isn't running on this device with the current camera setup - there wasn't capacity for it alongside the capture. The other tripwires still run."
+    nonisolated static let visionBothNote = "With the camera set to Both, vision detection watches through the front camera."
+    nonisolated static let visionWarmOnlyNote = "Vision detection watches through the camera only while it's warm - on a charger (Auto) or in Instant mode. On battery it's off; the other tripwires still run."
 
     /// Battery/power guidance for the grace screen, accurate to the current camera-readiness
     /// mode. The old copy assumed an always-warm camera ("keep it on a charger… warm camera
@@ -82,17 +99,10 @@ struct ArmingView: View {
             parts.append("The screen stays on (black) while armed - a light draw.")
         }
         if settings.isEnabled(.vision) && settings.isEnabled(.camera) {
-            // Never silently unprotected: say plainly when this tripwire won't be running, and
-            // WHICH reason applies. The first branch is the device's own answer — whether the
-            // tap actually came up — which beats predicting it from the camera setting.
-            if engine.visionTapUnavailable {
-                parts.append("Vision detection isn't running on this device with the current camera setup - there wasn't capacity for it alongside the capture. The other tripwires still run.")
-            } else if settings.effectiveCameraPosition(pro: entitlements.proActive) == .both
-                        && CameraController.supportsMultiCam {
-                parts.append("With the camera set to Both, vision detection watches through the front camera.")
-            } else if settings.cameraReadiness != .instant {
-                parts.append("Vision detection watches through the camera only while it's warm - on a charger (Auto) or in Instant mode. On battery it's off; the other tripwires still run.")
-            }
+            parts += Self.visionGuidance(tapUnavailable: engine.visionTapUnavailable,
+                                         both: settings.effectiveCameraPosition(pro: entitlements.proActive) == .both
+                                             && CameraController.supportsMultiCam,
+                                         readiness: settings.cameraReadiness)
         }
         // The capture-mode setting does not apply in Siren mode (F4), and until now nothing in
         // the app said so: Settings offered "3-second clip" while every trigger would in fact
@@ -165,15 +175,9 @@ struct ArmingView: View {
                 }
 
                 if engine.armingBlockedByGuidedAccess { guidedAccessRequiredNotice }
-                if unconfined {
-                    Label(Self.unconfinedWarning, systemImage: "exclamationmark.triangle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .reportedOnScreen(Self.unconfinedWarning)
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
-                }
+                if unconfined { warning(Self.unconfinedWarning) }
+                // A phone without a passcode opens at a forced restart, Guided Access gone (1.8.2's step 34).
+                if engine.devicePasscodeMissing { warning(BiometricKind.current.noPasscodeWarning) }
                 if engine.cameraAskBlockedByGuidedAccess { cameraAskBlockedNotice }
                 armTimeNotices(centered: false)
 
@@ -189,6 +193,17 @@ struct ArmingView: View {
                                  onAcknowledge: { engine.acknowledgeFirstArmBriefing() },
                                  onActivity: engine.noteFirstArmBriefingActivity)   // its minute without a touch
         }
+    }
+
+    /// A warning on the Guided Access step: one line in orange, on its own tinted card.
+    private func warning(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.orange)
+            .reportedOnScreen(text)
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
     }
 
     /// iOS shows no permission alert while Guided Access is on, so the ARM tap could not ask for
@@ -239,22 +254,24 @@ struct ArmingView: View {
     }
 
     /// Guided Access status + coaching, shown below the arm controls. Required by default
-    /// since 1.3 ("Require Guided Access"), liftable for one arm from the notice above.
+    /// since 1.3 ("Require Guided Access"), liftable for one arm from the notice above. It hides the
+    /// power-off slider; a forced restart, which nothing can block, still ends the watch (item 168's
+    /// deepseek-3: the lines said a snoop "can't ... power it off").
     @ViewBuilder
     private var guidedAccessRecommendation: some View {
         if engine.guidedAccessEnabled {
             header("Guided Access is on",
-                   subtitle: "The device is locked to Malinois - a snoop can't switch apps or power it off.")
+                   subtitle: "The device is locked to Malinois - a snoop can't switch apps or use the power-off slider. A forced restart still ends the watch.")
             guidedAccessIndicator
         } else {
             header("Recommended: turn on Guided Access",
-                   subtitle: "It locks the device to Malinois so a snoop can't switch apps or power it off. Strongly recommended - but you can arm without it, for a first try or just to see how it works.")
+                   subtitle: "It locks the device to Malinois so a snoop can't switch apps or use the power-off slider. Strongly recommended - but you can arm without it, for a first try or just to see how it works.")
 
             guidedAccessIndicator
 
             VStack(alignment: .leading, spacing: 12) {
                 instruction(1, "Open Settings → Accessibility → Guided Access and turn it on (one-time setup).")
-                instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch, and that code then unlocks the phone.")
+                instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, and turn OFF the Face ID (or Touch ID) switch there, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch, and that code then unlocks the phone.")
                 instruction(3, "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.")
                 instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
                 instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
@@ -366,14 +383,6 @@ struct ArmingView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
-            if let routeWarning = engine.sirenRouteWarning {   // fable-2: the siren would play in headphones
-                Label(routeWarning, systemImage: "headphones")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                    .reportedOnScreen(routeWarning)
-            }
             if !entitlements.proActive {
                 Label(Self.freeTierNotice, systemImage: "icloud.slash")
                     .font(.caption)
@@ -461,6 +470,7 @@ struct ArmingView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.title.weight(.bold))
             Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+                .reportedOnScreen(subtitle)   // read as shown by item 168's tests
         }
     }
 

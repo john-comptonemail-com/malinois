@@ -99,8 +99,8 @@ struct EventLogView: View {
                 List {
                     if unsyncedCount > 0 {
                         // On the free tier these events never sync (cloud backup is Pro), so
-                        // don't promise a sync or offer a no-op Retry — say plainly they're
-                        // kept on-device (P-05).
+                        // don't promise a sync or offer a no-op Retry — say plainly they were
+                        // not uploaded (P-05; item 168's deepseek-2).
                         if entitlements.proActive {
                             if summary.retryableCount > 0 { syncBanner(count: summary.retryableCount) }
                             if Self.heldBannerVisible(heldKeys: summary.heldKeys, dismissedKeys: hiddenHeldKeys) {
@@ -181,16 +181,24 @@ struct EventLogView: View {
         .listRowSeparator(.hidden)
     }
 
-    /// Free-tier variant of the sync banner: cloud backup is Pro, so these events stay on the
-    /// device. No Retry (it would no-op behind the `proActive` guard) — just the honest state.
+    /// Free-tier variant of the sync banner: cloud backup is Pro, so Malinois uploads none of these
+    /// events. No Retry (it would no-op behind the `proActive` guard) — just the honest state.
     private var freeTierBanner: some View {
-        HStack(spacing: 6) {
+        let text = Self.freeTierBannerText(count: unsyncedCount)
+        return HStack(spacing: 6) {
             Circle().fill(.secondary).frame(width: 8, height: 8)
-            Text("iCloud backup is Pro - \(unsyncedCount) event(s) stay on this device")
+            Text(text)
                 .font(.caption)
+                .reportedOnScreen(text)   // read as shown by item 168's tests
             Spacer()
         }
         .listRowSeparator(.hidden)
+    }
+
+    /// The free-tier banner's words for `count` events: not uploaded, rather than "stay on this device", which the
+    /// iPhone's own backups can make untrue (item 168's deepseek-2).
+    static func freeTierBannerText(count: Int) -> String {
+        "iCloud backup is Pro - \(count) event(s) not uploaded"
     }
 
     private func retry() async {
@@ -302,10 +310,14 @@ struct EventRow: View {
         case "pinChanged":        return "key.fill"   // item 153's MAL-03
         case "guidedAccessEnded": return "lock.trianglebadge.exclamationmark"   // item 153's MAL-05
         case "unsyncedRemoved":   return "tray.full"   // item 114
+        case "reArmSkipped":      return "exclamationmark.arrow.triangle.2.circlepath"   // item 153's MAL-10, Home's notice's symbol
+        case "settingsReset":     return "arrow.counterclockwise"   // codex-10
         case "backupOff":         return "icloud.slash"   // item 115
         case "backupOn":          return "icloud"
-        case let kind? where Event.protectionChangeKinds.contains(kind): return "slider.horizontal.3"   // item 91
+        case let kind? where Event.isProtectionChangeKind(kind): return "slider.horizontal.3"   // item 91; step 22's seven
         case let kind? where Event.clockChangeSeconds(kind: kind) != nil: return "clock.badge.exclamationmark"   // item 113
+        case let kind? where Event.resumedSeconds(kind: kind) != nil: return "eye"   // item 153's MAL-06
+        case let kind? where Event.sirenElsewhereDevice(kind: kind) != nil: return "headphones"   // 1.8.2's step 26
         default:         return "camera.metering.none"
         }
     }

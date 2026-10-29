@@ -3,6 +3,8 @@
 - **Status:** accepted (the owner's ruling, 2026-10-19: "A", after TestFlight 1.8 (74)'s step 4; BACKLOG 140); for
   1.8 (75). Amends ADR 0043 (iCloud now reaches the paired watch also through its iPhone, and the watch pairs the two
   copies), ADR 0045 (iCloud's tamper alert is Time Sensitive on the watch too) and ADR 0051 (its path 4). Amended
+  2026-10-27 by ADR 0061 (1.8.2): the watch's extension also shows a burst's iCloud tamper alerts quietly after the
+  first three. Amended
   2026-10-20 after Codex's look at `62b4b31`: decision 4 (codex-1: the watch app had no remote-notification
   background mode, so no push woke it and nothing tidied; now it has the mode, and also tidies when it opens and at a
   repeat; every pairing or clean-up read of the list has a deadline) and decision 5's exception (e) (codex-2: an

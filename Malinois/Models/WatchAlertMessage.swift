@@ -44,7 +44,7 @@ struct WatchAlertMessage: Equatable, Sendable {
     var body: String {
         switch kind {
         case .tamper: "Tamper detected on your device."
-        case .disarm: "Malinois was disarmed on one of your devices."
+        case .disarm: "Malinois was disarmed, or arming was cancelled, on one of your devices."
         }
     }
 

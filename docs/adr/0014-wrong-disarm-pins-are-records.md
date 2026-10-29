@@ -2,6 +2,11 @@
 
 - **Status:** accepted
 - **Date:** 2026-09-26
+- **Amended 2026-10-27** (1.8.2, BACKLOG 168's deepseek-5): decision 3 stands for the armed
+  screen's pad. On the automatic re-arm's countdown, which only the PIN stops (R-04), the right
+  PIN leaves the cancelled countdown's record ("Arming cancelled before going live"), pushed on Pro
+  as one: no watch went live, so no "disarmed" record says when it stopped. Wrong PINs there stay
+  lockout-only (decision 5).
 
 ## Context
 
