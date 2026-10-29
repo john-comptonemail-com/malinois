@@ -115,7 +115,9 @@
     If it starts later, your session ended and another began.</li>
     <li>Open the Event Log and read every entry since you armed, not just the newest. A disarm you
     didn't make, <strong>Monitoring interrupted</strong> or a wrong PIN means someone tried, even if
-    the phone looks untouched.</li>
+    the phone looks untouched. So does a change you didn't make to a setting that protects the
+    phone, such as a tripwire switched off or a different response mode: the Event Log records
+    those.</li>
   </ol>
 
   <h3>The screen went dark. Is it broken?</h3>
@@ -170,7 +172,8 @@
   it, nobody can go to the Home Screen, switch apps or close Malinois without your Guided Access
   passcode, as long as Voice Control is off and Face ID and Touch ID are off for ending Guided Access. Holding the buttons to force a restart still ends
   Guided Access and the watch; Malinois normally records the handling first and, on Pro with iCloud
-  backup on and a connection, sends it.</p>
+  backup on and a connection, sends it. On an iPhone without a passcode a forced restart also
+  leaves the phone open; the arming screen says so.</p>
   <p>Without it, the armed iPhone is unlocked behind a dark screen: anyone who picks it up can leave
   Malinois and use it. Malinois records the touch and tries to take a photo, but it cannot stop them.
   That is why Malinois requires Guided Access to arm. For a quick test you can skip it for one arm
@@ -264,7 +267,8 @@
 
   <h3>How do I stop uploads to iCloud?</h3>
   <p>Turn off <strong>iCloud backup</strong> in Settings → iCloud; it asks for Face ID, Touch ID or
-  your passcode. Nothing new uploads (a file already being sent finishes), and events recorded
+  your passcode. Nothing new uploads (an upload under way stops at its next step, though what
+  iCloud has already received stays there), and events recorded
   while it is off stay on the iPhone for good, even after you turn it back on. Your log shows
   when it was turned off, and that entry is also sent to iCloud, so your other devices running
   Malinois 1.7 or later show it too. While it is off, your other devices get no alerts from this
@@ -298,6 +302,12 @@
   Device motion. Sound is the most likely to go off by mistake, which is why it is off by default.
   <strong>Test sensors</strong> on the main screen (behind your PIN) shows each tripwire reacting
   live, without recording anything.</p>
+
+  <h3>It did not re-arm by itself after an interruption.</h3>
+  <p>If Malinois is closed while armed, it re-arms itself the next time it opens, with its countdown. If it then has
+  to re-arm itself again within 90 seconds, because it was closed and opened again that soon, it stays disarmed, and
+  Home and the Event Log say so: a phone closed over and over, or a version that crashes while armed, must not re-arm
+  for ever. Arm it again when you are ready.</p>
 
   <h3>The alarm is not loud enough.</h3>
   <p>No app can control the volume buttons, so the alarm plays at your media volume. Turn the volume

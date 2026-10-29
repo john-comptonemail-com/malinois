@@ -72,7 +72,10 @@
     camera mode), the camera session may be held ready so that capture is immediate rather than losing the first seconds to starting the
     camera. <strong>Whenever a camera session is live the app shows an on-screen recording
     indicator that cannot be disabled.</strong> Nothing is recorded or stored while the camera is
-    merely held ready — images are written only when a tripwire fires.
+    merely held ready — images are written only when a tripwire fires, or, with the signal-loss
+    response on (the default), when the armed phone has been without the connection it had at
+    arming for 30 seconds and the Motion tripwire has not tripped in the last 10 seconds; an
+    ordinary outage can set this off too.
     <br><br>
     If you turn on the optional <strong>Vision</strong> tripwire, the camera is also used to
     <em>detect</em>, not only to record: while the camera is held ready, the app compares
