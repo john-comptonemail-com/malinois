@@ -704,6 +704,242 @@ final class Item166ReviewTests: XCTestCase {
         XCTAssertTrue(answered, "and settled the check: iCloud holds none of it")
     }
 
+    // MARK: - Item 180's A2 (claude-fable-2 on 296bab0): a check whose read never answers
+
+    /// A read that never answers, as on a network that looks up and passes nothing; cancelling its task ends it, as it
+    /// ends CloudKit's own async reads. `release` ends a wait nothing cancelled (the red run's).
+    private final class NeverAnsweringRead: @unchecked Sendable {   // `lock` guards both stored fields
+        private let lock = NSLock()
+        private var waiting: CheckedContinuation<Void, any Error>?
+        private var cancelledAlready = false
+        var cancelled: Bool { lock.withLock { cancelledAlready } }
+
+        func answer() async throws -> [(String, Result<Void, any Error>)] {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+                    let cancelledFirst = lock.withLock { () -> Bool in
+                        if !cancelledAlready { waiting = cont }
+                        return cancelledAlready
+                    }
+                    if cancelledFirst { cont.resume(throwing: CancellationError()) }
+                }
+                return []
+            } onCancel: {
+                let cont = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+                    cancelledAlready = true
+                    defer { waiting = nil }
+                    return waiting
+                }
+                cont?.resume(throwing: CancellationError())
+            }
+        }
+
+        func release() {
+            let cont = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+                defer { waiting = nil }
+                return waiting
+            }
+            cont?.resume(throwing: CKError(.networkFailure))
+        }
+    }
+
+    @MainActor
+    private final class Flag { var raised = false }
+
+    /// The check's fetch had no deadline: one that never answered held the sweep's single-flight lock for the rest of
+    /// the session, so every later sweep was turned away and nothing pending uploaded again (claude-fable-2's probe).
+    /// Now every iCloud read is cancelled at the save's deadline and fails as a network-class failure: the pass ends,
+    /// its check still owed. Red at its red commit: the pass was still waiting when the test gave up.
+    func testACheckWhoseReadNeverAnswersEndsAtTheDeadline() async throws {
+        let (engine, store, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        try await runTheByteLimit(on: store)
+        engine.cloudPresenceForTesting = nil   // the real presence check, only its fetch stood in for
+        let read = NeverAnsweringRead()
+        engine.cloud.presenceFetchForTesting = { _ in try await read.answer() }
+        engine.cloud.readDeadlineForTesting = 0.5
+        defer { read.release() }
+        let returned = Flag()
+        let sweep = Task { @MainActor in
+            await engine.retryPendingSync()
+            returned.raised = true
+        }
+        let ended = await eventually(within: 5) { returned.raised }
+        XCTAssertTrue(ended, "the pass ended at the read's deadline")
+        XCTAssertTrue(read.cancelled, "and the read itself was cancelled")
+        XCTAssertEqual(store.events.first { $0.id == capture.id }?.mediaDiscardUnchecked, true, "the check is still owed")
+        read.release()
+        await sweep.value
+    }
+
+    // MARK: - The review of the fixes (codex-4 and deepseek-3 on ee565c2): reads on operations of their own
+
+    /// The read operations a test holds in place of the database, unanswered.
+    @MainActor
+    private final class HeldOperations {
+        var operations: [CKDatabaseOperation] = []
+
+        /// The first held operation of `type` that `matches`: other work on the same cloud can hand the hook its own
+        /// meanwhile (the gate's ThreadSanitizer pass on d083d3c found a restore's page first).
+        func first<T: CKDatabaseOperation>(_ type: T.Type, where matches: (T) -> Bool = { _ in true }) -> T? {
+            operations.lazy.compactMap { $0 as? T }.first(where: matches)
+        }
+    }
+
+    /// codex-4 on ee565c2: the check ran on CloudKit's async call, which on iOS before 27 wraps the callback call with no
+    /// cancellation: past the deadline the pass went on, but the request and its task stayed. Now the check is an
+    /// operation of its own, fieldless, cancelled at the deadline. Red at its red commit: no operation was made.
+    func testACheckOperationThatNeverAnswersIsCancelledAtTheDeadline() async throws {
+        let (engine, store, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        try await runTheByteLimit(on: store)
+        engine.cloudPresenceForTesting = nil   // the real presence check, only its operation held
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }   // CloudKit never answers
+        engine.cloud.readDeadlineForTesting = 0.5
+        let returned = Flag()
+        let sweep = Task { @MainActor in
+            await engine.retryPendingSync()
+            returned.raised = true
+        }
+        let ended = await eventually(within: 5) { returned.raised }
+        XCTAssertTrue(ended, "the pass ended at the read's deadline")
+        let check = try XCTUnwrap(held.first(CKFetchRecordsOperation.self) { $0.desiredKeys == [] },
+                                  "the check ran on its own operation")
+        XCTAssertEqual(check.desiredKeys, [], "fieldless")
+        XCTAssertTrue(check.isCancelled, "and the operation was cancelled at the deadline")
+        XCTAssertEqual(store.events.first { $0.id == capture.id }?.mediaDiscardUnchecked, true, "the check is still owed")
+        await sweep.value
+    }
+
+    /// codex-4: the same for a session's latest beat (`record(for:)`, which has no cancellation before iOS 27 either).
+    /// Read here for an ID this account holds. Red at its red commit: no operation was made.
+    func testALatestBeatOperationThatNeverAnswersIsCancelledAtTheDeadline() async throws {
+        let (engine, _, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let beat = CKRecord.ID(recordName: CloudExfiltrator.latestBeatRecordName(session: capture.id))
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 0.5
+        let heard = await engine.cloud.latestBeat(session: capture.id)
+        XCTAssertEqual(heard, .unknown, "not known, past the deadline")
+        let read = try XCTUnwrap(held.first(CKFetchRecordsOperation.self) { $0.recordIDs == [beat] },
+                                 "the read ran on its own operation")
+        XCTAssertTrue(read.isCancelled, "and was cancelled at the deadline")
+    }
+
+    /// deepseek-3: a read whose caller is cancelled (the event's detail view closed while its last-heard line loads) is
+    /// cancelled with it, and the caller goes on at once, here a session's latest beat. Passes at the fix; its undo checks
+    /// show it can fail.
+    func testALatestBeatWhoseCallerIsCancelledCancelsItsOperation() async throws {
+        let (engine, _, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let beat = CKRecord.ID(recordName: CloudExfiltrator.latestBeatRecordName(session: capture.id))
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 60   // far off: only the caller's cancel can end it in time
+        let read = Task { @MainActor in await engine.cloud.latestBeat(session: capture.id) }
+        let submitted = await eventually(within: 5) { held.first(CKFetchRecordsOperation.self) { $0.recordIDs == [beat] } != nil }
+        XCTAssertTrue(submitted, "the read ran on its own operation")
+        read.cancel()
+        let cancelled = await eventually(within: 5) {
+            held.first(CKFetchRecordsOperation.self) { $0.recordIDs == [beat] }?.isCancelled == true
+        }
+        XCTAssertTrue(cancelled, "the caller's cancel reached the operation")
+        let returned = Flag()
+        Task { @MainActor in
+            _ = await read.value
+            returned.raised = true
+        }
+        let ended = await eventually(within: 5) { returned.raised }
+        XCTAssertTrue(ended, "and the caller went on without waiting for the deadline")
+    }
+
+    /// deepseek-3 on ee565c2: a restore's query pages, which had no test, are cancelled when they stop moving: each type's
+    /// first page, held unanswered, is cancelled at its stall, and the restore reports itself failed. Passes at the fix;
+    /// its undo checks show it can fail.
+    func testARestorePageThatStopsMovingIsCancelledAtItsStall() async throws {
+        let (engine, _, _, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 0.3
+        let fetched = await engine.cloud.fetchRecentEvents()
+        XCTAssertEqual(fetched, [], "nothing restored")
+        XCTAssertTrue(engine.cloud.lastFetchFailed, "and the restore says it failed")
+        let pages = held.operations.compactMap { $0 as? CKQueryOperation }.filter { $0.resultsLimit == CloudExfiltrator.fetchPageSize }
+        XCTAssertEqual(pages.count, 4, "each record type's first page")
+        XCTAssertTrue(pages.allSatisfy(\.isCancelled), "each cancelled at its stall")
+    }
+
+    /// deepseek-3: a restore whose caller is cancelled cancels the page under way, asks for no other, and goes on at once.
+    /// Passes at the fix; its undo checks show it can fail.
+    func testARestoreWhoseCallerIsCancelledCancelsItsPage() async throws {
+        let (engine, _, _, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 60
+        let restore = Task { @MainActor in await engine.cloud.fetchRecentEvents() }
+        let submitted = await eventually(within: 5) { held.first(CKQueryOperation.self) != nil }
+        XCTAssertTrue(submitted, "the first page ran on its own operation")
+        restore.cancel()
+        let cancelled = await eventually(within: 5) { held.first(CKQueryOperation.self)?.isCancelled == true }
+        XCTAssertTrue(cancelled, "the caller's cancel reached the page")
+        let returned = Flag()
+        Task { @MainActor in
+            _ = await restore.value
+            returned.raised = true
+        }
+        let ended = await eventually(within: 5) { returned.raised }
+        XCTAssertTrue(ended, "and the restore went on without waiting for the deadline")
+        XCTAssertEqual(held.operations.compactMap { $0 as? CKQueryOperation }.count, 1, "asking for no other page")
+    }
+
+    /// A full download's fetch: the capture records it asks for by name.
+    private static func isDownload(_ operation: CKFetchRecordsOperation) -> Bool {
+        operation.recordIDs?.contains { $0.recordName.hasPrefix("photo-") } == true
+    }
+
+    /// deepseek-3 on ee565c2: the full download's operation, which had no test, is cancelled when it stops moving (the
+    /// stall deadline; here the read deadline stands in for its 20 s). Red at its red commit: no operation was made.
+    func testAFullDownloadThatStopsMovingIsCancelledAtItsStall() async throws {
+        let (engine, _, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 0.5
+        let fetched = await engine.cloud.fetchFullMedia(for: capture.id)
+        XCTAssertNil(fetched, "nothing fetched: the download stopped moving")
+        let download = try XCTUnwrap(held.first(CKFetchRecordsOperation.self) { Self.isDownload($0) },
+                                     "the download ran on its operation")
+        XCTAssertTrue(download.isCancelled, "and was cancelled at its stall")
+    }
+
+    /// deepseek-3: a download whose caller is cancelled (the detail view closed) let its operation run on to the stall
+    /// deadline. Now the caller's cancel cancels it, and the caller goes on at once. Red at its red commit: no operation.
+    func testAFullDownloadWhoseCallerIsCancelledCancelsItsOperation() async throws {
+        let (engine, _, capture, _) = try await olderLogWithAnUnsentCapture(iCloudHolds: [])
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        engine.cloud.readSubmitForTesting = { held.operations.append($0) }
+        engine.cloud.readDeadlineForTesting = 60   // far off: only the caller's cancel can end it in time
+        let download = Task { @MainActor in await engine.cloud.fetchFullMedia(for: capture.id) }
+        let submitted = await eventually(within: 5) { held.first(CKFetchRecordsOperation.self) { Self.isDownload($0) } != nil }
+        XCTAssertTrue(submitted, "the download ran on its own operation")
+        download.cancel()
+        let cancelled = await eventually(within: 5) {
+            held.first(CKFetchRecordsOperation.self) { Self.isDownload($0) }?.isCancelled == true
+        }
+        XCTAssertTrue(cancelled, "the caller's cancel reached the operation")
+        let returned = Flag()
+        Task { @MainActor in
+            _ = await download.value
+            returned.raised = true
+        }
+        let ended = await eventually(within: 5) { returned.raised }
+        XCTAssertTrue(ended, "and the caller went on without waiting for the deadline")
+    }
+
     // MARK: - codex-30 on 694e8d5: every failure in the check's answer is read
 
     /// A throttle that names `seconds` of wait.
@@ -827,7 +1063,7 @@ final class Item166ReviewTests: XCTestCase {
     /// storage cap before it could upload", rightly for one recorded while the installation was not uploading, which never
     /// went up; but a restore from a device backup leaves every restored record with no account too, and a restored
     /// capture whose front photo had reached the original account's iCloud then read as never uploaded. The owner's
-    /// option (a): such a capture is never said to have been discarded before it could upload; its check is owed, though
+    /// option (a): such a capture is never marked lost without a conclusive check; its check is owed, though
     /// this installation cannot run it.
     func testARestoredCaptureTheLimitDiscardsIsNotSaidToHaveNeverUploaded() async throws {
         let (engine, store, enrollment, restored) = try await phoneRestoredWithACapture()
@@ -835,7 +1071,7 @@ final class Item166ReviewTests: XCTestCase {
         try await runTheByteLimit(on: store)
         let discarded = try XCTUnwrap(store.events.first { $0.id == restored.id })
         XCTAssertNil(discarded.mediaFilename, "the limit took its files")
-        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not said to have been discarded before it could upload")
+        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not marked lost without a conclusive check")
         XCTAssertEqual(discarded.mediaDiscardUnchecked, true, "its check owed, its upload history not known")
         withExtendedLifetime(engine) {}
     }
@@ -914,13 +1150,13 @@ final class Item166ReviewTests: XCTestCase {
                 Set(object["restoredHolds"] as? [String] ?? []))
     }
 
-    /// The byte limit discards `restored` on `store`: not said to have been discarded before it could upload, its
+    /// The byte limit discards `restored` on `store`: not marked lost without a conclusive check, its
     /// check owed.
     private func assertTheLimitLeavesItsHistoryUnknown(_ restored: Event, on store: EventStore) async throws {
         try await runTheByteLimit(on: store)
         let discarded = try XCTUnwrap(store.events.first { $0.id == restored.id })
         XCTAssertNil(discarded.mediaFilename, "the limit took its files")
-        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not said to have been discarded before it could upload")
+        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not marked lost without a conclusive check")
         XCTAssertEqual(discarded.mediaDiscardUnchecked, true, "its history unknown, its check owed")
     }
 
@@ -997,7 +1233,7 @@ final class Item166ReviewTests: XCTestCase {
         _ = await settled(store)
         store.drainIOForTesting()
         let discarded = try XCTUnwrap(store.events.first { $0.id == restored.id })
-        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not said to have been discarded before it could upload")
+        XCTAssertNotEqual(discarded.mediaDiscarded, true, "not marked lost without a conclusive check")
         XCTAssertEqual(discarded.mediaDiscardUnchecked, true, "its history unknown, its check owed")
         engine.seedCloudOwnershipIfReadable()   // the rebuild, as the next return to the screen runs it
         XCTAssertNotEqual(store.events.first { $0.id == restored.id }?.mediaDiscarded, true, "nor after the rebuild")

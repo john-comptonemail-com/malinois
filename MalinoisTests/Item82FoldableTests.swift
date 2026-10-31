@@ -137,7 +137,7 @@ final class Item82FoldableTests: XCTestCase {
     /// so a newer Xcode that adds an iPhone fails here, naming what to add, instead of the app showing
     /// a raw identifier. Every identifier a model answers to counts, not only its main one (Codex's
     /// sixth look, T1: the 18 Pro Max is also iPhone19,7). From the iPhone XS on (iPhone11,x), the
-    /// oldest iPhone iOS 17 runs on. The list is a folder on the Mac, which only a simulator run can
+    /// oldest iPhone iOS 18 runs on. The list is a folder on the Mac, which only a simulator run can
     /// read, so on a physical device this test skips, saying why.
     func testEveryIPhoneInXcodesDeviceListHasAName() throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] == nil,

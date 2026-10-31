@@ -76,7 +76,10 @@ iCloud decoder's list.
 
 - With headphones or AirPods connected, before or during a watch, Siren mode's siren is heard in the room.
 - The owner's own headphones nearby no longer get it either; the ramp's quiet start plays from the speaker.
-- iOS may show its orange microphone indicator while the siren plays, the setting being a recording one.
+- iOS may show its orange microphone indicator while the siren plays, the setting being a recording one. **Seen
+  (2026-10-30, iOS 27.2):** on the owner's iPhone 17 Pro, no orange dot and no question while the siren sounded. The
+  owner: the green camera dot, shown while Siren mode takes its photo, takes its place; and "given this passed on the
+  ipad, we can call the orange dot question settled". The documents keep "may show".
 - If a real iPhone asks for the microphone when the siren first starts with the permission never answered, the
   question comes up mid-alarm. TestFlight 79 checks it on a device that has never asked (Malinois absent from Settings
   → Privacy & Security → Microphone); if it does, the fallback is asking when Siren mode is chosen. **Checked

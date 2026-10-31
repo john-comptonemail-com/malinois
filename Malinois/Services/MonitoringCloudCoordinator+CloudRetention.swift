@@ -1,11 +1,9 @@
 //
-//  MonitoringEngine+CloudRetention.swift
+//  MonitoringCloudCoordinator+CloudRetention.swift
 //  Malinois
 //
-//  Cloud retention (32.R2) and the beat trails' trim: moved unchanged from MonitoringEngine.swift (BACKLOG 158's
-//  first stage, 1.8.2's step 1), which sits at the lint size limit. Members the class needs elsewhere are internal;
-//  the stored state stays in the class. Since 1.8.2 also the account bindings' upkeep: their prune (step 17) and their
-//  one-time seeding, moved here with codex-7's change.
+//  The cloud coordinator's retention, beat-trail trimming and account-binding upkeep.
+//  Stored coordination state lives in the coordinator core.
 //
 
 import Foundation
@@ -15,7 +13,7 @@ import UIKit
 import AVFoundation
 import UserNotifications
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
 
     /// Stamped only on an honestly-clean purge (the pre-R3-9 single stamp lives on as the
     /// success key, so existing devices carry their cadence over without a re-purge storm).

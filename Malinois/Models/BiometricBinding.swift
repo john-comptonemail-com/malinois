@@ -3,8 +3,8 @@
 //  Malinois
 //
 //  Item 152's lead 4 (item 145 step 13, ADR 0056): Face ID or Touch ID unlock is bound to the faces or fingers enrolled
-//  on the iPhone when the owner turned it on. iOS reports the enrolled set as an opaque state (`domainState.biometry
-//  .stateHash` on iOS 18 and later, `evaluatedPolicyDomainState` before) that changes when a face or finger is added or
+//  on the iPhone when the owner turned it on. iOS reports the enrolled set as an opaque state
+//  (`domainState.biometry.stateHash`, available on the iOS 18 minimum) that changes when a face or finger is added or
 //  removed; the state at opt-in is kept in the Keychain, this device only, and the pad offers the biometric only while
 //  the current state matches. Nothing here leaves the phone.
 //
@@ -32,8 +32,7 @@ enum BiometricBinding {
         #if DEBUG
         if let injected = stateForTesting { return injected() }
         #endif
-        if #available(iOS 18, *) { return context.domainState.biometry.stateHash }
-        return context.evaluatedPolicyDomainState
+        return context.domainState.biometry.stateHash
     }
 
     /// Whether a biometric can be evaluated now (enrolled, available, not locked out).

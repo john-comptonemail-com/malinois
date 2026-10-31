@@ -872,7 +872,7 @@ final class Spike14Model: NSObject, ObservableObject {
     @Published var log: [String] = []
 
     private var nfcSession: NFCTagReaderSession?
-    private var slotSession: Any?   // TKSmartCardSlotNFCSession (iOS 26 type; stored as Any for the iOS 17 target)
+    private var slotSession: Any?   // TKSmartCardSlotNFCSession (iOS 26 type; stored as Any for the iOS 18 target)
     private var pollTask: Task<Void, Never>?
     private var lastLoggedState = -1
     /// The 9E public key (65-byte uncompressed EC point) captured at enroll, verified

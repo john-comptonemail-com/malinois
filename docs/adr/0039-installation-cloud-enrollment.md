@@ -250,3 +250,12 @@ before the first unlock the byte limit could run first and mark such a capture a
 record this app makes is bound at birth. A record that the seeding of 1.8.1 or earlier
 tied to no account, the account unknown then, carries no note and is marked as before: a known limit, which
 SECURITY.md states. Tests: `Item166ReviewTests`.
+
+
+## Implementation note (2026-10-29, 1.9)
+
+The historical “before it could upload” sentence quoted above is replaced by a general statement that the storage
+cap removed the local full capture and no copy is available in iCloud. A cloud copy can have uploaded and then been
+deleted after local pruning (ADR 0006's 1.9 amendment). The restored-record rule above is unchanged: a restore explicitly noted in `restoredHolds` remains unchecked, and
+this installation does not adopt an unknown original account. The documented legacy exception also remains:
+a first-hand record bound to no account by 1.8.1 or earlier has no such history note and may still be marked.

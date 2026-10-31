@@ -2,9 +2,12 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.8.2 (79)**. Start with the practical guide below.
+This document describes **Malinois 1.9 (80), in development**. Final candidate validation and the owner's
+release approval are pending; the App Store has 1.8.2 (79), released 2026-10-29. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
+
+Malinois 1.9 requires iOS 18 or later; its Apple Watch companion still requires watchOS 10 or later.
 
 Use Malinois only on your own device. It is intended to help you notice and record
 someone handling your unattended phone, not to monitor other people without their
@@ -104,7 +107,9 @@ too.
 
 The app first attempts to save an event record. For eligible Pro events, it begins
 uploading the small event-details record before camera capture. Photos, videos and
-thumbnails follow separately. This gives the event details a head start; the
+thumbnails follow separately. In 1.9, if a local thumbnail staging write fails, the event details and full media
+still attempt their uploads, while the event remains pending for the thumbnail's retry. Another device accepts the
+new thumbnail at the same metadata revision without losing evidence already held. This gives the event details a head start; the
 [upload reference](#evidence-integrity) explains the delivery limits and retry rules.
 
 If another sensor triggers during a capture, its activity can join the same event.
@@ -399,7 +404,9 @@ trying to power it off before the evidence escapes.
    but retention can remove records and media, including pending evidence under pressure.
 4. **Recording is always indicated** (the REC badge and iOS's camera dot; with the Sound
    tripwire on, iOS's microphone dot for the whole watch) — covertness has a deliberate,
-   non-negotiable bound.
+   non-negotiable bound. One limit is iOS's: with the Proximity tripwire on (the default), iOS
+   turns the whole display off while something covers the sensor at the top of the screen, as
+   in a call, so the indicators are out of sight until it is uncovered (below).
 5. **Failure reporting.** Interrupted sessions, refused uploads, degraded persistence
    (a full disk, a quarantined log, a journal that cannot be written), and silent-clip
    conditions (a denied microphone, one that could not be attached) all surface to the
@@ -819,9 +826,11 @@ Two consequences matter for the threat model:
   copy supersedes a mirror, it inherits the locally-downloaded media reference rather
   than erasing it (eighth review, M3). Store updates as a class preserve monotonic
   fields: owner attribution and an advanced sync state can never be walked back by a
-  stale in-flight copy (sixth review, F2 — ADR 0006), and since 1.8.2 neither can the mark
-  that a photo was discarded before it uploaded, which a copy held on another device takes
-  from any later copy of the event.
+  stale in-flight copy (sixth review, F2 — ADR 0006), and since 1.8.2 neither can the capture-loss mark,
+  which a copy held on another device takes from any later copy of the event. In 1.9 this also covers a full capture
+  pruned locally whose last cloud copy was subsequently lost; it does not claim that the capture never uploaded.
+- **Disposable upload thumbnails:** from 1.9, launch removes abandoned temporary JPG copies named by the uploader,
+  while preserving active uploads, unrelated files and symlinks; older unlabelled temporary copies remain for iOS to purge.
 - **Two-shot exfiltration** *(Pro)* races a power-off: the instant a tamper is
   logged with verified cloud access and an eligible account binding — for *every*
   capture mode, *before* the camera capture even starts — a tiny
@@ -832,14 +841,33 @@ Two consequences matter for the threat model:
   failure, so a stall can neither wedge the per-event pipeline nor mute the
   observed-failure escalation by never technically failing (sixth review, F1). The
   account-status preflight ahead of each push is bounded the same way (10 s), so no step
-  of the chain — check or write — can hang it (fourth pass, R3-1). The event is also queued for the on-device store before capture (an asynchronous write — a runtime persist failure raises a Home banner rather than passing silently, F6), so a successful event write can preserve the detection even if capture fails — and on the **free
+  of the chain — check or write — can hang it (fourth pass, R3-1). Since 1.9 the reads are
+  bounded too: one that carries no file (the check that uploads are still in iCloud, the alert
+  subscriptions' listing, a heartbeat's read) fails at 20 s, and a restore's pages and a full
+  download restart their 20 s as records and bytes arrive, within the same ten-minute cap.
+  Each of these reads runs on a CloudKit operation of its own, cancelled at its deadline, at an
+  account change and when its caller is cancelled (CloudKit's async calls could not be stopped
+  before iOS 27); the iCloud clean-up's own two reads (its beats and its server-time query) keep
+  their deadline and their account-change cancel, nothing cancelling their tasks. Before, a read that stalled held its caller for the session: a stalled check stopped
+  every later retry of the pending uploads (ADR 0003). The event is also queued for the on-device store before capture (an asynchronous write — a runtime persist failure raises a Home banner rather than passing silently, F6), so a successful event write can preserve the detection even if capture fails — and on the **free
   tier** that on-disk write is the whole story, since the iCloud pushes are Pro-gated
   (see [Protection tiering](#protection-tiering-free-vs-pro)). A still takes ~1 s to shoot
   and write and a clip far longer, so pushing the fact first (not just for clips)
   gives metadata a head start in every capture mode, without a delivery guarantee. Since 1.8.1 every push, and the
-  engine's task that starts one, holds a background-task assertion from its first step, the identity lookup included,
+  task that starts one, holds a background-task assertion from its first step, the identity lookup included,
   so a lock or a kill in the same instant finds iOS's extra time already asked for; it used to be asked for only
-  after the lookup and the per-event queue wait (ADR 0003). **Writes for one event are serialized** (ADR
+  after the lookup and the per-event queue wait (ADR 0003). In 1.9 the cloud coordinator owns this work. Each finite
+  task also retains its engine host through completion and cleanup; the persistent host and callbacks remain weak.
+  The trip responder owns capture coordination, including one shared claim for flood, blackout and retry stills.
+  Admitted responses retain the same engine through capture, stored-file updates and the cloud handoff. A parked
+  interruption retry remains weak until its queued task finds a live host and the current session/slot; timers and
+  camera callbacks do not keep an idle engine alive. Event binding, journaling and fact-upload scheduling still precede capture,
+  and no new delivery, recording or background-execution guarantee follows from this separation.
+  Arming progression similarly has its own timers and state owner. Its permission request retains the engine through
+  the answer, while idle timers and review callbacks remain weak. Countdown/calibration publications keep their
+  synchronous ordering, and the engine retains physical watch start, disarm and the existing recovery marker policy;
+  moving those boundaries adds no permission, bypass or stronger crash-recovery guarantee.
+  **Writes for one event are serialized** (ADR
   0003): each starts only after the previous write for that event has finished, in the order they were asked for,
   and since 1.8.2 each sends the event as the phone's log holds it at that moment; a
   write carrying less evidence than one already sent is refused; different events'
@@ -899,7 +927,13 @@ Two consequences matter for the threat model:
   readable whenever the phone has been unlocked once since it started, so a finished clip
   can still be read and attached if the screen locks first. The store moves each clip out
   as it attaches it, under `completeUnlessOpen` as above, so only a clip no event took stays
-  there; such a clip is removed at launch once it is 30 days old. Since 1.8.2 a save that
+  there, or one whose refused save waits for the next launch (above). A launch removes a clip
+  there once it is 30 days old, unless an attachment intent names it as waiting, and the store
+  keeps that intent past its own 30 days while the clip waits; while the
+  intents cannot be read (they are sealed while the phone is locked) it removes none (since
+  1.9; before, a waiting clip was removed at 30 days with the rest). So such a clip stays in
+  this less protected folder until a launch with the phone unlocked saves it, however long
+  that takes: the owner's ruling (2026-10-30), losing the recording being the greater cost. Since 1.8.2 a save that
   starts after the lock's grace period (about 10 seconds; a late camera file, or work done
   when a notification wakes the app) completes: the store flushes each file it writes without
   reopening it, which iOS refuses for a `completeUnlessOpen` file once the phone has locked.
@@ -925,7 +959,10 @@ Two consequences matter for the threat model:
   locally even if unsynced. Count trimming does not delete records from iCloud. The
   cloud-cleanup minimum age of 30 days does not apply to these local storage limits.
   A copy previously marked synced may no longer exist remotely; re-download is
-  possible only while that cloud copy remains. Since 1.8 the media cap is applied as soon as
+  possible only while that cloud copy remains. In 1.9, a detected cloud deletion or reset also
+  schedules a cloud check for captures whose local files the storage cap already removed. If that check confirms
+  that no cloud copy remains, the next metadata upload carries the loss mark and the download offer is removed.
+  An inconclusive answer leaves the check owed. Since 1.8 the media cap is applied as soon as
   media is attached (a capture, a download or a recovered file), not only at the next event:
   on a phone at the cap the oldest synced media goes first, which can be a download itself. A
   pending capture the byte cap must discard in a storage emergency is
@@ -1474,6 +1511,12 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   ARM tap) and, while armed, floors screen brightness at 0.33; iOS draws its own camera indicator in the Dynamic Island or the top
   corner whatever the app does with the status bar, which stays hidden. It is derived from `AVCaptureSession` lifecycle
   notifications, so no code path can run the camera without it (App Store guideline 2.5.14).
+  One limit is iOS's: with the Proximity tripwire on (the default), iOS turns the whole display
+  off while something covers the sensor at the top of the screen, as it does in a call, so the
+  badge and the camera dot cannot be seen until it is uncovered. The recording goes on and is
+  kept (the owner's check on an iPhone 17 Pro, 2026-10-30). Pausing the tripwire during a
+  capture would keep them in view at the cost of its detection; the owner chose to say so
+  instead (ADR 0064).
   iOS's indicator appears the moment the camera starts; the badge follows a moment later, once
   the app has seen the start and redrawn. Nothing holds a shot until the badge is drawn: it is up
   first because a capture from a camera that was not already running waits 0.8 s for the
@@ -1820,6 +1863,11 @@ These are out of scope by design — Malinois does not claim to defend against t
   entry. Someone who can close the app twice within 90 seconds gets the same, and each close is still recorded.
   Stopping the re-arm's countdown takes the Malinois PIN; since 1.8.2 the stop is recorded as a cancelled countdown is
   ("Arming cancelled before going live"), and on Pro alerts the owner's other devices the same way.
+- **Recovery marker handoffs:** since 1.9, an interrupted watch or recovery countdown records the interruption and
+  preserves the owed re-arm before retiring its old marker. An ordinary interrupted countdown records its end
+  before retiring its marker, preserving its existing no-auto-rearm rule. A re-arm installs its countdown marker,
+  or logs a crash-loop refusal, before consuming the owed flag. An already logged background lapse still suppresses
+  a duplicate interruption. These writes are ordered, not one atomic transaction across the log and settings.
 - **The recovery countdown itself leaves a marker (F1, external review round 11).** The window
   between consuming the owed re-arm flag and re-engaging covert used to hold no persistent
   state, so killing the app a second time *during* the visible recovery countdown left the next

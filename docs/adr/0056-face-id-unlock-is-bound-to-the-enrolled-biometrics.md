@@ -79,3 +79,12 @@ Settings, or switched off by the pad when the enrolled faces or fingers changed,
 The record uploads as every status record does, with iCloud backup on. The binding's Keychain item still stays on
 this phone and goes nowhere. The path inventory's "no record in the log" and "not a protection setting" are superseded
 on that point (Codex's codex-5 on the full review of 1.8.2, BACKLOG item 165's F2).
+
+## Amendment (2026-10-29, 1.9): iOS 18 is the minimum
+
+The iPhone app now requires iOS 18. `BiometricBinding.state(of:)` always reads
+`LAContext.domainState.biometry.stateHash`; the iOS 17 `evaluatedPolicyDomainState` branch is removed.
+The state comparison, Keychain item, PIN fallback and explicit re-enrolment remain unchanged. A stored hash
+that differs after an operating-system upgrade still turns biometric unlock off and leaves the PIN available;
+it is never silently rebound. The existing tests inject the same state and evaluation seams on both supported
+simulator runtimes; real biometric enrolment and major-OS-upgrade behavior still require device checks.

@@ -19,6 +19,7 @@
 //  red before its change.
 //
 
+import CloudKit
 import XCTest
 @testable import Malinois
 
@@ -768,5 +769,75 @@ final class Item152SettingsGuardTests: XCTestCase {
         XCTAssertTrue(landed, "the owner's off landed")
         XCTAssertEqual(calls.removed.count, 3, "the tamper, disarm and 1.0 subscriptions removed")
         XCTAssertEqual(calls.saved, [], "and nothing saved after it")
+    }
+
+    // MARK: - Item 180's A2 (claude-fable-2 on 296bab0): a listing that never answers
+
+    /// The listing of the account's subscriptions had no deadline: one that never answered, on a network that looks up
+    /// and passes nothing, held the reconnect's automatic setup open for the rest of the session. Now the listing fails
+    /// at the read deadline, and the setup finishes, having saved nothing.
+    func testAListingThatNeverAnswersEndsTheRefreshAtTheDeadline() async throws {
+        let settings = try alertsOnSettings()
+        let listing = Gate()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings, listing: listing)
+        cloud.readDeadlineForTesting = 0.5
+        defer { listing.release() }
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)   // the refresh starts, and its listing never answers
+        let held = await eventually { listing.entered == 1 }
+        XCTAssertTrue(held, "the refresh waits on the listing")
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the refresh finished at the listing's deadline")
+        XCTAssertEqual(calls.saved, [], "having saved nothing")
+    }
+
+    // MARK: - The review of the fixes (codex-4 on ee565c2): reads on operations of their own
+
+    /// The read operations a test holds in place of the database, unanswered.
+    @MainActor
+    private final class HeldOperations {
+        var operations: [CKDatabaseOperation] = []
+
+        /// The first held operation of `type` that `matches`: other work on the same cloud can hand the hook its own
+        /// meanwhile (the gate's ThreadSanitizer pass on d083d3c found a restore's page first).
+        func first<T: CKDatabaseOperation>(_ type: T.Type, where matches: (T) -> Bool = { _ in true }) -> T? {
+            operations.lazy.compactMap { $0 as? T }.first(where: matches)
+        }
+    }
+
+    /// codex-4 on ee565c2: the listing ran on CloudKit's async `allSubscriptions()`, which before iOS 27 wraps the callback
+    /// call with no cancellation: past the deadline the setup went on, but the request and its task stayed, one more at
+    /// each reconnect. Now the listing is an operation of its own, cancelled at the deadline. Red at its red commit: no
+    /// operation was made.
+    func testAListingOperationThatNeverAnswersIsCancelledAtTheDeadline() async throws {
+        let settings = try alertsOnSettings()
+        let (engine, cloud, calls) = try await makeAlertsRig(settings)
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        cloud.existingSubscriptionsForTesting = nil   // the real listing, only its operation held
+        let held = HeldOperations()
+        cloud.readSubmitForTesting = { held.operations.append($0) }   // CloudKit never answers
+        cloud.readDeadlineForTesting = 0.5
+        engine.simulateConnectivityForTesting(online: false)
+        engine.simulateConnectivityForTesting(online: true)   // the refresh starts
+        let finished = await eventually { calls.setupsFinished == 1 }
+        XCTAssertTrue(finished, "the refresh finished at the listing's deadline")
+        let listing = try XCTUnwrap(held.first(CKFetchSubscriptionsOperation.self), "the listing ran on its own operation")
+        XCTAssertTrue(listing.isCancelled, "and was cancelled at the deadline")
+        XCTAssertEqual(calls.saved, [], "having saved nothing")
+    }
+
+    /// codex-4: the arm's warm-up query, the same: an operation of its own, cancelled at the deadline. The listing answers
+    /// at once here (the rig's), so the query is the only read held. Red at its red commit: no operation was made.
+    func testAWarmUpQueryThatNeverAnswersIsCancelledAtTheDeadline() async throws {
+        let settings = try alertsOnSettings()
+        let (engine, cloud, _) = try await makeAlertsRig(settings)
+        engine.cloudFetchForTesting = { _ in ([], true) }   // the engine's own restore stays off this cloud
+        let held = HeldOperations()
+        cloud.readSubmitForTesting = { held.operations.append($0) }
+        cloud.readDeadlineForTesting = 0.5
+        await cloud.warmUp(alertsWanted: { true })
+        let query = try XCTUnwrap(held.first(CKQueryOperation.self) { $0.resultsLimit == 1 },
+                                  "the warm-up's query (one result at most) ran on its own operation")
+        XCTAssertTrue(query.isCancelled, "and was cancelled at the deadline")
     }
 }

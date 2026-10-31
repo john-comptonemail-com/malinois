@@ -195,8 +195,8 @@ extension MonitoringEngine {
         UserDefaults.standard.set(Double(previousBrightness), forKey: Self.armedMarkerKey)
         plantBootStamp()   // beside the marker: lets the next launch tell a restart from a kill (53)
         // The recovered watch is now protected; the armed marker covers it from here (F1).
-        UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)
-        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // the armed marker takes over (R3.2)
+        retireRecoveryMarker(Self.recoveryInProgressKey)
+        retireRecoveryMarker(Self.armingInProgressKey)   // the armed marker takes over (R3.2)
     }
 
     /// The display side of going covert: keep the device awake and take the screen to black.
@@ -210,9 +210,9 @@ extension MonitoringEngine {
     /// once the state is `.disarmed`, or holds it a while under Guided Access (item 92).
     func releaseCovertScreen() {
         UIScreen.main.brightness = Self.restoredBrightness(previous: previousBrightness)   // the user's level, floored
-        UserDefaults.standard.removeObject(forKey: Self.armedMarkerKey)   // clean exit
-        UserDefaults.standard.removeObject(forKey: Self.recoveryInProgressKey)   // and no owed recovery (F1)
-        UserDefaults.standard.removeObject(forKey: Self.armingInProgressKey)   // and no countdown in flight (R3.2)
+        retireRecoveryMarker(Self.armedMarkerKey)   // clean exit
+        retireRecoveryMarker(Self.recoveryInProgressKey)   // and no owed recovery (F1)
+        retireRecoveryMarker(Self.armingInProgressKey)   // and no countdown in flight (R3.2)
         clearBootStamp()
     }
 
@@ -263,34 +263,4 @@ extension MonitoringEngine {
     /// PIN entry dismissed without a disarm (cancel or inactivity timeout): back to covert.
     func endDisarmEntry() { disarmEntry.end() }
 
-    /// A wrong PIN on the armed screen's disarm pad (item 49): the attempt to defeat the alarm is
-    /// itself evidence. `KeychainService.verify` has already counted it for the lockout, which
-    /// this never touches. While a capture is running the attempt joins that record, like any
-    /// trip during a capture (the typing is its Touch); otherwise it mints its own record through
-    /// the trigger response — the fact first, pushed like any trip, then one front still.
-    /// Armed sessions only (the calibration review included, like `handleTrip`): the Home gate
-    /// and the other PIN pads stay lockout-only. The alarm and the flash keep their rule —
-    /// no fresh alarm or flash while the owner is typing (A-02); a running alarm is kept up.
-    func noteWrongDisarmPIN() {
-        guard !dryRunActive else { return }
-        if state == .triggered || capturePipeline.isCapturingUntilClear {
-            // An until-clear recording treats the attempt as activity, like any trip.
-            if capturePipeline.isCapturingUntilClear { capturePipeline.noteActivity() }
-            tripsDuringCapture[armSession, default: []].insert(.touch)
-            wrongPINsDuringCapture[armSession, default: 0] += 1
-            extendAlertWindow()
-            return
-        }
-        guard state == .armed || (state == .calibrating && showingCalibrationReview),
-              !isHandlingTrigger else { return }
-        if showingCalibrationReview { goCovert() }
-        isHandlingTrigger = true
-        state = .triggered
-        tripsDuringCapture[armSession] = nil
-        wrongPINsDuringCapture[armSession] = nil
-        let startDate = Date()
-        lastTriggerDate = startDate
-        let session = armSession
-        Task { await respond(triggeredSensors: [.touch], startDate: startDate, session: session, wrongPIN: true) }
-    }
 }

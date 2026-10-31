@@ -4,7 +4,9 @@
   stall, a forced old-callback overlap and an actual partial clip's duration were not demonstrated
   on hardware. Amended for 1.6 (65) after the 1.6 reviews (BACKLOG 108, CE-01 and F8): late
   output asks for an upload pass; unclaimed movies 30 days old are removed at launch; the torch
-  waits for admission.
+  waits for admission. Amended for 1.9 (BACKLOG 180's A3): a movie an attachment intent names as
+  waiting is claimed, and a launch that cannot read the intents removes none; the store keeps such an
+  intent past 30 days while its movie waits (codex-1).
 - Date: 2026-10-11
 - Decision: authorized by the owner after the deadline/label investigation
 - Extends ADR0008 (capture failure honesty), ADR0025 (microphone handoff), and ADR0037 (recoverable attachments)

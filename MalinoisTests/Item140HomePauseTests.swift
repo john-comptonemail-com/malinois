@@ -52,7 +52,7 @@ final class Item140HomePauseTests: XCTestCase {
         let recorded = Self.event()
         rig.gate.registerLocalEvent(recorded)
         XCTAssertEqual(rig.gate.uploadHoldReason(for: recorded), .unknownAccount)
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: Self.needed)
         XCTAssertTrue(shown.contains(Self.needed), "\(shown)")
         XCTAssertFalse(shown.contains(Self.waiting), "\(shown)")
         XCTAssertEqual(line(rig), HomeView.iCloudPausedNotice)
@@ -73,7 +73,7 @@ final class Item140HomePauseTests: XCTestCase {
         let recorded = Self.event()
         rig.gate.registerLocalEvent(recorded)
         XCTAssertNotNil(rig.gate.uploadHoldReason(for: recorded))
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: Self.needed)
         XCTAssertTrue(shown.contains(Self.needed), "\(shown)")
         XCTAssertFalse(shown.contains(Self.waiting), "\(shown)")
         XCTAssertEqual(line(rig), HomeView.iCloudPausedNotice)
@@ -100,7 +100,7 @@ final class Item140HomePauseTests: XCTestCase {
         let recorded = Self.event()
         rig.gate.registerLocalEvent(recorded)
         XCTAssertNil(rig.gate.uploadHoldReason(for: recorded), "tied to the verified account")
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: Self.waiting)
         XCTAssertTrue(shown.contains("Waiting for iCloud"), "\(shown)")
         XCTAssertFalse(shown.contains(Self.needed), "\(shown)")
         XCTAssertNil(line(rig))
@@ -124,7 +124,7 @@ final class Item140HomePauseTests: XCTestCase {
         let recorded = Self.event()
         rig.gate.registerLocalEvent(recorded)
         XCTAssertNil(rig.gate.uploadHoldReason(for: recorded))
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: Self.waiting)
         XCTAssertTrue(shown.contains(Self.waiting), "\(shown)")
         XCTAssertFalse(shown.contains(Self.needed), "\(shown)")
         XCTAssertNil(line(rig))
@@ -135,6 +135,22 @@ final class Item140HomePauseTests: XCTestCase {
         XCTAssertEqual(prompts.count, 0, "no new verification")
     }
 
+    /// A fresh Home must do its own account-status refresh before its waiting row is read. Calling
+    /// refreshAccountState or acquiring a lease in this test would hide a missing Home lifecycle task.
+    func testHomeRefreshesAnUnknownAccountBeforeShowingItsWaitingRow() async throws {
+        let path = Self.file()
+        let first = CloudEnrollment(file: path, authenticate: { _ in true })
+        let enrolled = await first.enroll(account: "account-a", resolve: { "account-a" })
+        XCTAssertTrue(enrolled)
+        let rig = await makeRig(file: path, prompts: Prompts())
+        XCTAssertEqual(rig.cloud.accountState, .unknown, "Home has not asked iOS for account status yet")
+        let shown = try await home(rig, expecting: Self.waiting)
+        XCTAssertEqual(rig.cloud.accountState, .available, "Home performed its account-status refresh")
+        XCTAssertTrue(shown.contains(Self.waiting), "\(shown)")
+        XCTAssertFalse(shown.contains("Checking iCloud…"), "\(shown)")
+        XCTAssertFalse(rig.gate.verified, "an account-status answer is not an identity verification")
+    }
+
     // MARK: - Controls
 
     /// Verified and current: "iCloud ready" and no line.
@@ -143,7 +159,7 @@ final class Item140HomePauseTests: XCTestCase {
         rig.cloud.accountIdentityForTesting = { "account-a" }
         let enrolled = await rig.cloud.enrollCloudAccess()
         XCTAssertTrue(enrolled)
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: "iCloud ready")
         XCTAssertTrue(shown.contains("iCloud ready"), "\(shown)")
         XCTAssertNil(line(rig))
     }
@@ -160,7 +176,7 @@ final class Item140HomePauseTests: XCTestCase {
         _ = await rig.cloud.acquireCloudLease()
         XCTAssertFalse(rig.gate.verified)
         XCTAssertFalse(rig.gate.newEventsBindToVerifiedAccount, "held while backup is off")
-        let shown = try home(rig)
+        let shown = try await home(rig, expecting: MonitoringEngine.backupOffNotice)
         XCTAssertTrue(shown.contains(MonitoringEngine.backupOffNotice), "\(shown)")
         XCTAssertNil(line(rig))
         XCTAssertNil(HomeView.iCloudPauseLine(proActive: true, backupOn: false, verified: false, newEventsBound: false,
@@ -188,14 +204,15 @@ final class Item140HomePauseTests: XCTestCase {
         return Rig(gate: gate, cloud: cloud, engine: engine, settings: settings, store: store, entitlements: entitlements)
     }
 
-    /// What the real Home shows.
-    private func home(_ rig: Rig) throws -> [String] {
-        try shownOnScreen(HomeView()
+    /// What the real Home shows once the expected row has actually appeared. The async wait lets Home's
+    /// own account-status task run instead of relying on a fixed main-run-loop pump.
+    private func home(_ rig: Rig, expecting text: String) async throws -> [String] {
+        try await shownOnScreen(HomeView()
             .environmentObject(rig.engine)
             .environmentObject(rig.settings)
             .environmentObject(rig.cloud)
             .environmentObject(rig.store)
-            .environmentObject(rig.entitlements)).shown
+            .environmentObject(rig.entitlements), until: { $0.contains(text) }).shown
     }
 
     /// Home's orange iCloud line for the rig's state, on a device whose build has its iCloud container.

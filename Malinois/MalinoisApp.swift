@@ -65,12 +65,15 @@ struct MalinoisApp: App {
     static func makeServices(settings: AppSettings? = nil, entitlements: ProEntitlements? = nil,
                              relaySend: ((WatchAlertMessage) -> Void)? = nil) -> Services {
         // Clear clip temp files a failed store-move orphaned (disk full mid-recording), and
-        // pending recordings no event took (item 108, F8). Off the launch path — nothing waits
-        // on it, and it only touches files over a day (temp) or a month (pending) old.
+        // pending recordings no event took (item 108, F8), keeping those a refused save left
+        // waiting for this launch (BACKLOG 180's A3). Off the launch path — nothing waits on it,
+        // and it only touches files over a day (temp) or a month (pending) old.
         Task.detached(priority: .background) {
             CameraController.sweepOrphanedClips()
-            CameraController.sweepOrphanedPendingClips()
+            CameraController.sweepPendingClipsAtLaunch()
         }
+        // Before this launch can start any upload; repeated construction preserves assets still in use.
+        CloudExfiltrator.sweepOrphanedThumbnails()
         let settings = settings ?? AppSettings.load()
         // Before anything can arm, once the settings can be read (ADR 0055; at once on an unlocked launch): whether the
         // tamper warning still shows how to disarm (item 107), and whether the one-time screen before the first arm is

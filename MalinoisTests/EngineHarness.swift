@@ -56,6 +56,12 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     /// for the store, which writes it as-is and tolerates a thumbnail it cannot decode.
     var stillData = Data([0xFF, 0xD8, 0xFF, 0xD9])
     var clipInterrupted = false
+    /// Item 180's A1: a recording iOS ended on its own (its size limit, a full disk), set while the clip records.
+    var recordingEndedOnItsOwn: Bool {
+        get { lock.withLock { _recordingEndedOnItsOwn } }
+        set { lock.withLock { _recordingEndedOnItsOwn = newValue } }
+    }
+    private var _recordingEndedOnItsOwn = false
     /// Investigation-only gates, configured before capture; absent in all ordinary tests.
     var lowLightProbeForTesting: (@Sendable () async -> Bool)?
     var interruptionProbeForTesting: (@Sendable () async -> Bool)?
@@ -104,6 +110,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     private var _attemptBegins = 0
     private var _roomChecks: [Int] = []
     private var _videoAccessRequests = 0
+    private var _holdVideoAccess = false
+    private var videoAccessWaiters: [CheckedContinuation<Void, Never>] = []
     private var _holdStills = false
     private var stillWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -122,6 +130,28 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var attemptBegins: Int { lock.withLock { _attemptBegins } }
     /// How many times the camera question was asked (item 162's G1).
     var videoAccessRequests: Int { lock.withLock { _videoAccessRequests } }
+
+    // MARK: Holding the camera permission answer
+
+    /// A permission question held by the arming ownership tests. Set before the request;
+    /// release is latched, so opening before continuation registration cannot strand it.
+    var holdVideoAccess: Bool {
+        get { lock.withLock { _holdVideoAccess } }
+        set { lock.withLock { _holdVideoAccess = newValue } }
+    }
+
+    /// The test waits for actual suspension, not just a request that has begun to run.
+    var videoAccessWaiterCount: Int { lock.withLock { videoAccessWaiters.count } }
+
+    func releaseVideoAccess() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            _holdVideoAccess = false
+            let pending = videoAccessWaiters
+            videoAccessWaiters = []
+            return pending
+        }
+        waiting.forEach { $0.resume() }
+    }
 
     // MARK: Holding a capture open
 
@@ -173,6 +203,16 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     func requestVideoAccess() async -> Bool {
         lock.withLock { _videoAccessRequests += 1 }
         await duringVideoAccessRequest?()
+        if holdVideoAccess {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let held = lock.withLock { () -> Bool in
+                    guard _holdVideoAccess else { return false }
+                    videoAccessWaiters.append(continuation)
+                    return true
+                }
+                if !held { continuation.resume() }
+            }
+        }
         videoPermission = videoAccessAnswer
         return videoAccessAnswer == .authorized
     }
@@ -299,6 +339,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
         if let probe = interruptionProbeForTesting { return await probe() }
         return clipInterrupted
     }
+    func clipRecordingEndedOnItsOwn() async -> Bool { recordingEndedOnItsOwn }
     func interruptionReason() async -> CaptureInterruptionReason? { interruptionReasonValue }
     func beginCaptureAttempt() { lock.withLock { _attemptBegins += 1 } }
     func quarantineCapture() { shutDown() }
@@ -468,6 +509,38 @@ func shownOnScreen<V: View>(_ view: V, in size: CGSize = CGSize(width: 402, heig
     controller.view.layoutIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     controller.view.layoutIfNeeded()
+    return (recorder.shown, recorder.frames)
+}
+
+/// What a real screen shows after `condition` is visible, keeping its window alive and releasing the main
+/// actor while SwiftUI tasks and observation updates run. A timeout fails with the last rendered texts.
+@MainActor
+func shownOnScreen<V: View>(_ view: V, in size: CGSize = CGSize(width: 402, height: 874),
+                            until condition: ([String]) -> Bool, timeout: Duration = .seconds(3),
+                            file: StaticString = #filePath, line: UInt = #line)
+    async throws -> (shown: [String], frames: [String: CGRect]) {
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
+                              "the test host has no window scene", file: file, line: line)
+    let recorder = OnScreenRecorder()
+    let window = UIWindow(windowScene: scene)
+    window.frame = CGRect(origin: .zero, size: size)
+    let controller = UIHostingController(rootView: view.environment(\.onScreenRecorder, recorder))
+    controller.safeAreaRegions = []
+    window.rootViewController = controller
+    window.isHidden = false
+    defer {
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    controller.view.layoutIfNeeded()
+    while !condition(recorder.shown), clock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+        controller.view.layoutIfNeeded()
+    }
+    XCTAssertTrue(condition(recorder.shown), "Timed out waiting for screen state: \(recorder.shown)",
+                  file: file, line: line)
     return (recorder.shown, recorder.frames)
 }
 

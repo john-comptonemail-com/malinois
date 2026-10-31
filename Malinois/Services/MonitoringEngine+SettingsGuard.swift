@@ -37,7 +37,7 @@ extension MonitoringEngine {
     private func adoptProtectionSettingsIfNeeded() {
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: Self.recordedProtectionKey),
-           let recorded = try? JSONDecoder().decode(ProtectionSettings.self, from: data) {
+           let recorded = try? StoredJSON.decode(ProtectionSettings.self, from: data) {
             let filled = recorded.fillingMissing(from: ProtectionSettings(settings))
             if filled != recorded, let data = try? JSONEncoder().encode(filled) {
                 defaults.set(data, forKey: Self.recordedProtectionKey)
@@ -79,7 +79,7 @@ extension MonitoringEngine {
             if let data = try? JSONEncoder().encode(current) { defaults.set(data, forKey: Self.recordedProtectionKey) }
         }
         guard let data = defaults.data(forKey: Self.recordedProtectionKey),
-              let recorded = try? JSONDecoder().decode(ProtectionSettings.self, from: data) else { return }
+              let recorded = try? StoredJSON.decode(ProtectionSettings.self, from: data) else { return }
         for kind in ProtectionSettings.changeKinds(from: recorded, to: current) { logStateChange(kind) }
     }
 }

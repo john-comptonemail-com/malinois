@@ -87,6 +87,9 @@ protocol EvidenceCamera: AnyObject, Sendable {
     /// Deliver each lens independently so one stalled delegate cannot hide the other movie.
     func endBothClips(onFinalized: @escaping @Sendable (URL, CameraChoice) async -> Void) async -> (front: URL?, rear: URL?)
     func clipWasInterrupted() async -> Bool
+    /// Whether a recording of the current clip has finished on its own since the clip began: iOS ended it at the clip's
+    /// size limit, on a full disk or on a session error, before the clip was ended (BACKLOG 180's A1).
+    func clipRecordingEndedOnItsOwn() async -> Bool
     /// The session's life as the engine sees it — interruptions with the system's reason,
     /// their end, and runtime errors (item 54). Delivered on the main actor.
     var onSessionEvent: (@MainActor (CameraSessionEvent) -> Void)? { get set }
@@ -288,6 +291,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     /// Set when the active clip's session is interrupted, so the until-clear loop
     /// stops waiting on a dead session and finalizes the partial now.
     nonisolated(unsafe) private var clipInterrupted = false
+    /// Set when a recording of the active clip finished before the clip was ended (iOS ended it at its size limit, on a
+    /// full disk or a session error), so the until-clear loop stops waiting on a recording that has stopped (BACKLOG
+    /// 180's A1). Read and written only on `sessionQueue`, as `clipInterrupted`.
+    nonisolated(unsafe) private var clipRecordingEnded = false
     /// Why the clip in progress was interrupted (item 54); reset with `clipInterrupted`.
     nonisolated(unsafe) private var clipInterruptionReasonValue: CaptureInterruptionReason?
     /// Why the session is interrupted right now — set on the interruption, cleared when it ends.
@@ -388,6 +395,13 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Whether a recording of the current clip finished on its own since the clip began (BACKLOG 180's A1).
+    nonisolated func clipRecordingEndedOnItsOwn() async -> Bool {
+        await withCheckedContinuation { cont in
+            sessionQueue.async { cont.resume(returning: self.clipRecordingEnded) }
+        }
+    }
+
     /// Item 54: the current interruption's reason, else the reason that hit the clip in
     /// progress, else nil.
     nonisolated func interruptionReason() async -> CaptureInterruptionReason? {
@@ -405,6 +419,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     nonisolated func beginCaptureAttempt() {
         sessionQueue.async {
             self.clipInterrupted = false
+            self.clipRecordingEnded = false
             self.clipInterruptionReasonValue = nil
         }
     }
@@ -1062,6 +1077,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             guard !self.movieOutput.isRecording else { return }
             guard self.session.isRunning else { return }   // nothing starts on a stopped session; endClip then fails fast (R3.1)
             self.clipInterrupted = false
+            self.clipRecordingEnded = false
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.single)
             guard let destination = Self.pendingMovieDestinations(outputs: 1)?.first else { return }
@@ -1121,6 +1137,7 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             guard self.owns(epoch) else { return }
             guard self.mcSession.isRunning else { return }   // as beginClip (R3.1)
             self.clipInterrupted = false
+            self.clipRecordingEnded = false
             self.clipInterruptionReasonValue = nil
             self.discardParkedClip(.front)
             self.discardParkedClip(.rear)
@@ -1333,26 +1350,38 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     }
 
     /// Removes recordings no event took from `pendingClipsFolder` once they are `age` old (item
-    /// 108, F8). The event log moves every clip it attaches out of that folder at once and nothing
-    /// else reads it, so a clip still there after a month is one no path will ever attach: a
-    /// recording whose response ended without it, or whose app was ended mid-recording. Kept,
-    /// they counted against the folder's admission budget (`pendingMovieAllowance`), and enough
-    /// of them refused every new clip. Only this class's own `<UUID>.mov` files are touched.
-    /// Run at launch, off the main thread. `root` and `now` are for tests.
+    /// 108, F8), except the clips named in `keeping`. The event log moves every clip it attaches
+    /// out of that folder at once; the one other path that reads it is a save iOS refused (1.8.2's
+    /// step 63), whose clip waits there, named by its attachment intent, for the next launch.
+    /// Any other clip still there after a month is one no path will ever attach: a recording whose
+    /// response ended without it, or whose app was ended mid-recording. Kept, they counted against
+    /// the folder's admission budget (`pendingMovieAllowance`), and enough of them refused every
+    /// new clip. Only this class's own `<UUID>.mov` files are touched. `root` and `now` are for tests.
     nonisolated static func sweepOrphanedPendingClips(in root: URL? = nil, olderThan age: TimeInterval = 30 * 86_400,
-                                                      now: Date = Date()) {
+                                                      now: Date = Date(), keeping: Set<String> = []) {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
         guard let urls = try? FileManager.default.contentsOfDirectory(at: root ?? pendingClipsFolder,
                                                                       includingPropertiesForKeys: keys,
                                                                       options: [.skipsHiddenFiles]) else { return }
         let cutoff = now.addingTimeInterval(-age)
         for url in urls where url.pathExtension == "mov"
-            && UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil {
+            && UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil
+            && !keeping.contains(url.lastPathComponent) {
             let values = try? url.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true, let modified = values?.contentModificationDate,
                   modified < cutoff else { continue }
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// The launch's sweep of `pendingClipsFolder`, run off the main thread (BACKLOG 180's A3). It keeps every clip an
+    /// attachment intent names: a save iOS refused leaves its clip waiting there for the next unlocked launch, and a
+    /// month without one used to cost the incident its recording. While the intents cannot all be read (they are sealed
+    /// while the phone is locked, as in a launch in the background), it cannot tell which clips are waiting, and removes
+    /// nothing; a later launch with the phone unlocked sweeps.
+    nonisolated static func sweepPendingClipsAtLaunch(in root: URL? = nil, now: Date = Date()) {
+        guard let waiting = EventStore.waitingClipNamesClaimedByIntents() else { return }
+        sweepOrphanedPendingClips(in: root, now: now, keeping: waiting)
     }
 
     /// Sweeps legacy temporary movies created before protected pending evidence storage.
@@ -1435,30 +1464,47 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
         if let handler = delivery.0, let lens = delivery.1, FileManager.default.fileExists(atPath: outputFileURL.path) {
             handler(outputFileURL, lens)
         }
-        sessionQueue.async {
-            // Only this slot's CURRENT recording may resume anything. A callback for a file the
-            // slot is no longer recording to is a straggler from a recording that already timed
-            // out; its own capture has been failed already, and letting it through would hand
-            // its footage to whatever event is waiting now.
-            guard self.movieExpectedURLs[slot] == outputFileURL else {
-                Log.camera.error("Retained an unmatched clip callback; it cannot join another event")
-                return
-            }
-            self.movieExpectedURLs[slot] = nil
-            // Return existing bytes for inspection, not as a claim that recording succeeded.
-            // The pipeline measures playability/duration and consults this URL's delegate outcome.
-            let usableURL = FileManager.default.fileExists(atPath: outputFileURL.path) ? outputFileURL : nil
-            if let cont = self.movieConts.removeValue(forKey: slot) {
-                if let usableURL { cont.resume(returning: usableURL) }
-                else if let failure { cont.resume(throwing: failure) }
-                else { cont.resume(throwing: CameraError.captureFailed) }
-            } else if let usableURL {
-                // No one is waiting yet: an interruption finalized this clip before
-                // endRecording ran. Stash it so the pending stop returns it.
-                self.movieFinalizedURLs[slot] = usableURL
-            }
+        sessionQueue.async { self.recordingFinished(slot: slot, at: outputFileURL, failure: failure) }
+    }
+
+    /// The delegate's part on `sessionQueue`, once a recording has finished.
+    nonisolated private func recordingFinished(slot: Slot, at outputFileURL: URL, failure: Error?) {
+        // Only this slot's CURRENT recording may resume anything. A callback for a file the
+        // slot is no longer recording to is a straggler from a recording that already timed
+        // out; its own capture has been failed already, and letting it through would hand
+        // its footage to whatever event is waiting now.
+        guard movieExpectedURLs[slot] == outputFileURL else {
+            Log.camera.error("Retained an unmatched clip callback; it cannot join another event")
+            return
+        }
+        movieExpectedURLs[slot] = nil
+        // Return existing bytes for inspection, not as a claim that recording succeeded.
+        // The pipeline measures playability/duration and consults this URL's delegate outcome.
+        let usableURL = FileManager.default.fileExists(atPath: outputFileURL.path) ? outputFileURL : nil
+        if let cont = movieConts.removeValue(forKey: slot) {
+            if let usableURL { cont.resume(returning: usableURL) }
+            else if let failure { cont.resume(throwing: failure) }
+            else { cont.resume(throwing: CameraError.captureFailed) }
+        } else {
+            // No one is waiting yet: an interruption, or iOS itself (the clip's size limit, a full
+            // disk, a session error), finished this recording before endRecording ran. Stash a file it
+            // left so the pending stop returns it, and say the recording has stopped, file or none
+            // (BACKLOG 180's A1 and codex-3).
+            if let usableURL { movieFinalizedURLs[slot] = usableURL }
+            clipRecordingEnded = true
         }
     }
+
+    #if DEBUG
+    /// Test-only (BACKLOG 180's codex-3): the single slot's recording, expected at `url`, finishes before its stop, as
+    /// the delegate reports it, with or without a file there.
+    nonisolated func finishRecordingBeforeItsStopForTesting(at url: URL, failure: Error?) {
+        sessionQueue.sync {
+            movieExpectedURLs[.single] = url
+            recordingFinished(slot: .single, at: url, failure: failure)
+        }
+    }
+    #endif
 }
 
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate (vision tripwire tap)

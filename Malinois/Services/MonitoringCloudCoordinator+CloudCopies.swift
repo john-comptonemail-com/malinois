@@ -1,10 +1,8 @@
 //
-//  MonitoringEngine+CloudCopies.swift
+//  MonitoringCloudCoordinator+CloudCopies.swift
 //  Malinois
 //
-//  Noticing that iCloud's copies were deleted (item 87): moved unchanged from MonitoringEngine.swift (BACKLOG 158's
-//  first stage, 1.8.2's step 1), which sits at the lint size limit. Members the class needs elsewhere are internal;
-//  the stored state stays in the class.
+//  The cloud coordinator's cloud-loss checks and reupload notices. State lives in the coordinator core.
 //
 
 import Foundation
@@ -14,7 +12,7 @@ import UIKit
 import AVFoundation
 import UserNotifications
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
 
     /// How many of the newest synced records the launch check looks for.
     nonisolated static let cloudCheckSampleSize = 20
@@ -81,7 +79,8 @@ extension MonitoringEngine {
             cloudReuploadCount = requeued
             refreshCloudReuploadNotice()
             Log.engine.warning("Cloud copies missing (\(missing, privacy: .public) of \(sample.count, privacy: .public)); requeued \(requeued, privacy: .public)")
-            Task { await retryPendingSync() }
+            let lifetime = retainHostForFiniteWork()
+            Task { defer { lifetime.keepAlive() }; await retryPendingSync() }
         case .differentAccount:
             cloudResetNotice = "This phone's records are not in the iCloud account it is signed into, which is not "
                 + "the one it used before. Malinois uploaded none of them to this account; they are still on this phone."
@@ -99,8 +98,9 @@ extension MonitoringEngine {
         cloudResetNotice = Self.cloudReuploadNotice(requeued: count, backupOn: settings.cloudBackup)
     }
 
-    /// Item 166's codex-24 (the owner's option (b)): a capture the byte limit discarded before any of its files was known
-    /// to have reached iCloud is marked lost only once iCloud says it holds none of them; what iCloud holds becomes the
+    /// Item 166's codex-24 (the owner's option (b)): a locally discarded capture with no current receipt is marked
+    /// lost only once iCloud says it holds none of its files, including after cloud loss voids an already-pruned
+    /// capture's receipts. What iCloud holds becomes the
     /// capture's record instead. Asked at each sweep pass, under the pass's lease (no identity lookup of its own), in one
     /// fetch for up to `discardCheckBatchSize` of this phone's captures bound to the lease's account, whose records the
     /// check reads, the oldest first; an answer that is not conclusive leaves them to the next pass or sweep, their

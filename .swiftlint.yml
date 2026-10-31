@@ -39,14 +39,10 @@ line_length:
   excluded_lines_patterns:
     - '"[^"]{60,}'
 
-# Size metrics: runaway guards, not targets. MonitoringEngine.swift is a
-# deliberate monolith (2,776 lines and a 1,526-line type body at adoption;
-# 4,009 lines and a 2,079-line type body with 1.4's reviewed items merged,
-# 2026-09-28) — the arming / detection / escalation state machine stays in one
-# file so it can be audited in one read. Limits sit above the high-water marks
-# so they only fire on pathological growth (say, a generated file committed by
-# mistake); the two warnings were raised for 1.4, when its items reached the
-# old ones.
+# Size metrics are runaway guards, not targets. These limits were raised for
+# the engine's reviewed 1.4 growth. In 1.9 the engine is split into separately
+# verified components with real state ownership, starting with cloud coordination
+# (ADR 0063). The limits stay unchanged; moving code does not relax them.
 file_length:
   warning: 4500
   error: 5000

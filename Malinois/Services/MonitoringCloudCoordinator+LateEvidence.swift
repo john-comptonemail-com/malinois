@@ -1,5 +1,5 @@
 //
-//  MonitoringEngine+LateEvidence.swift
+//  MonitoringCloudCoordinator+LateEvidence.swift
 //  Malinois
 //
 //  Item 108, CE-01 (the 1.6 reviews, 2026-10-13): camera evidence that finishes after the
@@ -10,7 +10,7 @@
 
 import Foundation
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
     /// Uploads camera evidence the pipeline stored after the response's own upload had run
     /// (`CapturePipelineHost`). Free users have no cloud upload: `retryPendingSync` returns at
     /// once for them.
@@ -26,7 +26,8 @@ extension MonitoringEngine {
         if pendingSweepActive {
             sweepRerunOwed = true
         } else {
-            Task { await retryPendingSync() }   // a sweep that starts first reads what is pending afresh
+            let lifetime = retainHostForFiniteWork()
+            Task { defer { lifetime.keepAlive() }; await retryPendingSync() }   // a sweep that starts first reads what is pending afresh
         }
     }
 }

@@ -123,7 +123,7 @@ enum BeatSessionRegistry {
 
     static func read() -> [BeatSession] {
         guard let data = UserDefaults.standard.data(forKey: sessionsKey),
-              let sessions = try? JSONDecoder().decode([BeatSession].self, from: data) else { return [] }
+              let sessions = try? StoredJSON.decode([BeatSession].self, from: data) else { return [] }
         return sessions
     }
 

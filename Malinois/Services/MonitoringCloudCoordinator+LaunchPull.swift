@@ -1,14 +1,14 @@
 //
-//  MonitoringEngine+LaunchPull.swift
+//  MonitoringCloudCoordinator+LaunchPull.swift
 //  Malinois
 //
 //  The launch pull's pure rules: how much it asks iCloud for, and what Home says while it runs; and the pull that
-//  follows Verify iCloud access (item 143). Kept apart from MonitoringEngine.swift, which sits at the lint size limits.
+//  follows Verify iCloud access (item 143). Owned by the cloud coordinator.
 //
 
 import Foundation
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
     /// Verify iCloud access just succeeded (item 143): run what a relaunch would have. The upload retry, then the launch
     /// pull, which fills the log from iCloud, settles a restore owed since the install, checks this phone's copies
     /// (item 87) and refreshes Home's "Allow notifications" line once another device's records are in. The button ran

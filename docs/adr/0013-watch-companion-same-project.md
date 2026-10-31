@@ -46,7 +46,8 @@ project-file lines (item 46). The owner runs the test suite as one command.
 5. **Version and build number are one setting.** Both targets read `MARKETING_VERSION` and
    `CURRENT_PROJECT_VERSION` from one committed build-settings file, so the Build match commit
    stays one line and a mismatch cannot be uploaded. Done at the target-add step.
-6. **The floor is watchOS 10**, the release paired with the app's iOS 17 floor.
+6. **The floor is watchOS 10**, originally paired with the app's iOS 17 floor. From 1.9 the iPhone minimum is
+   iOS 18; the watchOS 10 minimum remains unchanged.
 
 ## Consequences
 

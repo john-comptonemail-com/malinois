@@ -1,10 +1,8 @@
 //
-//  MonitoringEngine+PendingSweep.swift
+//  MonitoringCloudCoordinator+PendingSweep.swift
 //  Malinois
 //
-//  The pending-upload sweep: moved unchanged from MonitoringEngine.swift (BACKLOG 158's first stage, 1.8.2's step 1),
-//  which sits at the lint size limit. Members the class needs elsewhere are internal; the stored state stays in the
-//  class.
+//  The cloud coordinator's pending-upload sweep. Single-flight, waiting and rerun state live in its core.
 //
 
 import Foundation
@@ -14,7 +12,7 @@ import UIKit
 import AVFoundation
 import UserNotifications
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
 
     /// The most passes one sweep may make, and how many in a row may land nothing (item 79).
     nonisolated static let sweepMaxPasses = 20
@@ -173,7 +171,8 @@ extension MonitoringEngine {
         pendingSweepActive = false
         guard sweepRerunOwed else { return }   // asked for while this one ran (item 116, N1)
         sweepRerunOwed = false
-        Task { await retryPendingSync() }
+        let lifetime = retainHostForFiniteWork()
+        Task { defer { lifetime.keepAlive() }; await retryPendingSync() }
     }
 
     /// One pass over what is pending right now; then the sweep either ends or schedules its
@@ -264,7 +263,9 @@ extension MonitoringEngine {
         pendingSweepWaiting = true
         // The follow-up pass belongs to the engine, not to whoever asked for the sweep: a
         // screen's task is cancelled when the screen closes, and a cancelled wait is no wait.
+        let lifetime = retainHostForFiniteWork()
         Task {
+            defer { lifetime.keepAlive() }
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             self.pendingSweepWaiting = false
             await self.runSweepPass(pass + 1, idlePasses: idle)

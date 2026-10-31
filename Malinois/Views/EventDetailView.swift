@@ -100,11 +100,10 @@ struct EventDetailView: View {
                 EvidenceMediaView(url: eventStore.secondaryMediaURL(for: current),
                                   fallbackThumbnail: nil)
             }
-            // A capture the storage cap had to discard before it ever uploaded exists
-            // nowhere any more — say so plainly, and never offer a download that is
-            // guaranteed to find nothing (34.H5).
+            // The storage cap removed the local files, and none remain in iCloud: before their first upload or after
+            // a detected cloud loss. Say so without claiming an upload never happened, and offer no empty download.
             if current.mediaDiscarded == true {
-                Label("The full capture was discarded by the storage cap before it could upload.",
+                Label("The storage cap removed the local full capture. No copy is available in iCloud.",
                       systemImage: "externaldrive.badge.xmark")
                     .font(.caption2)
                     .foregroundStyle(.orange)

@@ -5,8 +5,8 @@
 //  The capture mechanism, extracted from MonitoringEngine (1.3 consolidation, step 5):
 //  warm the requested camera under a deadline, settle, decide illumination, shoot a still
 //  or hold a clip — for a fixed length or until the scene goes quiet — for one camera or
-//  both. Policy stays in the engine: WHAT to record, WHEN to shoot, and what to do with
-//  the result. The engine is also this pipeline's host, answering the few questions the
+//  both. The trip responder coordinates what to record, when to shoot and the stored result;
+//  physical response policy stays in the engine. The engine remains this pipeline's host, answering the questions the
 //  mechanism has to ask mid-capture and doing the few things it has to do to the session
 //  (flash the screen, free the microphone, re-arm the other tripwires).
 //
@@ -162,6 +162,8 @@ final class EvidenceCapturePipeline {
         var quarantined = false
         var warming = true
         var recordingInterrupted = false
+        /// iOS ended an until-clear recording itself before the scene went quiet (BACKLOG 180's A1): the clip is partial.
+        var recordingEndedEarly = false
         var audioBorrowed = false
         var flashed = false
         var cleaned = false
@@ -169,12 +171,17 @@ final class EvidenceCapturePipeline {
         var preservation: Preservation?
         var both = false
         var finalized: [String: Capture] = [:]
-        var inspections: [URL: Task<Capture, Never>] = [:]
+        /// Each finished movie's measured length (nil: unreadable), once per file; the capture is classified from it
+        /// when it is formed (BACKLOG 180's codex-2).
+        var measurements: [URL: Task<Double?, Never>] = [:]
         var lateHandled: Set<String> = []
     }
     private var attempt: Attempt?
     #if DEBUG
     var beforeAttemptWorkForTesting: (@MainActor () async -> Void)?
+    /// Told each time a finished movie is classified (BACKLOG 180's review, codex-2 on 91acaed): a test orders its next
+    /// step after the first classification, where a fixed wait could fall short of a slow measurement.
+    var clipClassifiedForTesting: (@MainActor (URL) -> Void)?
     #endif
     var isBusy: Bool { attempt != nil }
 
@@ -602,13 +609,19 @@ final class EvidenceCapturePipeline {
     }
 
     private func receiveFinalized(_ url: URL, lens: CameraChoice, mode: CaptureMode, token: Attempt) async {
-        let inspection: Task<Capture, Never>
-        if let running = token.inspections[url] { inspection = running }
+        let measurement: Task<Double?, Never>
+        if let running = token.measurements[url] { measurement = running }
         else {
-            inspection = Task { @MainActor in await measuredClip(url, camera: lens, mode: mode) }
-            token.inspections[url] = inspection
+            measurement = Task { @MainActor in await measuredLength(url) }
+            token.measurements[url] = measurement
         }
-        let capture = await inspection.value
+        let measured = await measurement.value
+        // Classified now, from the attempt as it stands: the delegate can hand a finished file over before the loop's
+        // poll notes that iOS ended the recording, and an answer kept from then would miss it (BACKLOG 180's codex-2).
+        let capture = classifiedClip(url, measured: measured, camera: lens, mode: mode)
+        #if DEBUG
+        clipClassifiedForTesting?(url)
+        #endif
         token.finalized[lens.rawValue] = capture
         if token.expired {
             await preserveLate(BothOutcome(front: !token.both || lens == .front ? capture : nil,
@@ -660,6 +673,13 @@ final class EvidenceCapturePipeline {
                 attempt?.recordingInterrupted = true
                 break
             }
+            // A recording iOS ended itself (the clip's size limit, a full disk, a session error) records nothing more:
+            // finalize now, marked partial, so the response ends and later trips get captures of their own instead of
+            // folding into a clip that has stopped (BACKLOG 180's A1).
+            if await camera.clipRecordingEndedOnItsOwn() {
+                attempt?.recordingEndedEarly = true
+                break
+            }
             if sessionIsOver { break }
             // Re-arm the tripwires so continued tampering keeps registering.
             host?.rearmTripwiresDuringCapture()
@@ -699,11 +719,10 @@ final class EvidenceCapturePipeline {
         host?.setCaptureFlash(false)
     }
 
-    /// Inspects each finalized movie independently. Waiting time is never a footage length.
-    /// Unknown/unreadable media remains preserved, but is explicitly unverified and has no
-    /// invented duration. A thumbnail is neither required nor used as a validity test.
-    private func measuredClip(_ url: URL, camera position: CameraChoice, mode: CaptureMode) async -> Capture {
-        let measured = try? await Self.withDeadline(2) {
+    /// Measures each finalized movie independently: its playable length, or nil when it cannot be read. Waiting time is
+    /// never a footage length. A thumbnail is neither required nor used as a validity test.
+    private func measuredLength(_ url: URL) async -> Double? {
+        try? await Self.withDeadline(2) {
             let asset = AVURLAsset(url: url)
             let duration = try await asset.load(.duration).seconds
             let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -711,12 +730,17 @@ final class EvidenceCapturePipeline {
             guard duration.isFinite, duration > 0, !tracks.isEmpty, playable else { throw CameraController.CameraError.captureFailed }
             return duration
         }
+    }
+
+    /// A measured movie as a capture, classified from the attempt as it stands. Unknown/unreadable media remains
+    /// preserved, but is explicitly unverified and has no invented duration.
+    private func classifiedClip(_ url: URL, measured: Double?, camera position: CameraChoice, mode: CaptureMode) -> Capture {
         let finished = camera.recordingFinishedSuccessfully(at: url)
         let issue: CaptureFailureReason?
         if measured == nil { issue = .clipUnverified }
         else if attempt?.expired == true { issue = .captureTimedOut }
         else if endedByDisarm { issue = .disarmed }
-        else if finished == false || attempt?.recordingInterrupted == true
+        else if finished == false || attempt?.recordingInterrupted == true || attempt?.recordingEndedEarly == true
                     || mode.fixedDuration.map({ (measured ?? 0) + 0.25 < $0 }) == true {
             issue = .clipPartial
         } else if finished == nil { issue = .clipUnverified }

@@ -232,9 +232,9 @@ final class EventStore: ObservableObject {
     /// claim arriving over the network, and an update path is exactly where a merge bug would
     /// be able to damage real evidence. A MIRROR (another device's event held here) may be
     /// replaced by a copy of itself that knows more, a later revision or an equal one with a
-    /// grown count or a new failure reason, and keeps the media downloaded onto it
+    /// grown count, a new failure reason or a newly staged thumbnail, and keeps the media downloaded onto it
     /// (`inheritingLocalEnrichment`). From a copy of any revision it learns that its capture was
-    /// discarded before it uploaded (`learningTheLoss`).
+    /// lost after its local files were discarded (`learningTheLoss`).
     ///
     /// Pure so it can be tested without CloudKit, which cannot run in the Simulator at all.
     nonisolated static func merged(local: [Event], incoming: [Event]) -> [Event] {
@@ -267,8 +267,9 @@ final class EventStore: ObservableObject {
     /// stub of every event, permanently, and no later fetch could repair it.
     ///
     /// A mirror may therefore be superseded by a strictly later revision of the same event, or
-    /// by an equal revision that has learned more: a count that grew, or a capture's failure
-    /// reason it did not have (item 94). A mirror still never displaces first-hand evidence,
+    /// by an equal revision that has learned more: a count that grew, a capture's failure
+    /// reason it did not have (item 94), or a thumbnail whose first staging failed. A mirror still never displaces
+    /// first-hand evidence,
     /// whatever its revision.
     nonisolated static func supersedes(incoming: Event, existing: Event) -> Bool {
         guard existing.isMirrored, incoming.isMirrored else { return false }
@@ -284,9 +285,9 @@ final class EventStore: ObservableObject {
         // (found live 2026-08-30 on the build-25 pair; 34.H8's thumbnail freeze, resurfaced
         // through count progress). The capture's failure reason froze the same way (item 94:
         // a failed capture attaches no evidence, so its push keeps the fact's revision, and the
-        // other phone never said why there was no photo). Monotonic on purpose: a count must
-        // strictly grow or the reason newly appear, no count may shrink and the reason may not
-        // go away, so replays and stale duplicates still lose.
+        // other phone never said why there was no photo). A staged thumbnail can newly arrive at the same revision too.
+        // Monotonic on purpose: a count must grow, a reason newly appear or a thumbnail newly arrive; no count may
+        // shrink and the reason may not go away. Replays and stale duplicates still lose.
         guard incomingRev == existingRev else { return false }
         let floods = (incoming: incoming.sustainedCount ?? 0, existing: existing.sustainedCount ?? 0)
         let attempts = (incoming: incoming.wrongPINCount ?? 0, existing: existing.wrongPINCount ?? 0)
@@ -295,6 +296,7 @@ final class EventStore: ObservableObject {
               reason.incoming || !reason.existing else { return false }
         return floods.incoming > floods.existing || attempts.incoming > attempts.existing
             || (reason.incoming && !reason.existing)
+            || (incoming.thumbnailData != nil && existing.thumbnailData == nil)
     }
 
     /// Pure (unit-tested): what a superseding mirror copy inherits from the copy it replaces.
@@ -315,7 +317,7 @@ final class EventStore: ObservableObject {
         return out
     }
 
-    /// Pure (unit-tested): a mirror that learns its capture was discarded before it uploaded (item
+    /// Pure (unit-tested): a mirror that learns its capture is gone locally and from iCloud (item
     /// 166's A2, Codex's codex-2). The capturing phone marks the loss (`mediaDiscarded`) on a copy that
     /// may carry the same revision as the one held (the thumbnail stays) or, from an older version,
     /// a lower one; neither may replace it (`supersedes`), so the flag alone is taken, and the copy
@@ -463,11 +465,11 @@ final class EventStore: ObservableObject {
     private func establishSeenMark() {
         guard seenIDs == nil, !awaitingUnlock else { return }
         if let data = try? Data(contentsOf: restoreOwedURL),
-           let owed = try? JSONDecoder().decode(RestoreOwed.self, from: data) {
+           let owed = try? StoredJSON.decode(RestoreOwed.self, from: data) {
             restoreOwedSince = owed.since
         }
         if let data = try? Data(contentsOf: seenURL),
-           let stored = try? JSONDecoder().decode([UUID].self, from: data) {
+           let stored = try? StoredJSON.decode([UUID].self, from: data) {
             seenIDs = Set(stored)
         } else {
             // The first launch with this feature, or a mark that cannot be read. An empty log
@@ -755,7 +757,7 @@ final class EventStore: ObservableObject {
         let url = reportsOwedURL
         var stored: [OwedReport] = []
         if fileManager.fileExists(atPath: url.path) {
-            if let data = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode([OwedReport].self, from: data) {
+            if let data = try? Data(contentsOf: url), let decoded = try? StoredJSON.decode([OwedReport].self, from: data) {
                 stored = decoded
             } else {
                 setReportsOwedAside(url)
@@ -898,7 +900,7 @@ final class EventStore: ObservableObject {
         }
         guard !evict.isEmpty else { return }
         if !discarded.isEmpty {
-            Log.store.warning("Storage emergency: discarded \(discarded.count, privacy: .public) event(s)' media before it ever uploaded")
+            Log.store.warning("Storage emergency: discarded \(discarded.count, privacy: .public) event(s)' media before its current upload finished")
         }
         let measured = Dictionary(snapshot.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var names: [String] = []
@@ -936,9 +938,9 @@ final class EventStore: ObservableObject {
     }
 
     /// Pure (unit-tested): given events newest-first with their on-disk media sizes, which
-    /// events' media to free to get under `budget` — and, separately, which of those had
-    /// **never synced**, so the caller records that their evidence was discarded before it
-    /// uploaded rather than letting a later meta-only retry read as fully synced (34.H5).
+    /// events' media to free to get under `budget` — and, separately, which evicted genuine captures are not
+    /// currently synced. The caller reconciles receipts and cloud presence before deciding whether the capture
+    /// was lost, so a metadata-only retry cannot imply that missing evidence is backed up (34.H5).
     ///
     /// Order of loss: coalesced flood media first (synthetic noise), then synced media
     /// oldest-first (locally it is a cache — the cloud holds it and it can be re-downloaded),
@@ -965,8 +967,8 @@ final class EventStore: ObservableObject {
         pass { $0.isFlood }
         pass { $0.isSynced }
         pass { _ in true }     // storage emergency: pending media, oldest first
-        // Flood media is deliberately expendable and synced media survives in the cloud —
-        // only a pending genuine capture is an evidentiary loss worth recording.
+        // Flood media is deliberately expendable and synced media is treated as a cloud-backed cache.
+        // Unsynced genuine captures need the caller's receipt/presence decision before loss is recorded.
         let discarded = Set(sizes.filter { evict.contains($0.id) && !$0.isSynced && !$0.isFlood }
                                  .map { $0.id })
         return (evict, discarded)
@@ -1061,7 +1063,7 @@ final class EventStore: ObservableObject {
             // the checkpoint's sync run on the metadata writer's serial queue.
             let logURL = storeRoot.appendingPathComponent("events.json")
             guard let data = try? Data(contentsOf: logURL),
-                  let persisted = try? JSONDecoder().decode([Event].self, from: data) else { return }
+                  let persisted = try? StoredJSON.decode([Event].self, from: data) else { return }
             checkpointAttachments(persistedSnapshot: persisted, cleanLoad: true, logURL: logURL,
                                   protectedReferences: inMemoryReferences)
             let referenced = inMemoryReferences.union(persisted.flatMap {
@@ -1246,7 +1248,7 @@ final class EventStore: ObservableObject {
     /// is skipped, never fatal: one bad stitch must not void the rest of the net.
     nonisolated static func journaledEvents(in data: Data) -> [Event] {
         data.split(separator: 0x0A)
-            .compactMap { try? JSONDecoder().decode(Event.self, from: Data($0)) }
+            .compactMap { try? StoredJSON.decode(Event.self, from: Data($0)) }
     }
 
     /// Folds journal entries the log lost back in (at launch, and again after an unlock
@@ -1419,7 +1421,7 @@ final class EventStore: ObservableObject {
 
     /// iCloud's answer for a capture the byte cap discarded unchecked (item 166's codex-24): the camera files it holds
     /// become the capture's record of what landed; with none, and no receipt of a file that landed while it was asked
-    /// (codex-27: an answer sampled before the file landed), the capture is marked lost before upload, and a record
+    /// (codex-27: an answer sampled before the file landed), the capture is marked lost, and a record
     /// already synced is reopened so the mark reaches iCloud and the other devices. `epoch` is the generation of the
     /// capture's receipts when iCloud was asked: an answer asked for before iCloud's copies were found gone is not taken,
     /// and the check stays owed for one asked for after (BACKLOG 176's codex-2).
@@ -1447,7 +1449,7 @@ final class EventStore: ObservableObject {
     }
 
     /// A capture's full file reached iCloud (item 166's codex-23): its camera token is noted on this phone's own event, so
-    /// the byte cap never marks the capture lost before upload when part of it is in iCloud. `epoch` is the receipts'
+    /// the byte cap never marks the capture lost when part of it is in iCloud. `epoch` is the receipts'
     /// generation the upload began in (`Event.receiptEpoch`): a landing from before iCloud's copies were found gone is
     /// not noted, since it may have landed in the iCloud that was then wiped (item 174's codex-1).
     func noteMediaUploaded(_ token: String, for id: UUID, epoch: Int? = nil) {
@@ -1545,7 +1547,8 @@ final class EventStore: ObservableObject {
 
     /// Pure (unit-tested): the log with every synced FIRST-HAND event returned to pending, and the
     /// upload receipts of every first-hand event it picks voided in a new generation, a partly
-    /// uploaded capture's too (item 174's codex-1). Local-only and already-pending events keep their
+    /// uploaded capture's too (item 174's codex-1). A capture already pruned locally owes a new-generation loss check.
+    /// Local-only and already-pending events keep their
     /// sync state — they are in the retry set regardless. Mirrors are excluded (eighth-review M4): the capturing device owns its
     /// evidence's re-upload, and re-publishing a mirror stamped this device's name — under
     /// `.allKeys`, racing the capturing device's richer re-upload — falsified provenance
@@ -1562,6 +1565,12 @@ final class EventStore: ObservableObject {
             // copy and no earlier upload's report can bring back.
             copy.uploadedMedia = nil
             copy.receiptEpoch = (e.receiptEpoch ?? 0) + 1
+            // A capture already pruned while synced no longer has its local files or a current cloud receipt.
+            // Owe the existing account-bound check in this generation before deciding whether its capture is lost.
+            if e.mediaFilename == nil, e.secondaryMediaFilename == nil, e.mediaDiscarded != true,
+               e.primaryCamera != nil || e.secondaryCamera != nil {
+                copy.mediaDiscardUnchecked = true
+            }
             if e.cloudSyncState == .synced {
                 copy.cloudSyncState = .pending
                 changed += 1
@@ -1710,33 +1719,63 @@ final class EventStore: ObservableObject {
 
     /// Bounded capacity for pending slots and interrupted staging files. Enumeration and decoding are bounded; a
     /// directory more than a few entries past its limit, or unreadable, refuses new work and orphan deletion.
-    nonisolated private func attachmentFiles() -> [URL]? {
-        guard Self.realDirectory(root), Self.realDirectory(attachmentDirectory) else { return nil }
+    nonisolated private func attachmentFiles() -> [URL]? { Self.attachmentFiles(in: root) }
+
+    nonisolated private static func attachmentFiles(in root: URL) -> [URL]? {
+        let attachmentDirectory = root.appendingPathComponent("MediaAttachments")
+        guard realDirectory(root), realDirectory(attachmentDirectory) else { return nil }
         var failed = false
         guard let enumerator = FileManager.default.enumerator(at: attachmentDirectory,
             includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants],
             errorHandler: { _, _ in failed = true; return false }) else { return nil }
         var files: [URL] = []
         for case let url as URL in enumerator {
-            guard files.count < Self.attachmentLimit + Self.attachmentReadMargin else { return nil }
+            guard files.count < attachmentLimit + attachmentReadMargin else { return nil }
             files.append(url)
         }
         return failed ? nil : files
     }
 
     nonisolated private func readIntent(_ url: URL) -> AttachmentIntent? {
+        guard Self.mayBeIntent(url), let data = try? Data(contentsOf: url) else { return nil }
+        return Self.validIntent(data, at: url)
+    }
+
+    /// A file whose name and size an intent's could be: a regular `<UUID>.json` within the intent's byte limit.
+    nonisolated private static func mayBeIntent(_ url: URL) -> Bool {
         guard url.pathExtension == "json", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
-              let size = Self.regularSize(url), size <= Self.intentByteLimit,
-              let data = try? Data(contentsOf: url),
-              let intent = try? JSONDecoder().decode(AttachmentIntent.self, from: data), intent.version == 1,
+              let size = regularSize(url), size <= intentByteLimit else { return false }
+        return true
+    }
+
+    nonisolated private static func validIntent(_ data: Data, at url: URL) -> AttachmentIntent? {
+        guard let intent = try? StoredJSON.decode(AttachmentIntent.self, from: data), intent.version == 1,
               intent.camera == "front" || intent.camera == "rear",
               intent.duration.map({ $0.isFinite && $0 >= 0 }) ?? true,
               intent.startDate.timeIntervalSinceReferenceDate.isFinite,
-              intent.byteCount > 0, intent.byteCount <= Self.maxMediaBytes,
+              intent.byteCount > 0, intent.byteCount <= maxMediaBytes,
               intent.filename == url.deletingPathExtension().lastPathComponent + ".jpg"
                 || intent.filename == url.deletingPathExtension().lastPathComponent + ".mov",
               intent.filename.hasSuffix(".mov") || intent.duration == nil else { return nil }
         return intent
+    }
+
+    /// The file names of the clips the attachment intents name as waiting where the camera left them (1.8.2's step 63:
+    /// a refused save leaves its clip there, and the next launch's `attachWaitingClips` saves it from its intent), read
+    /// without loading the store, for the camera's launch sweep (BACKLOG 180's A3). Nil when the intents cannot all be
+    /// read (they are sealed while the phone is locked, as every file of the store's is, or the folder is past its
+    /// limit): the sweep must then remove nothing. A file that is not a valid intent names no clip, as the launch would
+    /// not save from it either.
+    nonisolated static func waitingClipNamesClaimedByIntents() -> Set<String>? {
+        let root = resolvedRoot()
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("MediaAttachments").path) else { return [] }
+        guard let files = attachmentFiles(in: root) else { return nil }
+        var names: Set<String> = []
+        for url in files where mayBeIntent(url) {
+            guard let data = try? Data(contentsOf: url) else { return nil }   // sealed or unreadable: it might name any
+            if let source = validIntent(data, at: url)?.source { names.insert(source) }
+        }
+        return names
     }
 
     nonisolated private static func syncFile(_ url: URL) throws {
@@ -1840,6 +1879,22 @@ final class EventStore: ObservableObject {
     nonisolated private static func waits(_ url: URL) -> Bool {
         url.deletingLastPathComponent().standardizedFileURL.path == waitingClipsFolder.standardizedFileURL.path
             && isRecordingName(url.lastPathComponent)
+    }
+
+    /// Whether an intent's clip still waits where the camera left it (BACKLOG 180's codex-1): a clip that cannot be looked
+    /// at counts as waiting, so its intent is kept rather than aged out.
+    nonisolated private static func sourceStillWaits(_ intent: AttachmentIntent) -> Bool {
+        guard let name = intent.source else { return false }
+        let clip = waitingClipsFolder.appendingPathComponent(name)
+        guard waits(clip) else { return false }
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: clip.path)
+            return true
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return false
+        } catch {
+            return true
+        }
     }
 
     /// A recording's own file name: a UUID and ".mov", with no path in it.
@@ -1949,11 +2004,12 @@ final class EventStore: ObservableObject {
             } ?? false
             let modified = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
             let expired = cleanLoad && modified.map { Date().timeIntervalSince($0) > 30 * 86_400 } == true
-            // A committed file still awaiting an eligible attachment is never aged out.
+            // A committed file still awaiting an eligible attachment is never aged out, nor the intent of a clip still
+            // waiting where the camera left it: its retry saves from that intent (BACKLOG 180's codex-1).
             let recoverable = intent.flatMap { item in
                 event.map { Self.accepts(item, for: $0)
-                    && Self.regularSize(root.appendingPathComponent("Media").appendingPathComponent(item.filename))
-                        == item.byteCount }
+                    && (Self.regularSize(root.appendingPathComponent("Media").appendingPathComponent(item.filename))
+                        == item.byteCount || Self.sourceStillWaits(item)) }
             } ?? false
             // Journal-only recovery may not yet exist in the durable log. Memory can
             // veto aging, but can never authorize successful attachment retirement.
@@ -2187,7 +2243,7 @@ final class EventStore: ObservableObject {
             setAside(url)
             return
         }
-        guard let decoded = try? JSONDecoder().decode([Event].self, from: data) else {
+        guard let decoded = try? StoredJSON.decode([Event].self, from: data) else {
             setAside(url)   // readable but undecodable: damaged, whatever the lock state
             return
         }

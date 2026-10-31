@@ -73,6 +73,9 @@ final class CloudExfiltrator: ObservableObject {
     /// Told when a capture's full file has reached iCloud, with its camera token (item 166's codex-23): the engine notes it
     /// on the event (`Event.uploadedMedia`).
     var mediaLanded: (UUID, String, Int?) -> Void = { _, _, _ in }
+    /// A fact permitted by backup policy did not finish. Called with its actual snapshot inside the event's queue,
+    /// before the next write starts, so the engine can reopen a still-matching synced row without racing a later save.
+    var factFailed: (Event) -> Void = { _ in }
     private var identityGeneration = UUID()
     private var resolvedAccount: String?
     // NotificationCenter's token is only registered/removed here; it has no actor-bound state.
@@ -180,6 +183,8 @@ final class CloudExfiltrator: ObservableObject {
     var existingSubscriptionsForTesting: (@MainActor () async throws -> [CKSubscription])?
     var subscriptionSaveForTesting: (@MainActor (CKQuerySubscription) async -> Bool)?
     var subscriptionRemovalForTesting: (@MainActor ([String]) async -> Bool)?
+    /// Drives a subscription deletion's real callbacks in place of CloudKit; authentication and lease gates still run.
+    var subscriptionDeleteSubmitForTesting: (@MainActor (CKModifySubscriptionsOperation) -> Void)?
     /// Told when an automatic setup of the alert subscriptions (the arm's warm-up, a reconnect's refresh) begins and
     /// when it has finished (Codex's note on 946b248..b00a120): a test waits on these instead of sleeping.
     var automaticSetupBeganForTesting: (@MainActor () -> Void)?
@@ -188,6 +193,11 @@ final class CloudExfiltrator: ObservableObject {
     /// (CloudKit's own order is a dictionary's, with none to rely on: codex-30), or a thrown error. The lease and the
     /// reading of the results run as shipped.
     var presenceFetchForTesting: (@MainActor ([String]) async throws -> [(String, Result<Void, any Error>)])?
+    /// How long an iCloud read may wait for its answer in a test, in place of `saveAttemptDeadline` (BACKLOG 180's A2).
+    var readDeadlineForTesting: TimeInterval?
+    /// Takes an iCloud read's operation in place of the database (BACKLOG 180's codex-4): the test answers it as CloudKit
+    /// would, or withholds the answer, and sees the cancel. Everything else runs as shipped.
+    var readSubmitForTesting: (@MainActor (CKDatabaseOperation) -> Void)?
     #endif
 
     // MARK: - Record types
@@ -393,12 +403,14 @@ final class CloudExfiltrator: ObservableObject {
         case .remove:     break // Automatic paths never perform account-wide OFF.
         case .leaveAlone: break
         }
-        // A cheap no-op query to establish the connection early, only while enrolled.
-        guard enrollment.isCurrent(lease), let database else { return }
-        _ = try? await database.records(
-            matching: CKQuery(recordType: Self.metaRecordTypeV2,
-                              predicate: NSPredicate(value: false)),
-            resultsLimit: 1)
+        // A cheap no-op query to establish the connection early, only while enrolled, on an operation of its own
+        // within the read deadline (BACKLOG 180's codex-4).
+        guard enrollment.isCurrent(lease) else { return }
+        let query = CKQueryOperation(query: CKQuery(recordType: Self.metaRecordTypeV2, predicate: NSPredicate(value: false)))
+        query.resultsLimit = 1
+        _ = try? await operationRead(query, lease: lease) { (resume: @escaping @Sendable (Result<Void, Error>) -> Void) in
+            query.queryResultBlock = { @Sendable result in resume(result.map { _ in () }) }
+        }
     }
 
     /// Re-establish the cross-device push subscription after a connectivity restore. `warmUp`
@@ -566,8 +578,8 @@ final class CloudExfiltrator: ObservableObject {
     /// Pushes ONLY the metadata record — the "fact" of the tamper (+ the cross-device
     /// alert) — so it reaches iCloud immediately, before a possibly-long clip finishes
     /// recording. The full meta (with thumbnail) + media follow later via `exfiltrate`.
-    /// Returns whether the record landed, so a caller re-pushing a record that was already
-    /// `.synced` can reopen it for the sweep when it did not (item 65, finding 3).
+    /// Returns whether the record and any thumbnail it carries landed, so a caller re-pushing a record that was
+    /// already `.synced` can reopen it for the sweep when either remains owed (item 65, finding 3).
     @discardableResult
     func pushFact(_ event: Event) async -> Bool {
         // Held from the first step, the queue wait and the identity lookup included (item 153's MAL-01): a push begun as
@@ -577,12 +589,21 @@ final class CloudExfiltrator: ObservableObject {
         // The event's queue first, the identity lookup at its turn (item 162's A10): the writes for one event go out in
         // the order they were asked for, not in the order their lookups answered, each with the log's copy as it is then.
         return await enqueue(event.id) { [self] in
-            guard let lease = await acquireCloudLease() else { return false }
-            let current = storedEvent(event.id) ?? event
-            return await underLease(lease, declined: false) {
-                guard mayUpload(current, lease: lease) else { return false }
-                return await pushMetaRecord(current, lease: lease) == nil
+            guard let lease = await acquireCloudLease() else {
+                let current = storedEvent(event.id) ?? event
+                if backupPermits(current) { factFailed(current) }
+                return false
             }
+            let current = storedEvent(event.id) ?? event
+            let retryWanted = backupPermits(current)
+            let landed = await underLease(lease, declined: false) {
+                guard mayUpload(current, lease: lease) else { return false }
+                return (await pushMetaRecord(current, lease: lease)).complete
+            }
+            // Within the queue: no newer queued save can finish before this failure is reconciled. Backup policy
+            // that refused the attempt owes no retry; one already allowed can remain pending while backup is off.
+            if !landed, retryWanted { factFailed(current) }
+            return landed
         }
     }
 
@@ -619,7 +640,7 @@ final class CloudExfiltrator: ObservableObject {
         }
 
         // ---- Shot 1: tiny record (fast path) ----
-        let metaError = await pushMetaRecord(event, lease: lease)
+        let meta = await pushMetaRecord(event, lease: lease)
 
         // ---- Shot 2: full-resolution follow-up(s) ----
         // Record names carry the camera ("photo-front" / "photo-rear") so they're
@@ -639,12 +660,12 @@ final class CloudExfiltrator: ObservableObject {
             fullLanded = landed && fullLanded
         }
 
-        if let metaError {
+        if let metaError = meta.error {
             return ExfilOutcome(syncState: .localOnly,
                                 metaFailureWasInterference: Self.failureSuggestsInterference(metaError))
         }
-        // Core evidence up; a missing full-res follow-up retries later.
-        return ExfilOutcome(syncState: fullLanded ? .synced : .pending,
+        // Core evidence up; a thumbnail still owed or a missing full-res follow-up retries later.
+        return ExfilOutcome(syncState: fullLanded && !meta.thumbnailPending ? .synced : .pending,
                             metaFailureWasInterference: nil)
     }
 
@@ -671,17 +692,16 @@ final class CloudExfiltrator: ObservableObject {
     ///
     /// Derived from the event rather than passed in by the caller, so it cannot disagree with
     /// what is actually being written: the sparse pre-capture fact is 1; each camera slot
-    /// carrying evidence adds 1 (the first slot: a thumbnail, a stored media file, or one the media
-    /// byte cap discarded before it uploaded; the second: its stored file or its camera's name,
+    /// carrying evidence adds 1 (the first slot: a thumbnail, a stored media file, or a capture marked lost after
+    /// local eviction; the second: its stored file or its camera's name,
     /// which survives the byte cap's eviction); an
     /// owner attribution adds 1. So a one-camera capture is 2, both cameras 3, and an
     /// owner-attributed re-push one more. The slots count separately because the second
     /// camera's evidence can arrive after the first's, as late evidence (item 108, CE-02): a
     /// device holding the first copy refused the copy that added the other camera, its equal
-    /// revision. Every component only ever becomes true, so the number only ever rises: a discard
-    /// keeps the first slot (item 166's A2, Codex's codex-2), or a capture without a thumbnail went
-    /// back a revision when the byte cap took its file, and the copy that says the photo was lost
-    /// was refused as older, here and on the other devices.
+    /// revision. Counting confirmed loss preserves the first-slot increment after eviction (item 166's A2,
+    /// Codex's codex-2). Without that term, a capture without a thumbnail could go back a revision when the byte
+    /// cap took its file, and the copy that says the photo was lost was refused as older, here and on other devices.
     ///
     /// The capture stage is keyed on **evidence actually attached — never on `endDate`**
     /// (34-review B2). It used to be `endDate > startDate`, and the real fact is *born* that
@@ -804,7 +824,7 @@ final class CloudExfiltrator: ObservableObject {
         guard !names.isEmpty else { return [] }
         guard enrollment.isCurrent(lease) else { return nil }
         do {
-            guard let results = try await presenceResults(names) else { return nil }
+            guard let results = try await presenceResults(names, lease: lease) else { return nil }
             try requireCurrent(lease)
             var present = Set<String>()
             var conclusive = true
@@ -842,14 +862,22 @@ final class CloudExfiltrator: ObservableObject {
         return transientFailure(from: error).map { [$0] } ?? []
     }
 
-    /// The presence check's fetch, fieldless: each name's result from the private database; nil with no database.
-    private func presenceResults(_ names: [String]) async throws -> [(String, Result<Void, any Error>)]? {
+    /// The presence check's fetch, fieldless: each name's result from the private database, in the order given; nil with
+    /// no database. On an operation of its own within the read deadline (BACKLOG 180's A2 and codex-4); a test's
+    /// stand-in for the fetch meets the deadline too.
+    private func presenceResults(_ names: [String],
+                                 lease: CloudEnrollment.Lease) async throws -> [(String, Result<Void, any Error>)]? {
         #if DEBUG
-        if let fetch = presenceFetchForTesting { return try await fetch(names) }
+        if let fetch = presenceFetchForTesting { return try await withinReadDeadline { try await fetch(names) } }
+        let heldByATest = readSubmitForTesting != nil
+        #else
+        let heldByATest = false
         #endif
-        guard let database else { return nil }
-        let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) }, desiredKeys: [])
-        return results.map { ($0.key.recordName, $0.value.map { _ in () }) }
+        guard heldByATest || database != nil else { return nil }
+        let results = try await recordsByID(names.map { CKRecord.ID(recordName: $0) }, desiredKeys: [], lease: lease)
+        return names.map { name in
+            (name, results[CKRecord.ID(recordName: name)]?.map { _ in () } ?? .failure(CKError(.networkFailure)))
+        }
     }
 
     /// What an identity lookup found (item 152's lead 1; ADR 0039 amended for 1.8.1).
@@ -978,11 +1006,18 @@ final class CloudExfiltrator: ObservableObject {
         kind == "disarmed" || kind == "armingCancelled"
     }
 
-    /// Returns nil when the record landed (or a richer one already stands — the stale-skip),
-    /// else the terminal error, so the caller can classify it (32.R1).
-    private func pushMetaRecord(_ event: Event, lease: CloudEnrollment.Lease) async -> Error? {
+    /// The metadata save's result, including a thumbnail still owed after a successful sparse save.
+    private struct MetaPushResult {
+        let error: Error?
+        let thumbnailPending: Bool
+        var complete: Bool { error == nil && !thumbnailPending }
+    }
+
+    /// Saves the fact even when its thumbnail cannot stage. A successful sparse save with a thumbnail owed stays
+    /// pending for retry; a save error keeps its classification. A richer record already submitted is complete.
+    private func pushMetaRecord(_ event: Event, lease: CloudEnrollment.Lease) async -> MetaPushResult {
         guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else {
-            return CKError(.notAuthenticated)
+            return MetaPushResult(error: CKError(.notAuthenticated), thumbnailPending: false)
         }
         // Inline the few-KB thumbnail as an asset. The temp file backing the
         // CKAsset is deleted once the upload finishes (see defer) so it doesn't
@@ -991,7 +1026,7 @@ final class CloudExfiltrator: ObservableObject {
         if let thumb = event.thumbnailData {
             tempAssetURL = writeTemp(thumb, ext: "jpg")
         }
-        defer { if let tempAssetURL { try? FileManager.default.removeItem(at: tempAssetURL) } }
+        defer { if let tempAssetURL { Self.removeTemporaryThumbnail(tempAssetURL) } }
 
         let revision = Self.metaRevision(for: event)
         guard Self.mayWrite(revision: revision, alreadySubmitted: submittedMetaRevisions[event.id]) else {
@@ -999,7 +1034,7 @@ final class CloudExfiltrator: ObservableObject {
             // Reported as landed, because the event *is* in iCloud — just in better shape than
             // this write would have left it.
             Log.cloud.info("Skipped a stale meta write (revision \(revision, privacy: .public))")
-            return nil
+            return MetaPushResult(error: nil, thumbnailPending: false)
         }
         let record = Self.makeMetaRecord(event,
                                          deviceName: DeviceInfo.name,
@@ -1007,11 +1042,11 @@ final class CloudExfiltrator: ObservableObject {
         do {
             try await save([record], lease: lease, permitted: { backupPermits(event) })
             submittedMetaRevisions[event.id] = max(submittedMetaRevisions[event.id] ?? 0, revision)
-            return nil
+            return MetaPushResult(error: nil, thumbnailPending: event.thumbnailData != nil && tempAssetURL == nil)
         } catch {
             Log.cloud.error("Meta push failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
             if Self.indicatesEncryptedDataReset(error) { encryptedDataResetDetected = true }
-            return error
+            return MetaPushResult(error: error, thumbnailPending: false)
         }
     }
 
@@ -1425,14 +1460,19 @@ final class CloudExfiltrator: ObservableObject {
     func fetchRecentEvents(limit: Int = fetchPageSize) async -> [Event] {
         lastFetchComplete = false
         lastFetchFailed = true
-        guard let lease = await acquireCloudLease(), let database else { return [] }
-        let metaV2 = await fetch(Self.metaRecordTypeV2, from: database,
+        #if DEBUG
+        let heldByATest = readSubmitForTesting != nil
+        #else
+        let heldByATest = false
+        #endif
+        guard let lease = await acquireCloudLease(), heldByATest || database != nil else { return [] }
+        let metaV2 = await fetch(Self.metaRecordTypeV2,
                                  limit: limit, lease: lease, decode: Self.event(from:))
-        let metaV1 = await fetch(Self.metaRecordType, from: database,
+        let metaV1 = await fetch(Self.metaRecordType,
                                  limit: limit, lease: lease, decode: Self.event(from:))
-        let stateV2 = await fetch(Self.stateRecordTypeV2, from: database,
+        let stateV2 = await fetch(Self.stateRecordTypeV2,
                                   limit: limit, lease: lease, decode: Self.stateEvent(from:))
-        let stateV1 = await fetch(Self.stateRecordType, from: database,
+        let stateV1 = await fetch(Self.stateRecordType,
                                   limit: limit, lease: lease, decode: Self.stateEvent(from:))
         guard enrollment.isCurrent(lease) else { lastFetchFailed = true; return [] }
         lastFetchFailed = [metaV2, metaV1, stateV2, stateV1].contains { !$0.ok }
@@ -1476,7 +1516,6 @@ final class CloudExfiltrator: ObservableObject {
     /// inside a page is a record that exists but was not checked (R3-3) — reporting either as
     /// absence is how a broken restore looks identical to an empty one.
     private func fetch(_ recordType: String,
-                       from database: CKDatabase,
                        limit: Int,
                        lease: CloudEnrollment.Lease,
                        decode: (CKRecord) -> Event?) async -> (events: [Event], ok: Bool) {
@@ -1494,15 +1533,7 @@ final class CloudExfiltrator: ObservableObject {
             // and a restore that returns *most* of the log looks exactly like one that worked.
             repeat {
                 try requireCurrent(lease)
-                let matches: [(CKRecord.ID, Result<CKRecord, any Error>)]
-                let next: CKQueryOperation.Cursor?
-                if let cursor {
-                    (matches, next) = try await database.records(continuingMatchFrom: cursor,
-                                                                 resultsLimit: Self.fetchPageSize)
-                } else {
-                    (matches, next) = try await database.records(matching: query,
-                                                                 resultsLimit: Self.fetchPageSize)
-                }
+                let (matches, next) = try await queryPage(query, from: cursor, lease: lease)
                 try requireCurrent(lease)
                 sawRecordFailure = sawRecordFailure || Self.queryPageSawFailure(matches)
                 out += matches.compactMap { _, result -> Event? in
@@ -1592,14 +1623,13 @@ final class CloudExfiltrator: ObservableObject {
     /// reached iCloud and nothing — not restore, not the push path, not any UI — could ever
     /// bring it back; after a theft the owner held thumbnails of their own evidence.
     func fetchFullMedia(for eventID: UUID, manifest: [String]? = nil) async -> FullMediaFetch? {
-        guard let lease = await acquireCloudLease(), enrollment.authorizeRecord(eventID, lease: lease),
-              let database else { return nil }
+        guard let lease = await acquireCloudLease(), enrollment.authorizeRecord(eventID, lease: lease) else { return nil }
         let names = Self.fullMediaRecordNames(for: eventID, manifest: manifest)
         // No name to ask for (this iPhone's record that names no camera, `Event.downloadManifest`):
         // every candidate is checked, and none holds a capture.
         guard !names.isEmpty else { return FullMediaFetch(media: [], complete: true) }
         do {
-            let results = try await database.records(for: names.map { CKRecord.ID(recordName: $0) })
+            let results = try await fetchMediaRecords(names.map { CKRecord.ID(recordName: $0) }, lease: lease)
             try requireCurrent(lease)
             var bySlot: [String: FetchedMedia] = [:]
             var slotOrder: [String] = []
@@ -1705,12 +1735,14 @@ final class CloudExfiltrator: ObservableObject {
     }
 
     /// Item 52: the session's latest beat, fetched by name. No such record: never heard from (a
-    /// phone on 1.3.x, the free tier, or offline throughout); any other failure: not known.
+    /// phone on 1.3.x, the free tier, or offline throughout); any other failure, a read past its
+    /// deadline included (item 180's A2; on an operation of its own, codex-4): not known.
     func latestBeat(session: UUID) async -> LastHeard {
-        guard let lease = await acquireCloudLease(), enrollment.authorizeRecord(session, lease: lease),
-              let database else { return .unknown }
+        guard let lease = await acquireCloudLease(), enrollment.authorizeRecord(session, lease: lease) else { return .unknown }
+        let id = CKRecord.ID(recordName: Self.latestBeatRecordName(session: session))
         do {
-            let record = try await database.record(for: CKRecord.ID(recordName: Self.latestBeatRecordName(session: session)))
+            guard let answer = try await recordsByID([id], desiredKeys: nil, lease: lease)[id] else { return .unknown }
+            let record = try answer.get()
             try requireCurrent(lease)
             return record.modificationDate.map(LastHeard.at) ?? .unknown
         } catch {
@@ -1967,7 +1999,7 @@ final class CloudExfiltrator: ObservableObject {
         guard let lease = await acquireCloudLease(), let database else { return nil }
         return RetentionAccess(
             serverDate: { await self.newestServerCreationDate(type: $0, in: database, lease: lease) },
-            mediaEvents: { await self.eventIDsOfMetaRecords(olderThan: $0, type: $1, database: database, lease: lease) },
+            mediaEvents: { await self.eventIDsOfMetaRecords(olderThan: $0, type: $1, lease: lease) },
             beatRecords: { await self.fetchBeats(named: $0, timesOnly: $1, in: database, lease: lease) },
             delete: { await self.delete($0, from: database, lease: lease) },
             isCurrent: { self.enrollment.isCurrent(lease) },
@@ -2147,7 +2179,7 @@ final class CloudExfiltrator: ObservableObject {
     /// cannot purge — skipping it is right (under-deletion is the safe direction), but the
     /// purge must then report FAILED rather than claim "Deleted" (R3-3).
     private func eventIDsOfMetaRecords(olderThan cutoff: Date, type: String,
-                                       database: CKDatabase, lease: CloudEnrollment.Lease) async -> (ids: [UUID], ok: Bool) {
+                                       lease: CloudEnrollment.Lease) async -> (ids: [UUID], ok: Bool) {
         guard enrollment.isCurrent(lease) else { return ([], false) }
         let query = CKQuery(recordType: type, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
@@ -2157,15 +2189,7 @@ final class CloudExfiltrator: ObservableObject {
         do {
             paging: repeat {
                 try requireCurrent(lease)
-                let matches: [(CKRecord.ID, Result<CKRecord, any Error>)]
-                let next: CKQueryOperation.Cursor?
-                if let cursor {
-                    (matches, next) = try await database.records(continuingMatchFrom: cursor,
-                                                                 resultsLimit: Self.fetchPageSize)
-                } else {
-                    (matches, next) = try await database.records(matching: query,
-                                                                 resultsLimit: Self.fetchPageSize)
-                }
+                let (matches, next) = try await queryPage(query, from: cursor, lease: lease)
                 try requireCurrent(lease)
                 sawRecordFailure = sawRecordFailure || Self.queryPageSawFailure(matches)
                 for (recordID, result) in matches {
@@ -2392,6 +2416,248 @@ final class CloudExfiltrator: ObservableObject {
                 onDeadline()
                 cont.resume(throwing: timeoutError)
             }
+        }
+    }
+
+    #if DEBUG
+    /// A test's stand-in for a read (the presence check's fetch, the subscription listing), within the read deadline:
+    /// past it the caller goes on and the stand-in's task is cancelled. The shipped reads run on operations of their own
+    /// (`operationRead`).
+    private func withinReadDeadline<T: Sendable>(_ read: @escaping @Sendable () async throws -> T) async throws -> T {
+        let task = Task { try await read() }
+        return try await Self.awaitWithDeadline(
+            readDeadline,
+            onDeadline: { task.cancel() },
+            timeoutError: CKError(.networkFailure),
+            start: { (resume: @escaping @Sendable (Result<T, Error>) -> Void) in
+                Task { resume(await task.result) }
+            })
+    }
+    #endif
+
+    /// The deadline a read that carries no file races: the save's 20 s, or a test's.
+    private var readDeadline: TimeInterval {
+        #if DEBUG
+        if let readDeadlineForTesting { return readDeadlineForTesting }
+        #endif
+        return Self.saveAttemptDeadline
+    }
+
+    /// The stall and the cap a read that carries files races: the uploads' numbers, or a test's read deadline as the stall.
+    private var readStallDeadlines: (stall: TimeInterval, cap: TimeInterval) { (readDeadline, Self.assetSaveCap) }
+
+    /// Hands a read's operation to the database, or to a test in its place; `rejected` answers when it cannot go.
+    private func submitRead(_ operation: CKDatabaseOperation, lease: CloudEnrollment.Lease, rejected: () -> Void) {
+        #if DEBUG
+        if let readSubmitForTesting { readSubmitForTesting(operation); return }
+        #endif
+        guard let database else { rejected(); return }
+        submit(operation, to: database, lease: lease, rejected: rejected)
+    }
+
+    /// A read that carries no file, on a CloudKit operation of its own, within the read deadline (BACKLOG 180's A2 and
+    /// codex-4). CloudKit's own resource timeout is measured in days, so a read on a path that looks online but passes
+    /// nothing never answered, and it held its caller for the session: the presence check held the pending sweep's
+    /// single-flight lock, and nothing pending uploaded again; the subscription listing held an automatic setup open.
+    /// CloudKit's async calls could not be stopped either: before iOS 27 they wrap the callback calls with no
+    /// cancellation. So the read is an operation, held in `activeOperations` (an account change cancels it) and cancelled
+    /// at the deadline, where it fails as a network-class failure, as a stalled save does, for each caller's existing
+    /// failure rule; a caller cancelled meanwhile cancels it and goes on at once (deepseek-3). `wire` sets the
+    /// operation's blocks to answer through `resume`. Reads that carry files race a stall deadline instead: `queryPage`
+    /// and `fetchMediaRecords`.
+    private func operationRead<T: Sendable>(_ operation: CKDatabaseOperation, lease: CloudEnrollment.Lease,
+                                            wire: (_ resume: @escaping @Sendable (Result<T, Error>) -> Void) -> Void)
+        async throws -> T {
+        let token = UUID()
+        activeOperations[token] = operation
+        defer { activeOperations[token] = nil }
+        let bridge = ReadBridge<T>()
+        return try await withTaskCancellationHandler {
+            try await Self.awaitWithDeadline(
+                readDeadline,
+                onDeadline: { [weak operation] in
+                    Log.cloud.error("An iCloud read stalled — cancelling the operation")
+                    operation?.cancel()
+                },
+                timeoutError: CKError(.networkFailure),
+                start: { (resume: @escaping @Sendable (Result<T, Error>) -> Void) in
+                    bridge.hold(resume)
+                    wire(resume)
+                    submitRead(operation, lease: lease) { resume(.failure(CKError(.notAuthenticated))) }
+                })
+        } onCancel: { [weak operation] in
+            operation?.cancel()
+            bridge.fail(CancellationError())
+        }
+    }
+
+    /// Records fetched by ID on an operation of their own, within the read deadline (`operationRead`), as `records(for:)`
+    /// answered: each name's record or its own error; a name with no answer of its own was not checked.
+    private func recordsByID(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?,
+                             lease: CloudEnrollment.Lease) async throws -> FetchResults {
+        let operation = CKFetchRecordsOperation(recordIDs: ids)
+        operation.desiredKeys = desiredKeys
+        let fetched = FetchedRecords(expecting: ids)
+        return try await operationRead(operation, lease: lease) { resume in
+            operation.perRecordResultBlock = { @Sendable id, result in fetched.record(id, result) }
+            operation.fetchRecordsResultBlock = { @Sendable result in resume(Self.fetchAnswer(result, fetched)) }
+        }
+    }
+
+    /// A fetch by ID's answer as `records(for:)` gave it: a partial failure is answered record by record; any other
+    /// failure is the fetch's as a whole.
+    nonisolated private static func fetchAnswer(_ result: Result<Void, any Error>,
+                                                _ fetched: FetchedRecords) -> Result<FetchResults, any Error> {
+        switch result {
+        case .success:
+            return .success(fetched.snapshot())
+        case .failure(let error):
+            return (error as? CKError)?.code == .partialFailure ? .success(fetched.snapshot()) : .failure(error)
+        }
+    }
+
+    /// One page of query results: each match in the query's order, and the cursor for the rest.
+    typealias QueryPage = (matches: [(CKRecord.ID, Result<CKRecord, any Error>)], next: CKQueryOperation.Cursor?)
+    /// A fetch by ID's answer: each name's record, or its own error.
+    typealias FetchResults = [CKRecord.ID: Result<CKRecord, any Error>]
+
+    /// One page of a query, from its start or from `cursor`, as `records(matching:)` and `records(continuingMatchFrom:)`
+    /// answer it, under the stall deadline within the asset cap (BACKLOG 180's A2). A page can carry a hundred
+    /// thumbnails, so a fixed 20 s could cut off a slow page that is still arriving: the clock restarts as each record
+    /// arrives, and a page that stops arriving is cancelled and fails as a network-class failure, so the pull or the
+    /// media-age walk reports itself incomplete instead of holding its caller for the session. A caller cancelled
+    /// meanwhile cancels it and goes on at once (deepseek-3).
+    private func queryPage(_ query: CKQuery, from cursor: CKQueryOperation.Cursor?,
+                           lease: CloudEnrollment.Lease) async throws -> QueryPage {
+        let operation: CKQueryOperation
+        if let cursor { operation = CKQueryOperation(cursor: cursor) } else { operation = CKQueryOperation(query: query) }
+        operation.resultsLimit = Self.fetchPageSize
+        let matches = QueryPageMatches()
+        let token = UUID()
+        activeOperations[token] = operation
+        defer { activeOperations[token] = nil }
+        let deadlines = readStallDeadlines
+        let bridge = ReadBridge<QueryPage>()
+        return try await withTaskCancellationHandler {
+            try await Self.awaitWithStallDeadline(
+                stall: deadlines.stall, cap: deadlines.cap,
+                onDeadline: { [weak operation] in
+                    Log.cloud.error("A query page stalled — cancelling the operation")
+                    operation?.cancel()
+                },
+                timeoutError: CKError(.networkFailure),
+                start: { (resume: @escaping @Sendable (Result<QueryPage, Error>) -> Void, progressed: @escaping @Sendable () -> Void) in
+                    bridge.hold(resume)
+                    operation.recordMatchedBlock = { @Sendable id, result in
+                        matches.record(id, result)
+                        progressed()   // the clock restarts
+                    }
+                    // Fires after every match: the final word on the page.
+                    operation.queryResultBlock = { @Sendable result in
+                        resume(result.map { (matches: matches.snapshot(), next: $0) })
+                    }
+                    submitRead(operation, lease: lease) { resume(.failure(CKError(.notAuthenticated))) }
+                })
+        } onCancel: { [weak operation] in
+            operation?.cancel()
+            bridge.fail(CancellationError())
+        }
+    }
+
+    /// The full download's fetch by ID, each record with its capture, as `records(for:)` answers it, under the stall
+    /// deadline within the asset cap (BACKLOG 180's A2): a 60 s clip can take minutes on a slow link, so the clock
+    /// restarts as CloudKit reports progress, and a fetch that stops moving is cancelled and fails as a network-class
+    /// failure. A name with no answer of its own was not checked, and answers so, never as absent (R3-3). A caller
+    /// cancelled meanwhile (the detail view closed) cancels it and goes on at once (deepseek-3).
+    private func fetchMediaRecords(_ ids: [CKRecord.ID], lease: CloudEnrollment.Lease) async throws -> FetchResults {
+        let operation = CKFetchRecordsOperation(recordIDs: ids)
+        let fetched = FetchedRecords(expecting: ids)
+        let token = UUID()
+        activeOperations[token] = operation
+        defer { activeOperations[token] = nil }
+        let deadlines = readStallDeadlines
+        let bridge = ReadBridge<FetchResults>()
+        return try await withTaskCancellationHandler {
+            try await Self.awaitWithStallDeadline(
+                stall: deadlines.stall, cap: deadlines.cap,
+                onDeadline: { [weak operation] in
+                    Log.cloud.error("Full-media fetch stalled — cancelling the operation")
+                    operation?.cancel()
+                },
+                timeoutError: CKError(.networkFailure),
+                start: { (resume: @escaping @Sendable (Result<FetchResults, Error>) -> Void, progressed: @escaping @Sendable () -> Void) in
+                    bridge.hold(resume)
+                    operation.perRecordProgressBlock = { @Sendable _, _ in progressed() }   // the clock restarts
+                    operation.perRecordResultBlock = { @Sendable id, result in
+                        fetched.record(id, result)
+                        progressed()
+                    }
+                    operation.fetchRecordsResultBlock = { @Sendable result in resume(Self.fetchAnswer(result, fetched)) }
+                    submitRead(operation, lease: lease) { resume(.failure(CKError(.notAuthenticated))) }
+                })
+        } onCancel: { [weak operation] in
+            operation?.cancel()
+            bridge.fail(CancellationError())
+        }
+    }
+
+    /// The answer of a read's wait, kept so that its caller's cancel can end the wait too (BACKLOG 180's deepseek-3): an
+    /// operation a test holds, or one CloudKit has not started, may never call its blocks back. `lock` guards `resume`.
+    private final class ReadBridge<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resume: (@Sendable (Result<T, Error>) -> Void)?
+
+        func hold(_ resume: @escaping @Sendable (Result<T, Error>) -> Void) { lock.withLock { self.resume = resume } }
+
+        func fail(_ error: Error) { lock.withLock { resume }?(.failure(error)) }
+    }
+
+    /// Thread-safe collector for a subscription listing's answers (BACKLOG 180's codex-4).
+    private final class ListedSubscriptions: @unchecked Sendable {
+        private let lock = NSLock()
+        private var subscriptions: [CKSubscription] = []
+
+        func add(_ subscription: CKSubscription) { lock.withLock { subscriptions.append(subscription) } }
+
+        func snapshot() -> [CKSubscription] { lock.withLock { subscriptions } }
+    }
+
+    /// Thread-safe collector for a query page's matches, in the order CloudKit gives them (item 180's A2): CloudKit
+    /// runs the operation's blocks on its own queue.
+    private final class QueryPageMatches: @unchecked Sendable {
+        private let lock = NSLock()
+        private var matches: [(CKRecord.ID, Result<CKRecord, any Error>)] = []
+
+        func record(_ id: CKRecord.ID, _ result: Result<CKRecord, any Error>) {
+            lock.lock(); defer { lock.unlock() }
+            matches.append((id, result))
+        }
+
+        func snapshot() -> [(CKRecord.ID, Result<CKRecord, any Error>)] {
+            lock.lock(); defer { lock.unlock() }
+            return matches
+        }
+    }
+
+    /// Thread-safe collector for a fetch's per-record results (item 180's A2); an expected name with no answer of its
+    /// own is reported as a failure, so the fetch reads as incomplete rather than that record as absent.
+    private final class FetchedRecords: @unchecked Sendable {
+        private let lock = NSLock()
+        private let expected: [CKRecord.ID]
+        private var answers: FetchResults = [:]
+
+        init(expecting expected: [CKRecord.ID]) { self.expected = expected }
+
+        func record(_ id: CKRecord.ID, _ result: Result<CKRecord, any Error>) {
+            lock.lock(); defer { lock.unlock() }
+            answers[id] = result
+        }
+
+        func snapshot() -> FetchResults {
+            lock.lock(); defer { lock.unlock() }
+            var all = answers
+            for id in expected where all[id] == nil { all[id] = .failure(CKError(.networkFailure)) }
+            return all
         }
     }
 
@@ -2805,7 +3071,7 @@ final class CloudExfiltrator: ObservableObject {
         guard enrollment.isCurrent(lease) else { return false }
         let existing: [CKSubscription]
         do {
-            existing = try await allSubscriptions()
+            existing = try await allSubscriptions(lease: lease)
             try requireCurrent(lease)
         } catch { return false }
         guard stillWanted() else { return false }   // asked again after the fetch, and before each save (codex-19)
@@ -2834,13 +3100,23 @@ final class CloudExfiltrator: ObservableObject {
         return allSucceeded && enrollment.isCurrent(lease)
     }
 
-    /// The account's subscriptions, as CloudKit lists them.
-    private func allSubscriptions() async throws -> [CKSubscription] {
+    /// The account's subscriptions, as CloudKit lists them, on an operation of its own within the read deadline (item
+    /// 180's A2 and codex-4); a test's stand-in for the listing meets the deadline too. A listing that fails in part
+    /// fails as a whole, as `allSubscriptions()` did.
+    private func allSubscriptions(lease: CloudEnrollment.Lease) async throws -> [CKSubscription] {
         #if DEBUG
-        if let existing = existingSubscriptionsForTesting { return try await existing() }
+        if let existing = existingSubscriptionsForTesting {
+            return try await withinReadDeadline { try await existing() }
+        }
         #endif
-        guard let database else { throw CKError(.notAuthenticated) }
-        return try await database.allSubscriptions()
+        let operation = CKFetchSubscriptionsOperation.fetchAllSubscriptionsOperation()
+        let listed = ListedSubscriptions()
+        return try await operationRead(operation, lease: lease) { resume in
+            operation.perSubscriptionResultBlock = { @Sendable _, result in
+                if case .success(let subscription) = result { listed.add(subscription) }
+            }
+            operation.fetchSubscriptionsResultBlock = { @Sendable result in resume(result.map { listed.snapshot() }) }
+        }
     }
 
     private func saveSubscription(_ subscription: CKQuerySubscription, lease: CloudEnrollment.Lease) async -> Bool {
@@ -2885,16 +3161,42 @@ final class CloudExfiltrator: ObservableObject {
         await deleteSubscriptions(Self.subscriptionIDsToRemove, lease: lease)
     }
 
-    /// Deletes subscriptions by ID. A "not found" is fine — it just means there was nothing
-    /// to remove — which is why this is safe to call speculatively.
+    /// CloudKit calls these blocks on its own queue; the lock protects every read and write of the results.
+    /// Internal so tests can also check operation-level partial failures, which current Swift overlays normalize.
+    final class SubscriptionDeleteResults: @unchecked Sendable {
+        private let lock = NSLock()
+        private var absent: Set<String> = []
+        private var failed: Set<String> = []
+
+        func record(_ id: String, _ result: Result<Void, Error>) {
+            lock.lock(); defer { lock.unlock() }
+            switch result {
+            case .success: absent.insert(id)
+            case .failure(let error):
+                if (error as? CKError)?.code == .unknownItem { absent.insert(id) }
+                else { failed.insert(id) }
+            }
+        }
+
+        func complete(operationError: Error?, expecting: [String]) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if let operationError, (operationError as? CKError)?.code != .partialFailure { return false }
+            return failed.isEmpty && expecting.allSatisfy { absent.contains($0) }
+        }
+    }
+
+    /// Deletes subscriptions by ID. Each ID must be confirmed deleted or already absent (`unknownItem`); a real
+    /// per-ID failure, an unanswered ID or a non-partial operation error leaves the removal unconfirmed.
     @discardableResult
     private func deleteSubscriptions(_ ids: [String], lease: CloudEnrollment.Lease) async -> Bool {
         #if DEBUG
         if let remove = subscriptionRemovalForTesting { return enrollment.isCurrent(lease) ? await remove(ids) : false }
         #endif
-        guard enrollment.isCurrent(lease), let database else { return false }
+        guard enrollment.isCurrent(lease) else { return false }
         let op = CKModifySubscriptionsOperation(subscriptionIDsToDelete: ids)
         op.qualityOfService = .utility
+        let results = SubscriptionDeleteResults()
+        op.perSubscriptionDeleteBlock = { @Sendable id, result in results.record(id, result) }
         let token = UUID()
         activeOperations[token] = op
         defer { activeOperations[token] = nil }
@@ -2903,11 +3205,21 @@ final class CloudExfiltrator: ObservableObject {
                 onDeadline: { op.cancel() }, timeoutError: CKError(.networkFailure),
                 start: { (resume: @escaping @Sendable (Result<Void, Error>) -> Void) in
                 op.modifySubscriptionsResultBlock = { @Sendable result in
+                    let operationError: Error?
                     switch result {
-                    case .success: resume(.success(()))
-                    case .failure(let error): resume(.failure(error))
+                    case .success: operationError = nil
+                    case .failure(let error): operationError = error
+                    }
+                    if results.complete(operationError: operationError, expecting: ids) {
+                        resume(.success(()))
+                    } else {
+                        resume(.failure(operationError ?? CKError(.internalError)))
                     }
                 }
+                #if DEBUG
+                if let subscriptionDeleteSubmitForTesting { subscriptionDeleteSubmitForTesting(op); return }
+                #endif
+                guard let database else { resume(.failure(CKError(.notAuthenticated))); return }
                 submit(op, to: database, lease: lease) { resume(.failure(CKError(.notAuthenticated))) }
             })
             try requireCurrent(lease)
@@ -2920,10 +3232,58 @@ final class CloudExfiltrator: ObservableObject {
 
     // MARK: - Utilities
 
+    #if DEBUG
+    /// Replaces only the temporary directory; tests still use the real staging and launch cleanup paths.
+    static var thumbnailTempRootForTesting: URL?
+    #endif
+
+    private static let thumbnailTempPrefix = "malinois-upload-thumbnail-"
+    // Every staging write, sweep and defer runs synchronously on MainActor, across all uploader instances.
+    private static var activeThumbnailFiles: Set<URL> = []
+
+    private static var thumbnailTempRoot: URL {
+        #if DEBUG
+        if let root = thumbnailTempRootForTesting { return root }
+        #endif
+        return FileManager.default.temporaryDirectory
+    }
+
+    /// Removes only direct regular files named by this uploader, excluding every live upload in this process.
+    /// Run synchronously before launch builds the engine. Ambiguous legacy names and symlinks stay untouched.
+    /// A supplied directory isolates filesystem tests; enumeration or deletion failures leave files for later.
+    static func sweepOrphanedThumbnails(in root: URL? = nil) {
+        let fm = FileManager.default
+        let directory = root ?? thumbnailTempRoot
+        // Check the supplied root itself before resolving aliases for consistent enumeration and live-file keys.
+        let canonicalDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
+        guard let attributes = try? fm.attributesOfItem(atPath: directory.path),
+              attributes[.type] as? FileAttributeType == .typeDirectory,
+              let files = try? fm.contentsOfDirectory(at: canonicalDirectory, includingPropertiesForKeys: nil) else { return }
+        for file in files {
+            let basename = file.deletingPathExtension().lastPathComponent
+            guard file.pathExtension == "jpg", basename.hasPrefix(thumbnailTempPrefix) else { continue }
+            let identifier = String(basename.dropFirst(thumbnailTempPrefix.count))
+            guard UUID(uuidString: identifier)?.uuidString == identifier,
+                  let attributes = try? fm.attributesOfItem(atPath: file.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  !activeThumbnailFiles.contains(file.resolvingSymlinksInPath().standardizedFileURL) else { continue }
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    private static func removeTemporaryThumbnail(_ url: URL) {
+        let key = url.resolvingSymlinksInPath().standardizedFileURL
+        try? FileManager.default.removeItem(at: url)
+        activeThumbnailFiles.remove(key)
+    }
+
     private func writeTemp(_ data: Data, ext: String) -> URL? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + "." + ext)
-        do { try data.write(to: url, options: .atomic); return url }
-        catch { return nil }
+        let url = Self.thumbnailTempRoot
+            .appendingPathComponent(Self.thumbnailTempPrefix + UUID().uuidString + "." + ext)
+        do {
+            try data.write(to: url, options: .atomic)
+            Self.activeThumbnailFiles.insert(url.resolvingSymlinksInPath().standardizedFileURL)
+            return url
+        } catch { return nil }
     }
 }

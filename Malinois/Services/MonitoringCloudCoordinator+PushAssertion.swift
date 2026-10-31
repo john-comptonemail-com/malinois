@@ -1,28 +1,31 @@
 //
-//  MonitoringEngine+PushAssertion.swift
+//  MonitoringCloudCoordinator+PushAssertion.swift
 //  Malinois
 //
 //  Item 153's MAL-01 (1.8.1; ADR 0003 amended). The engine spawned its fact pushes on bare tasks, so the lapse record
 //  written as the scene left the foreground, and a trip's fact pushed just before a lock or a kill, had no
 //  background-task assertion until the uploader took one after its identity lookup and its queue wait. Now the spawn
 //  holds one from before the task exists (the status records' spawn, `logStateChange`, does the same in the main
-//  file), and the uploader's own assertion covers the push itself from its first step on. Moved here from
-//  MonitoringEngine.swift, which sits at the lint limit. Item 162's A10 (1.8.2): the uploader reads the log's copy of
+//  file), and the uploader's own assertion covers the push itself from its first step on. The cloud coordinator
+//  owns these spawns and their binding-use counts. Item 162's A10 (1.8.2): the uploader reads the log's copy of
 //  an event when a push's turn comes, through the hook wired here.
 //
 
 import Foundation
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
     /// Pushes the bare fact of an event to iCloud at once (Pro only, iCloud backup permitting), on a task that holds
     /// a background-task assertion from before it is spawned: a lock or a kill right now finds it held (item 153's
     /// MAL-01). The uploader takes its own from its first step on; UIKit allows both. The record's account binding is
-    /// kept from before the task starts until the push ends (`beginBindingUse`; codex-6 on 1.8.2's step 17).
+    /// kept from before the task starts until the push ends (`beginBindingUse`; codex-6 on 1.8.2's step 17). A failed
+    /// fact, including a thumbnail still owed, reopens its matching synced row through the uploader's queued hook.
     func pushFactIfCloud(_ event: Event) {
         guard cloudAllowed, backupAllows(event) else { return }   // item 115
         let hold = BackgroundAssertion.begin("malinois-fact-task")
         beginBindingUse(event.id)
+        let lifetime = retainHostForFiniteWork()
         Task {
+            defer { lifetime.keepAlive() }
             defer { hold.end(); endBindingUse(event.id) }
             await cloud.pushFact(event)   // enqueue awaits the chained work, so this returns post-attempt
             handleEncryptedDataResetIfNeeded()   // R3-2: fact pushes consume the reset flag too
@@ -44,7 +47,9 @@ extension MonitoringEngine {
     /// `0ed887f`). The event limit's choices are unchanged: this keeps the binding, not the row.
     func exfiltrateInBackground(_ event: Event, cloudAllowedOverride: Bool? = nil) {
         beginBindingUse(event.id)
+        let lifetime = retainHostForFiniteWork()
         Task {
+            defer { lifetime.keepAlive() }
             defer { endBindingUse(event.id) }
             await exfiltrate(event, cloudAllowedOverride: cloudAllowedOverride)
         }
@@ -57,6 +62,7 @@ extension MonitoringEngine {
     func handTheUploaderTheLog() {
         cloud.storedEvent = { [weak self] id in self?.eventStore.events.first { $0.id == id } }
         cloud.mediaLanded = { [weak self] id, token, epoch in self?.eventStore.noteMediaUploaded(token, for: id, epoch: epoch) }
+        cloud.factFailed = { [weak self] snapshot in self?.reopenAfterFailedFact(snapshot) }
         eventStore.discardNeedsCheck = { [weak self] event in self?.discardNeedsACheck(event) ?? true }
         eventStore.mediaAttachedLate = { [weak self] in self?.captureEvidenceStoredLate() }
     }

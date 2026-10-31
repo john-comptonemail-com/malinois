@@ -1,14 +1,13 @@
 //
-//  MonitoringEngine+Backup.swift
+//  MonitoringCloudCoordinator+Backup.swift
 //  Malinois
 //
-//  Item 115 (item 108's decision 4, option C; P-01): the "iCloud backup" switch. Kept apart from
-//  MonitoringEngine.swift, which sits at the lint size limits. ADR 0047.
+//  The cloud coordinator's backup policy and settings hooks. ADR 0047.
 //
 
 import Foundation
 
-extension MonitoringEngine {
+extension MonitoringCloudCoordinator {
     /// Said on Home and on the arming and countdown screens while iCloud backup is off on Pro
     /// (item 120, F1): Home's row said "iCloud ready" and the arming screens said nothing. It says
     /// what Malinois does: it said new events "stay on this iPhone", whose own backups (iCloud

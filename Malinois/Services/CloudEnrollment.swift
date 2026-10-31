@@ -330,7 +330,7 @@ final class CloudEnrollment: ObservableObject {
         if state != nil { return true }
         do {
             let bytes = try Data(contentsOf: file)
-            let stored = try JSONDecoder().decode(State.self, from: bytes)
+            let stored = try StoredJSON.decode(State.self, from: bytes)
             guard stored.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
             state = stored
             captureHeld = stored.observedDifferentAccount != nil

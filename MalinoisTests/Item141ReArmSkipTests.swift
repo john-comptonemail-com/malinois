@@ -144,3 +144,258 @@ final class Item141ReArmSkipTests: XCTestCase {
         return condition()
     }
 }
+
+// MARK: - Recovery marker handoffs (item 175, codex-4)
+
+/// Observe the real launch/foreground transition immediately after each predecessor is retired.
+/// Launch starts locked so the observer is installed before recovery runs; unresolved entitlements
+/// keep the first handoff owed until a test explicitly permits the countdown.
+@MainActor
+final class Item175RecoveryMarkerTests: XCTestCase {
+    private let defaults = UserDefaults.standard
+    private let lastAttemptKey = "com.malinois.recovery.lastAt"
+    // The MainActor tests and XCTest's synchronous main-thread tearDown are the only accesses.
+    // The local snapshot passed into assumeIsolated is an array of MainActor (Sendable) stores, never self.
+    nonisolated(unsafe) private var storesForTeardown: [EventStore] = []
+    // Only the synchronous test and its main-thread tearDown access these scratch directory names.
+    nonisolated(unsafe) private var snapshotFolders: [URL] = []
+
+    private struct Rig {
+        let engine: MonitoringEngine
+        let store: EventStore
+        let pro: ProEntitlements
+    }
+
+    override func setUp() {
+        super.setUp()
+        TestIsolation.setUp(folderPrefix: "MalinoisItem175Recovery")
+    }
+
+    override func tearDown() {
+        let stores = storesForTeardown
+        MainActor.assumeIsolated {
+            TestIsolation.letQueuedWorkLand()
+            TestIsolation.disarmTrackedEngines()
+            stores.forEach { $0.drainIOForTesting() }
+        }
+        storesForTeardown.removeAll()
+        TestIsolation.tearDown()
+        for folder in snapshotFolders { try? FileManager.default.removeItem(at: folder) }
+        snapshotFolders.removeAll()
+        super.tearDown()
+    }
+
+    private func launch(settings: AppSettings? = nil, store: EventStore? = nil) -> Rig {
+        let settings = settings ?? AppSettings()
+        settings.gracePeriodSeconds = 60
+        let store = store ?? EventStore()
+        storesForTeardown.append(store)
+        let pro = ProEntitlements.unresolvedForTesting()
+        let cloud = CloudExfiltrator()
+        cloud.accountIdentityForTesting = { nil }
+        let engine = TestIsolation.track(MonitoringEngine(settings: settings, eventStore: store, cloud: cloud,
+                                                          camera: FakeCamera(), entitlements: pro,
+                                                          timing: EngineCharacterizationTests.fastTiming,
+                                                          protectedDataAvailable: { false }))
+        return Rig(engine: engine, store: store, pro: pro)
+    }
+
+    func testArmedMarkerRetiresAfterTheInterruptionAndOwedReArm() {
+        defaults.set(0.5, forKey: MonitoringEngine.armedMarkerKey)
+        let rig = launch()
+        var sawRetirement = false
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard key == MonitoringEngine.armedMarkerKey else { return }
+            sawRetirement = true
+            XCTAssertNil(self.defaults.object(forKey: key))
+            XCTAssertTrue(rig.store.events.contains { $0.interrupted == true })
+            XCTAssertTrue(self.defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(sawRetirement)
+        XCTAssertEqual(rig.engine.state, .disarmed, "The unresolved Pro check keeps recovery owed.")
+    }
+
+    func testInterruptedRecoveryRetiresAfterItsInterruptionAndOwedReArm() {
+        defaults.set(true, forKey: MonitoringEngine.recoveryInProgressKey)
+        defaults.set(true, forKey: MonitoringEngine.armingInProgressKey)
+        let rig = launch()
+        var retired: Set<String> = []
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard [MonitoringEngine.recoveryInProgressKey, MonitoringEngine.armingInProgressKey].contains(key) else { return }
+            retired.insert(key)
+            XCTAssertTrue(rig.store.events.contains { $0.interrupted == true })
+            XCTAssertTrue(self.defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertEqual(retired, [MonitoringEngine.recoveryInProgressKey, MonitoringEngine.armingInProgressKey])
+        XCTAssertEqual(rig.store.events.filter { $0.interrupted == true }.count, 1)
+        XCTAssertFalse(rig.store.events.contains { $0.stateChange == "armingInterrupted" }, "Recovery owns this countdown.")
+    }
+
+    func testOwedReArmRetiresOnlyAfterRecoveryProgressExists() {
+        defaults.set(true, forKey: MonitoringEngine.pendingReArmKey)
+        let rig = launch()
+        var sawRetirement = false
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard key == MonitoringEngine.pendingReArmKey else { return }
+            sawRetirement = true
+            XCTAssertTrue(self.defaults.bool(forKey: MonitoringEngine.recoveryInProgressKey))
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.pro.resolveForTesting(as: .free)
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(sawRetirement)
+        XCTAssertEqual(rig.engine.state, .arming)
+    }
+
+    func testCrashLoopRetiresTheOwedAttemptOnlyAfterItsSkipRecord() {
+        defaults.set(true, forKey: MonitoringEngine.pendingReArmKey)
+        defaults.set(Date().timeIntervalSince1970 - 10, forKey: lastAttemptKey)
+        let rig = launch()
+        var sawRetirement = false
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard key == MonitoringEngine.pendingReArmKey else { return }
+            sawRetirement = true
+            XCTAssertTrue(rig.engine.reArmSkipped)
+            XCTAssertTrue(rig.store.events.contains { $0.stateChange == "reArmSkipped" })
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.pro.resolveForTesting(as: .free)
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(sawRetirement)
+        XCTAssertEqual(rig.engine.state, .disarmed)
+        XCTAssertFalse(defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        rig.engine.handleScenePhase(true)
+        XCTAssertEqual(rig.store.events.filter { $0.stateChange == "reArmSkipped" }.count, 1, "A declined attempt is consumed once.")
+    }
+
+    func testOrdinaryCountdownRetiresOnlyAfterItsInterruptionRecord() {
+        defaults.set(true, forKey: MonitoringEngine.armingInProgressKey)
+        let rig = launch()
+        var sawRetirement = false
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard key == MonitoringEngine.armingInProgressKey else { return }
+            sawRetirement = true
+            XCTAssertTrue(rig.store.events.contains { $0.stateChange == "armingInterrupted" })
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(sawRetirement)
+        XCTAssertFalse(defaults.bool(forKey: MonitoringEngine.pendingReArmKey), "An aborted ordinary countdown never auto re-arms.")
+    }
+
+    func testEntitlementDeferralKeepsReArmOwed() {
+        defaults.set(true, forKey: MonitoringEngine.pendingReArmKey)
+        let rig = launch()
+        var retired: [String] = []
+        rig.engine.recoveryMarkerRetiredForTesting = { retired.append($0) }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        XCTAssertFalse(retired.contains(MonitoringEngine.pendingReArmKey))
+        XCTAssertEqual(rig.engine.state, .disarmed)
+    }
+
+    func testPINRecoveryDeferralKeepsReArmOwed() {
+        defaults.set(true, forKey: MonitoringEngine.pendingReArmKey)
+        let rig = launch()
+        MonitoringEngine.recoveryPendingForTesting = true
+        rig.pro.resolveForTesting(as: .free)
+        var retired: [String] = []
+        rig.engine.recoveryMarkerRetiredForTesting = { retired.append($0) }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        XCTAssertFalse(retired.contains(MonitoringEngine.pendingReArmKey))
+        XCTAssertEqual(rig.engine.state, .disarmed)
+    }
+
+    func testLockedSettingsDeferralKeepsReArmOwed() throws {
+        let folder = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let canary = folder.appendingPathComponent("settings-canary")
+        try Data([1]).write(to: canary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: canary.path)
+        let previous = AppSettings.canaryURLOverrideForTesting
+        AppSettings.canaryURLOverrideForTesting = canary
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: canary.path)
+            AppSettings.canaryURLOverrideForTesting = previous
+        }
+        let settings = AppSettings.load()
+        settings.useProtectedDataAnswerForTesting { false }
+        XCTAssertTrue(settings.awaitingUnlock)
+        defaults.set(true, forKey: MonitoringEngine.pendingReArmKey)
+        let rig = launch(settings: settings)
+        rig.pro.resolveForTesting(as: .free)
+        var retired: [String] = []
+        rig.engine.recoveryMarkerRetiredForTesting = { retired.append($0) }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.handleScenePhase(true)
+        XCTAssertTrue(defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        XCTAssertFalse(retired.contains(MonitoringEngine.pendingReArmKey))
+        XCTAssertEqual(rig.engine.state, .disarmed)
+    }
+
+    func testAlreadyLoggedLapseIsNotDuplicatedDuringMarkerHandoff() {
+        let store = EventStore()
+        let lapse = Event(startDate: Date(), endDate: Date(), triggeredSensors: [], interrupted: true)
+        store.add(lapse)
+        defaults.set(0.5, forKey: MonitoringEngine.armedMarkerKey)
+        defaults.set(true, forKey: MonitoringEngine.backgroundLapseLoggedKey)
+        let rig = launch(store: store)
+        rig.engine.handleScenePhase(true)
+        XCTAssertEqual(store.events.filter { $0.interrupted == true }.map(\.id), [lapse.id])
+        XCTAssertTrue(defaults.bool(forKey: MonitoringEngine.pendingReArmKey))
+        XCTAssertNil(defaults.object(forKey: MonitoringEngine.armedMarkerKey))
+    }
+
+    func testFreshLaunchFromArmedRetirementSnapshotStillHasItsRecordAndOwedReArm() throws {
+        defaults.set(0.5, forKey: MonitoringEngine.armedMarkerKey)
+        let sourceRoot = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let snapshotRoot = sourceRoot.deletingLastPathComponent().appendingPathComponent("RecoverySnapshot-" + UUID().uuidString)
+        snapshotFolders.append(snapshotRoot)
+        let rig = launch()
+        var markerSnapshot: [String: Any]?
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            guard key == MonitoringEngine.armedMarkerKey else { return }
+            rig.store.drainIOForTesting()
+            markerSnapshot = self.defaults.dictionaryRepresentation().filter { entry in
+                TestIsolation.recoveryFlagPrefixes.contains { entry.key.hasPrefix($0) }
+            }
+            do { try FileManager.default.copyItem(at: sourceRoot, to: snapshotRoot) }
+            catch { XCTFail("Could not take the real recovery boundary snapshot: \(error)") }
+        }
+        rig.engine.handleScenePhase(true)
+        rig.engine.recoveryMarkerRetiredForTesting = nil
+        let markers = try XCTUnwrap(markerSnapshot)
+        TestIsolation.clearRecoveryFlags()
+        for (key, value) in markers { defaults.set(value, forKey: key) }
+        EventStore.rootOverrideForTesting = snapshotRoot
+        defer { EventStore.rootOverrideForTesting = sourceRoot }
+        let relaunched = launch()
+        relaunched.engine.handleScenePhase(true)
+        XCTAssertEqual(relaunched.store.events.filter { $0.interrupted == true }.count, 1)
+        XCTAssertTrue(defaults.bool(forKey: MonitoringEngine.pendingReArmKey), "A kill at retirement cannot lose the owed recovery.")
+        relaunched.pro.resolveForTesting(as: .free)
+        relaunched.engine.handleScenePhase(true)
+        XCTAssertEqual(relaunched.engine.state, .arming)
+    }
+
+    func testGoingLiveInstallsArmedBeforeRetiringRecoveryProgress() {
+        let rig = launch()
+        defaults.set(true, forKey: MonitoringEngine.recoveryInProgressKey)
+        defaults.set(true, forKey: MonitoringEngine.armingInProgressKey)
+        var retired: Set<String> = []
+        rig.engine.recoveryMarkerRetiredForTesting = { key in
+            retired.insert(key)
+            XCTAssertNotNil(self.defaults.object(forKey: MonitoringEngine.armedMarkerKey))
+        }
+        defer { rig.engine.recoveryMarkerRetiredForTesting = nil }
+        rig.engine.markWatchLive()
+        XCTAssertEqual(retired, [MonitoringEngine.recoveryInProgressKey, MonitoringEngine.armingInProgressKey])
+    }
+}

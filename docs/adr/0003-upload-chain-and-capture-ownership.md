@@ -205,3 +205,57 @@ the fetch's results were read only up to the first failure, so one met first (a 
 wait) hid a throttle or a longer wait behind it; every result is read now, and every failure a partial one nests, and
 the longest wait stands (`transientFailures(in:)`). Any failure other than "no such record" still makes the answer
 inconclusive.
+
+
+## Amendment (2026-10-29, 1.9): a locally unstaged thumbnail stays owed
+
+A metadata save distinguishes a failed save from a saved sparse record whose thumbnail could not be staged.
+The latter still permits the full-media uploads and leaves the event pending without an interference verdict.
+The next ordinary retry stages the thumbnail and sends the same metadata revision. No new stored field or schema
+is needed: the local thumbnail and pending sync state retain the work.
+
+A fact may also update an already-synced sustained event or owner attribution. Its failure is reconciled inside
+the existing per-event write queue through `factFailed`, with the actual snapshot selected at that queue turn.
+The engine reopens only a matching current first-hand row, ignoring sync state and newly landed receipt contents.
+Only failed facts additionally ignore the primary and secondary local cache filenames and the outstanding
+discard-check flag. A fact holds its account binding but does not pin the full-media cache: the byte cap can
+remove those filenames during the save, a download can refill the same camera slots, and an independent presence
+answer can settle the check. None establishes a newer successful queued fact. These local references can affect
+the derived media manifest or revision; the retry changes only the current row's sync state, and the next queued
+upload reads its current files and derives its current record.
+
+Thumbnail bytes, camera identity and duration, capture failures, counts, attribution, durable loss,
+account-policy/provenance fields, receipt epoch and every other event field remain compared. Future stored fields
+remain strict by default. Ordinary full-upload completion keeps its original comparison and does not receive the
+three-field exception. No later queued success can finish before the failed-fact hook. Identity/account/cancellation
+refusals still retain an owed retry; a deliberate backup-policy block before the attempt does not create one. Work
+already allowed may stay pending while backup is switched off, and normal policy gates keep it local until allowed
+again.
+
+Regression cases: `Item175ThumbnailRetryTests`. Simulator injection covers disk-write failure and callback ordering;
+live CloudKit propagation and phone behavior remain device verification.
+
+## Amendment (2026-10-29, 1.9): the reads have deadlines too
+
+The saves raced their deadlines; the reads raced none, and CloudKit's own resource timeout is measured in days. A read
+on a path that looks online but passes nothing never answered, and held its caller for the session: the presence check
+(`presenceResults`, BACKLOG 166) held the pending sweep's single-flight flag, so no pending upload was retried again
+until the app was next launched, and the alert subscriptions' listing held an automatic setup open (BACKLOG 180's A2,
+claude-fable-2). Now a read that carries no file (the presence check, the subscription listing, a beat's read, the
+arm's warm-up query) runs on a CloudKit operation of its own and races `saveAttemptDeadline` (`operationRead`): past it
+the operation is cancelled and the read fails as a network-class failure, for each caller's existing failure rule. A
+read that carries files (a restore's query pages and the media-age walk's, with their thumbnails; the full download,
+with its captures) races the stall deadline of the 1.8.1 amendment instead (`queryPage`, `fetchMediaRecords`): the 20 s
+restart as records arrive and CloudKit reports progress, within `assetSaveCap`. Each of these reads is held in
+`activeOperations`, so an account change cancels it, and is cancelled when its caller is, which then goes on at once.
+The retention purge's two reads (`fetchBeats`, `newestServerCreationDate`), on operations since before 1.9, keep their
+deadline and the account-change cancel; nothing cancels their tasks (codex-1 on `91acaed`).
+Operations, not CloudKit's async calls: before iOS 27, `allSubscriptions()` and `record(for:)` wrap the callback calls
+with no cancellation, so a read past its deadline was released but went on (the review of the fixes: codex-4 and
+deepseek-3 on `ee565c2`). The chain, the sweep and their rules are unchanged.
+
+Regression cases: `Item166ReviewTests.testACheckWhoseReadNeverAnswersEndsAtTheDeadline` and
+`Item152SettingsGuardTests.testAListingThatNeverAnswersEndsTheRefreshAtTheDeadline` (the callers); and, each read's
+operation held unanswered through a test hook in place of the database, `Item166ReviewTests`' check, latest-beat and
+full-download cases (the download's stall and its caller's cancel) and `Item152SettingsGuardTests`' listing and warm-up
+cases. The Simulator has no iCloud container: a live CloudKit answer, progress and partial failure stay unexercised.

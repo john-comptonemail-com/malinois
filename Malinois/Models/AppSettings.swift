@@ -690,7 +690,7 @@ final class AppSettings: ObservableObject, Codable {
     /// The stored settings decoded, or, when they cannot be, set aside and reset (announced on Home).
     private static func decodeOrReset(_ data: Data) -> AppSettings {
         do {
-            let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+            let decoded = try StoredJSON.decode(AppSettings.self, from: data)
             // The saved defaults of a reset whose record is still owed: the app ended first (codex-10's residual).
             if UserDefaults.standard.object(forKey: resetPendingKey) != nil { decoded.wasResetAtLoad = true }
             return decoded

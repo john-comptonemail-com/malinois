@@ -36,6 +36,11 @@ way — and a recovery whose resurrected event the cap immediately re-evicts ret
 line through the success path of the persist that durably records the absence. A failed
 persist still retires nothing: the journal keeps its net.)*
 
+**Implementation note, 2026-10-29 (1.8.2 repair):** persisted UTF-8 JSON now passes through `StoredJSON` string
+validation before typed decoding. On iOS 18.0, malformed keys could otherwise trap inside Foundation before an
+error reached the journal's skip-line policy. Both startup recovery and checkpoint retirement use this guard;
+healthy rows remain unchanged. The existing durability, retirement and corruption policies above are unchanged.
+
 Deliberate bounds:
 
 - **The append is full-synced before the caller proceeds.** *(Amended 2026-09-02, BACKLOG

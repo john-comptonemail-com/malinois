@@ -744,6 +744,77 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         XCTAssertEqual(rig.camera.clipEnds, 1, "the partial is kept")
     }
 
+    /// Item 180's A1 (claude-fable-1 on 296bab0): iOS can end a recording itself (the clip's size limit, a full disk, a
+    /// session error) without interrupting the session. The clip ran on with nothing recording, up to its ceiling, while
+    /// every trip folded into its event, and since iOS reports such a finish as successful the clip was kept as
+    /// complete. Now it ends at the next poll, marked partial, so the response finishes and later trips get their own
+    /// captures. Red at its red commit: the clip held to the ceiling and carried no issue.
+    func testUntilClearEndsWhenTheRecordingEndsOnItsOwn() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let movie = folder.appendingPathComponent("ended.mov")
+        try await EventTests.playableClip(at: movie, frames: 4)   // a real movie, so its label is read, not "unverified"
+        let rig = makeRig { $0.finalizedClipForTesting = movie }
+        let feeder = Task { @MainActor in
+            for _ in 0..<40 {   // 2 s of activity, past the 1 s ceiling: only the recording's end can stop it
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                rig.pipeline.noteActivity()
+            }
+        }
+        let ender = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            rig.camera.recordingEndedOnItsOwn = true
+        }
+        let started = Date()
+        let captured = await rig.pipeline.capture(from: .rear, mode: .untilClear, illumination: .off)
+        let capture = try XCTUnwrap(captured.capture)
+        feeder.cancel()
+        ender.cancel()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5, "ended at the poll after the recording stopped")
+        XCTAssertEqual(capture.issue, .clipPartial, "marked partial: it does not cover the rest of the incident")
+        XCTAssertEqual(rig.camera.clipEnds, 1, "the finished file is kept")
+        XCTAssertFalse(rig.pipeline.isCapturingUntilClear, "later trips start their own captures")
+    }
+
+    /// The movies the pipeline classified, in order (`clipClassifiedForTesting`).
+    @MainActor
+    private final class ClassifiedClips { var urls: [URL] = [] }
+
+    /// codex-2 on ee565c2 (deepseek-2): the real recording delegate hands a finished clip to the pipeline at once, and the
+    /// pipeline measured and classified it then, before the loop's next poll noted the early end; the stop then reused
+    /// that answer, so a clip iOS stopped at its size limit (recorded "successfully") was kept as complete. Now the clip
+    /// is classified when the capture is formed, from the attempt's final state. Red at its red commit: no issue.
+    func testAClipHandedOverBeforeItsEndIsNotedIsStillMarkedPartial() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let movie = folder.appendingPathComponent("early.mov")
+        try await EventTests.playableClip(at: movie, frames: 4)
+        let rig = makeRig { $0.finalizedClipForTesting = movie }
+        let classified = ClassifiedClips()
+        rig.pipeline.clipClassifiedForTesting = { classified.urls.append($0) }
+        let feeder = Task { @MainActor in
+            for _ in 0..<40 {   // 2 s of activity, past the 1 s ceiling: only the recording's end can stop it
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                rig.pipeline.noteActivity()
+            }
+        }
+        let ender = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            rig.camera.emitFinalizedClipForTesting(movie, camera: .rear)   // the delegate hands the finished file over
+            // Classified once, before the end is noted (codex-2 on 91acaed: a fixed wait could fall short of a slow
+            // measurement, and the test then passed with the fix removed).
+            await waitUntil { !classified.urls.isEmpty }
+            rig.camera.recordingEndedOnItsOwn = true   // and the loop's next poll notes the early end
+        }
+        let captured = await rig.pipeline.capture(from: .rear, mode: .untilClear, illumination: .off)
+        let capture = try XCTUnwrap(captured.capture)
+        feeder.cancel()
+        ender.cancel()
+        XCTAssertEqual(capture.issue, .clipPartial, "marked partial, though measured before the end was noted")
+    }
+
     /// The session ending mid-recording finalizes the clip at the next poll.
     func testUntilClearFinalizesWhenTheSessionEnds() async throws {
         let rig = makeRig()

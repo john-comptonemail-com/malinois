@@ -104,20 +104,19 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// frozen at whatever arrived first. `nil` on events written before this existed.
     var cloudRevision: Int?
 
-    /// True when the storage byte cap had to discard this event's media **before it ever
-    /// uploaded** (34.H5, 1.2). Pruning *synced* media is silent — the cloud still holds it
-    /// and it can be re-downloaded — but a pending capture that had to go is a real
-    /// evidentiary loss, and a later meta-only retry must not read as "everything made it".
-    /// Set only when none of the capture's files reached iCloud (`uploadedMedia`, item 166's
+    /// True when the storage byte cap discarded this event's media and none remain in iCloud (34.H5, 1.2): either
+    /// they never uploaded or a later cloud loss removed the last copies. Pruning synced media is silent while its
+    /// cloud copy is believed to remain. A later metadata-only retry carries the loss instead of promising a download.
+    /// Set only when no current receipt says any of the capture's files remain in iCloud (`uploadedMedia`, item 166's
     /// codex-23): part of a capture there keeps its download, here and on the other devices. With no
     /// record of a landed file, only once iCloud has been asked and holds none
     /// (`mediaDiscardUnchecked`, codex-24); never at once for a capture whose upload history this
     /// phone cannot know (`CloudEnrollment.uploadHistoryUnknown`, codex-29).
     var mediaDiscarded: Bool?
 
-    /// The byte cap discarded this capture's files with no record that any reached iCloud (item 166's
-    /// codex-24, the owner's option (b)): an older version keeps no record, and a file can land
-    /// unnoticed (a kill at that instant, a reply lost). The engine's sweep asks iCloud before the
+    /// The byte cap discarded this capture's files with no current record that any remain in iCloud (item 166's
+    /// codex-24, the owner's option (b)); also owed when a later cloud loss voids an already-pruned capture's receipts.
+    /// An older version keeps no receipts, and a file can land unnoticed (a kill or lost reply). The sweep asks before the
     /// capture is marked lost (`mediaDiscarded`); until then its download is offered, and, as with the
     /// mark, the capture takes no late camera file. Kept on this phone only (no record carries it).
     var mediaDiscardUnchecked: Bool?
@@ -132,7 +131,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
 
     /// The generation of this phone's upload receipts (item 174's codex-1): raised when iCloud's copies are found deleted
     /// or reset (`EventStore.requeuedForReupload`), which voids the receipts noted before (`uploadedMedia`), so the byte
-    /// cap asks iCloud again before it decides what was lost. An older copy of the event cannot bring them back, nor can a
+    /// cap asks iCloud again before it decides what was lost. Already-pruned captures owe that check too. An older
+    /// copy of the event cannot bring receipts back, nor can a
     /// file that an upload started before then reports as landed. Nil until the first such loss; kept on this phone (no
     /// record carries it).
     var receiptEpoch: Int?

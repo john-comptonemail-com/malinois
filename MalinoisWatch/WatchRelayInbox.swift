@@ -343,7 +343,7 @@ struct WatchRelayMemory: Codable, Equatable, Sendable {
     /// that cannot be trusted (`WatchRelaySummary.isSound`) is dropped, and the lists keep their newest
     /// entries within their limits.
     static func read(_ data: Data?) -> WatchRelayMemory? {
-        guard let data, var kept = try? JSONDecoder().decode(WatchRelayMemory.self, from: data) else { return nil }
+        guard let data, var kept = try? StoredJSON.decode(WatchRelayMemory.self, from: data) else { return nil }
         if kept.summary?.isSound == false { kept.summary = nil }
         kept.shown = Array(kept.shown.suffix(WatchAlertStatus.rememberedRelayLimit))
         kept.summed = Array(kept.summed.sorted { $0.at < $1.at }.suffix(summedLimit))

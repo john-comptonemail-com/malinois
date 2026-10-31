@@ -136,3 +136,19 @@ marked one does. A capture an older version already marked stays marked. A recei
 was asked outweighs an empty answer sampled before it landed (codex-27). A capture whose upload history this phone
 cannot know, restored from a device backup or not yet bound, is never marked at once (codex-29, codex-31, codex-32;
 ADR 0039).
+
+
+## Amendment (2026-10-29, 1.9): thumbnail enrichment and already-pruned cloud loss
+
+An equal-revision mirror can newly acquire a thumbnail after the source's staging retry. The existing no-regression
+rules for counts and capture failure still apply, first-hand evidence is untouched, and downloaded local files or
+a valid thumbnail already held survive replacement. A new thumbnail does not authorize replacing an older revision.
+
+When cloud loss voids a first-hand capture's receipts, a capture whose files are already absent locally also owes
+the existing bounded cloud check in its new receipt generation. Camera names, retained by every shipped capture
+path, identify captures after pruning; status/sparse records, captures with local files, mirrors, unpicked records
+and an already-conclusive loss acquire no new check. The check is persisted alongside the receipt invalidation.
+Only a conclusive current-generation answer settles it; a current landed file still prevents a whole-capture loss.
+The UI's loss sentence covers both a failed first upload and a later disappearance of the last cloud copy.
+
+Regression cases: `Item175ThumbnailRetryTests` and `Item176PrunedRequeueTests`; live CloudKit checks remain outstanding.

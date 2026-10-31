@@ -123,6 +123,7 @@ final class Item129ReviewTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.35)   // calibration's time runs out while the main actor is held
         timer.fire()          // the real tick: its work is queued for the main actor
         rig.engine.disarm()   // before that work gets a turn
+        XCTAssertFalse(timer.isValid, "disarm invalidates the actual calibration timer synchronously")
         let warmUpsAtDisarm = rig.camera.warmUps.count
         pump(until: { false }, timeout: 0.5)
         XCTAssertEqual(rig.engine.state, .disarmed)
@@ -172,10 +173,10 @@ final class Item129ReviewTests: XCTestCase {
         return rig
     }
 
-    /// The engine's calibration timer, read by reflection, so the test fires the real tick with no hook in the app.
+    /// The arming owner's actual calibration timer, read by reflection without a proxy or shadow timer.
     private func calibrationTimer(of engine: MonitoringEngine) throws -> Timer {
-        let value = try XCTUnwrap(Mirror(reflecting: engine).children.first { $0.label == "calibrationTimer" }?.value,
-                                  "the engine has a calibration timer")
+        let value = try XCTUnwrap(Mirror(reflecting: engine.armingFlow).children.first { $0.label == "calibrationTimer" }?.value,
+                                  "the arming flow owns the calibration timer")
         if let timer = value as? Timer { return timer }
         return try XCTUnwrap(Mirror(reflecting: value).children.first?.value as? Timer, "the calibration is running")
     }

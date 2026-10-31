@@ -4,7 +4,7 @@ These are the project's architecture decision records: one file per decision, wr
 made and amended in place when it changed, as the source cites them ("ADR 0039"). A record that was later
 superseded, suspended or rejected stays here with its status, because the code and later records refer to it.
 The records cite a private findings ledger by item number; those entries are not published, and
-the numbers are kept so the records read as written. Taken from the private repository at commit 7f566eb;
+the numbers are kept so the records read as written. Taken from the private repository at commit faab7cd;
 published with each release from 1.8 on, as the source is.
 
 | Record | Status |
@@ -62,3 +62,5 @@ published with each release from 1.8 on, as the source is.
 | [ADR 0060: A warning the PIN pad holds back is postponed, not dropped](0060-a-warning-the-pin-pad-holds-back-is-postponed-not-dropped.md) | accepted |
 | [ADR 0061: A burst of tamper alerts arrives quietly after its first three](0061-a-burst-of-tamper-alerts-arrives-quietly-after-its-first-three.md) | accepted |
 | [ADR 0062: In Siren mode the siren plays from this iPhone's speaker](0062-in-siren-mode-the-siren-plays-from-this-iphones-speaker.md) | accepted |
+| [ADR 0063: 1.9 hardening and engine components, in separately verified stages](0063-hardening-and-engine-components-in-separately-verified-stages.md) | accepted |
+| [ADR 0064: A covered proximity sensor may blank the screen while recording: kept, and said](0064-a-covered-proximity-sensor-may-blank-the-screen-while-recording.md) | accepted |

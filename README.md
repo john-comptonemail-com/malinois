@@ -41,7 +41,7 @@ Without Pro (free for every install during Early-Access), Malinois sends nothing
 4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes dark.
 5. **To disarm:** press and hold the screen for 5 seconds, enter your PIN, then triple-click again to end Guided Access. Evidence is in the **Event Log**.
 
-**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button before arming to enable GA, and triple-click again after disarming to end it. In Guided Access's Passcode Settings, give it a passcode of its own and leave Face ID (or Touch ID) off: anyone who knows your iPhone passcode can add their own face or fingerprint and end Guided Access with it, and Face ID there also seems to make the open "Guided Access is not available" iOS bug more likely. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode, or Face ID or Touch ID if you allowed them in Guided Access's settings. Voice Control is off unless you've turned it on; if you use it, turn it off before arming, because its "Close application" command can close Malinois even under Guided Access. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
+**Enable Guided Access before you trust an armed phone unattended.** You can skip it while getting a feel for the app, but it's what stops someone from simply closing Malinois. One-time setup: Settings → Accessibility → Guided Access. Triple-click the side button on the arming screen to start Guided Access, and triple-click again after disarming to end it. In Guided Access's Passcode Settings, give it a passcode of its own and leave Face ID (or Touch ID) off: anyone who knows your iPhone passcode can add their own face or fingerprint and end Guided Access with it, and Face ID there also seems to make the open "Guided Access is not available" iOS bug more likely. In Guided Access's **Options**, turn **Side Button** off (Sleep/Wake Button on older phones), so one press can't lock the screen and pause monitoring; a press then only shows the iOS reminder, and ending Guided Access still needs its passcode, or Face ID or Touch ID if you allowed them in Guided Access's settings. Voice Control is off unless you've turned it on; if you use it, turn it off before arming, because its "Close application" command can close Malinois even under Guided Access. Optional hardening: Screen Time → Content & Privacy Restrictions → Deleting Apps → Don't Allow, behind a Screen Time passcode, since deleting the app is the one thing that destroys the on-device log.
 
 ## AI Disclosure
 
@@ -53,10 +53,10 @@ This is ultimately a personal project, but it's a project I think others might f
 
 ## How this is engineered
 
-- About 28,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 1,585 unit tests in 118 files, 37,199 lines of tests. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 226 of them, each tested on its own.
-- 53 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 30,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 1,683 unit tests in 127 files, 40,982 lines of tests. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 263 of them, each tested on its own.
+- 55 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
@@ -69,13 +69,13 @@ With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copi
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
-## What's new in 1.8.2
+## What's new in 1.9
 
-- In Siren mode the siren now plays from the iPhone's own speaker even with headphones, AirPods or a Bluetooth speaker connected; iOS may show its orange microphone dot while it sounds, though nothing is recorded.
-- Once three tamper alerts arrive within a minute, the rest of that burst arrive quietly, on Apple Watch too.
-- The Event Log now records changes to more settings, how long monitoring was interrupted, and a skipped automatic re-arm; countdowns cancelled in a row count as one record, with one alert.
-- A clip's thumbnail now shows a frame near the biggest change in its first 12 seconds, rather than always the frame 1 second in.
-- Also: an earlier warning with Until clear, a warning when arming an iPhone without a passcode, the "Allow notifications" offer as soon as you verify iCloud access, reliability fixes for uploads, alarms and Apple Watch alerts, and clearer wording about Guided Access and iCloud backup.
+- Malinois now requires iOS 18 or later. The Apple Watch app still runs on watchOS 10 or later.
+- Fixes a crash at startup on iOS 18 when Malinois's saved data was damaged.
+- A clip that iOS ends on its own, when storage runs out for example, now stops at once and is marked partial, and a clip still waiting to be saved is no longer removed at launch.
+- Turning cross-device alerts off no longer reports success unless iCloud confirms that every alert subscription was removed.
+- Also: a thumbnail that arrives late now shows on your other devices; a stalled iCloud request no longer holds up later upload retries; your other devices stop offering to download a capture whose iCloud copy is gone; recovery after an interrupted watch is more reliable; and leftover temporary upload images are cleaned up at launch.
 
 Earlier releases are listed under [Roadmap](#roadmap), at the end of this file.
 
@@ -262,3 +262,11 @@ Fixes for two rare timing problems found in a review.
 - In Siren mode the alarm sounds even if the camera is slow to give up the microphone, and Malinois does not re-arm itself while a PIN recovery is pending.
 - Evidence pushes ask iOS for extra running time from their first step, so a lock right after a trip is less likely to cut them off.
 - Two rare fixes: a damaged lockout value can no longer lock the PIN pad for good, and an interruption at the moment the app leaves the screen can no longer go unrecorded.
+
+**Shipped in 1.8.2**
+
+- In Siren mode the siren now plays from the iPhone's own speaker even with headphones, AirPods or a Bluetooth speaker connected; iOS may show its orange microphone dot while it sounds, though nothing is recorded.
+- Once three tamper alerts arrive within a minute, the rest of that burst arrive quietly, on Apple Watch too.
+- The Event Log now records changes to more settings, how long monitoring was interrupted, and a skipped automatic re-arm; countdowns cancelled in a row count as one record, with one alert.
+- A clip's thumbnail now shows a frame near the biggest change in its first 12 seconds, rather than always the frame 1 second in.
+- Also: an earlier warning with Until clear, a warning when arming an iPhone without a passcode, the "Allow notifications" offer as soon as you verify iCloud access, reliability fixes for uploads, alarms and Apple Watch alerts, and clearer wording about Guided Access and iCloud backup.

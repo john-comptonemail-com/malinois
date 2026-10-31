@@ -72,3 +72,26 @@ The rule lives in one pure function (`CloudExfiltrator.saveError`) behind the si
   `FullMediaFetch.complete`), which the download UI surfaces with a retry. Partial
   results are kept in every path — half a restore is worth more than none — only the
   *claim of completeness* is withheld.
+
+
+## Amendment (2026-10-29, 1.9): subscription deletes use the same confirmation rule
+
+Alert subscription deletion now collects each requested ID's result, including the obsolete 1.0 ID. A confirmed
+delete or `unknownItem` is absence. Any other per-ID error, an unanswered ID, or a non-partial operation error leaves
+the removal unconfirmed. An operation's `partialFailure` is judged by those individual results, not swallowed.
+This also covers the legacy subscription disappearing between setup's listing and its deletion.
+
+Authentication, account leases, deadline cancellation and the final current-lease check are unchanged. Four
+public-path tests in `Item175SubscriptionDeleteTests` drive the actual operation callbacks; a fifth pure reducer
+test supplies operation-level partial failures and conflicting answers directly. Missing and contradictory
+callbacks are defensive controls, not claimed normal server responses. Live OFF/ON delivery still needs a phone
+check. This extends the existing delete rule without a new account-wide action or permission.
+
+The diagnosis follows the installed SDK, not the first scratch prediction. A local callback-only probe on macOS
+27.2 (26B123), Apple Swift 6.4 (swiftlang-6.4.0.34.1), MacOSX27.0 SDK observed the modern subscription result bridge
+normalize every tested partial failure to operation success, including valid per-ID dictionaries containing
+unknown-item, permission or mixed errors, with and without a per-ID handler and through both callback entry points.
+Top-level unknown-item and network errors remained failures. The old implementation therefore already passed the
+positive absent-legacy cases; the failing regression was false success for failed or unconfirmed individual IDs.
+The simulator valid-map red run confirmed that diagnosis. This was not a live CloudKit operation or a survey of
+historical SDKs. The explicit reducer test covers the branch if an operation-level partial failure reaches it.
