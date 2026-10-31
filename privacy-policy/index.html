@@ -52,7 +52,7 @@
 
   <h1>Privacy Policy — Malinois</h1>
   <div class="meta">
-    <div><strong>Effective date:</strong> 23 October 2026</div>
+    <div><strong>Effective date:</strong> 30 October 2026</div>
     <div><strong>Developer:</strong> John Compton</div>
     <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
   </div>
@@ -71,7 +71,9 @@
     armed device is tampered with. While the device is charging (or always, in the <em>Instant</em>
     camera mode), the camera session may be held ready so that capture is immediate rather than losing the first seconds to starting the
     camera. <strong>Whenever a camera session is live the app shows an on-screen recording
-    indicator that cannot be disabled.</strong> Nothing is recorded or stored while the camera is
+    indicator that cannot be disabled.</strong> (With the Proximity tripwire on, as by default, iOS turns
+    the display off while something covers the sensor at the top of the screen, as in a call; the recording goes
+    on.) Nothing is recorded or stored while the camera is
     merely held ready — images are written only when a tripwire fires, or, with the signal-loss
     response on (the default), when the armed phone has been without the connection it had at
     arming for 30 seconds and the Motion tripwire has not tripped in the last 10 seconds; an
@@ -83,13 +85,16 @@
     Those frames are never written to storage, never leave the device, and are discarded as soon
     as they are compared. As with every other tripwire, an image is saved only once something
     trips. This tripwire is off unless you switch it on.</li>
-    <li><strong>Microphone</strong> — only if you turn on the Sound tripwire or <em>Record audio
-    in clips</em>; both are off by default, and the app asks for microphone access at that
-    moment, not at launch. It listens for sudden sounds nearby as a tamper tripwire, and records
+    <li><strong>Microphone</strong> — to listen or record, only if you turn on the Sound tripwire
+    or <em>Record audio in clips</em>; both are off by default, and the app asks for microphone
+    access at that moment, not at launch. It listens for sudden sounds nearby as a tamper tripwire, and records
     audio in an evidence clip. (A clip recorded from both cameras at once, with the camera set to
     “Both”, has no sound: recording from two cameras leaves no room for the microphone. The app
     says so in Settings and again before arming. When the two cameras can’t record together, the
-    clip comes from the front camera alone and follows <em>Record audio in clips</em>.)</li>
+    clip comes from the front camera alone and follows <em>Record audio in clips</em>.) In Siren
+    mode the siren plays from the iPhone’s own speaker with the one audio setting iOS lets an app
+    keep on the speaker, which is a recording setting: nothing is recorded or listened to with it,
+    but iOS may show its orange microphone indicator while the siren sounds.</li>
     <li><strong>Motion sensors</strong> (accelerometer/gyroscope) — to detect the device being
     moved or picked up. This is on-device sensor access and requires no permission prompt.</li>
     <li><strong>Notifications</strong> — so your other Apple devices can be alerted when a tamper
@@ -110,8 +115,9 @@
   <p>It also keeps status entries, armed or not, such as arming and disarming, changes to protection
   settings, and iCloud backup turned off or on; on Pro with iCloud backup on, these go to your
   iCloud too. While it is armed, with Pro and iCloud backup on, it sends a heartbeat to your iCloud
-  every five minutes with the battery level, whether the device is charging and its thermal state,
-  so your other devices can show when it was last heard from.</p>
+  every five minutes with the device label, the battery level, whether the device is charging and
+  its thermal state, each heartbeat numbered and tied to that armed session, so your other devices
+  can show when it was last heard from.</p>
 
   <h2>Where that information goes</h2>
   <ul>
@@ -168,7 +174,8 @@
     are pruned automatically. You can review events in the app’s Event Log; there is no way to
     delete a single event.</li>
     <li>Deleting the app removes all locally stored evidence and settings, except your Malinois
-    PIN (with its count of wrong attempts and the time it was last entered correctly), the start
+    PIN (with its length, its count of wrong attempts and any lockout they set off, and the time it
+    was last entered correctly), the start
     date of your Pro trial, your Early Access membership and, if you turned on Face ID or Touch ID
     unlock, a marker of the faces or fingers enrolled at the time, which holds no biometric data.
     These stay in the device’s Keychain, so a reinstall can’t bypass the PIN or start a new trial;
