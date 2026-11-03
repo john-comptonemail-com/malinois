@@ -78,7 +78,7 @@
   </nav>
 
   <h2 id="quick-start">Quick start</h2>
-  <p>Malinois 1.9 requires iOS 18 or later. Its Apple Watch companion requires watchOS 10 or later.</p>
+  <p>Malinois requires iOS 18 or later. Its Apple Watch companion requires watchOS 10 or later.</p>
   <ol>
     <li><strong>Set a Malinois PIN.</strong> Four digits, or six. Use a code that is different
     from your iPhone passcode and your Guided Access passcode.</li>
@@ -247,7 +247,9 @@
   <h2 id="evidence">Evidence, iCloud and privacy</h2>
 
   <h3>Where does my evidence go? Can you see it?</h3>
-  <p>There is no Malinois server, and I cannot see any of it. Evidence stays on your iPhone, and is
+  <p>There is no Malinois server, and I cannot see any of it. Once per install, Malinois asks Apple’s App
+  Attest service to certify the key it signs your records with; Apple receives that public key and a
+  fingerprint of a short statement, never your evidence. Evidence stays on your iPhone, and is
   included in the iPhone’s own backups when you use them (iCloud Backup, or a backup made with a
   computer); Malinois’s <strong>iCloud backup</strong> switch does not change that. With
   Pro, once you have verified iCloud access, it is also saved to your own private iCloud, so what

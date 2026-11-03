@@ -52,7 +52,7 @@
 
   <h1>Privacy Policy — Malinois</h1>
   <div class="meta">
-    <div><strong>Effective date:</strong> 30 October 2026</div>
+    <div><strong>Effective date:</strong> 3 November 2026</div>
     <div><strong>Developer:</strong> John Compton</div>
     <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
   </div>
@@ -153,6 +153,13 @@
     identifiers and times of a limited number of recent alerts, and a count of older ones it has
     summed up, so that a second copy of an alert it still remembers is not shown or counted again.
     Turning off <em>Cross-device alerts</em> stops this.</li>
+    <li><strong>To Apple, once, to certify the app’s signing key.</strong> Once its signing key is certified,
+    Malinois signs the records it writes, so that a record you share can be checked as unchanged since it was
+    signed. The signing key is made in your iPhone’s Secure Enclave and never leaves it. Once per install (and
+    again after the iPhone is restored from a backup or moved to a new one), the app asks Apple’s App Attest
+    service to certify that key. Apple receives the key’s public half and a fingerprint of a short statement
+    naming the key, the app’s version and the time; never a record, photo, clip or anything from the event log.
+    Signing itself happens on the iPhone, offline, and the signatures stay there with the event log.</li>
   </ul>
   <p><strong>There is no developer-operated server, database, or analytics endpoint.</strong> The
   developer receives no copy of your evidence, metadata, or usage.</p>
