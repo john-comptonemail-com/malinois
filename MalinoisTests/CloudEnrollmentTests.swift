@@ -151,6 +151,21 @@ final class CloudEnrollmentTests: XCTestCase {
         gate.holdRestoredEvents([fresh])
         XCTAssertTrue(gate.authorizeUpload(event: fresh, lease: lease), "the rebuild ran once; a binding is never relabelled")
     }
+    /// A record the restore held makes no claim of its own for a read (item 180's A6; the owner's ruling (a),
+    /// 2026-10-30): the account that supplied a copy under its ID reads it back, as for any record this phone did not
+    /// make, and before any copy was seen there is nothing to read. Its upload stays held. A record held for another
+    /// reason (recorded while nothing could upload) still refuses a copy under its ID: Item153BindingPruneTests.
+    func testARestoredHoldMakesNoClaimForAReadAndStaysHeldForItsUpload() async throws {
+        let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
+        let restored = event()
+        gate.holdRestoredEvents([restored])
+        _ = await gate.enroll(account: "account-a", resolve: { "account-a" })
+        let lease = try XCTUnwrap(gate.authorize(account: "account-a"))
+        XCTAssertFalse(gate.authorizeRecord(restored.id, lease: lease), "no copy seen yet: nothing to read")
+        XCTAssertTrue(gate.registerRemoteEvents([restored], lease: lease))   // the account's copy, as a pull finds it
+        XCTAssertTrue(gate.authorizeRecord(restored.id, lease: lease), "the account that supplied the copy reads it")
+        XCTAssertFalse(gate.authorizeUpload(event: restored, lease: lease), "its upload stays held")
+    }
     func testRemoteRecordCannotAdoptAnUnboundLocalEvent() async throws {
         let gate = CloudEnrollment(file: file(), authenticate: { _ in true })
         let local = event()

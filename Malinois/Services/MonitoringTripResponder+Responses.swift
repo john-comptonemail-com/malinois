@@ -99,7 +99,8 @@ extension MonitoringTripResponder {
                 interruptionNoticeShowing = false
             }
             guard state == .armed else { return }
-            if cameraShouldBeWarm && !isHandlingTrigger { warmActiveCamera() }
+            // Not while a trip's capture, or a flood, blackout or retry capture, holds the camera (item 180's A12).
+            if cameraShouldBeWarm && !isHandlingTrigger && !cadenceCaptureBusy { warmActiveCamera() }
         case .runtimeError(let description):
             Log.engine.error("Camera session runtime error: \(description, privacy: .public)")
             guard state.isActive else { return }
@@ -108,7 +109,7 @@ extension MonitoringTripResponder {
             lastCameraRuntimeErrorAt = now
             host?.tripSetCameraNotice("The camera session failed (\(description)) - it restarts at the next capture.")
             host?.tripLogCameraError()
-            if state == .armed && cameraShouldBeWarm && !isHandlingTrigger { warmActiveCamera() }
+            if state == .armed && cameraShouldBeWarm && !isHandlingTrigger && !cadenceCaptureBusy { warmActiveCamera() }
         }
     }
 

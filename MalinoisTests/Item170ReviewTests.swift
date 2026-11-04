@@ -39,7 +39,7 @@ final class Item170ReviewTests: XCTestCase {
     }
 
     override func tearDown() {
-        EventStore.writeDelayForTesting = 0
+        MainActor.assumeIsolated { EventStore.writeDelayForTesting = 0 }   // XCTest's main thread (item 181's point 2)
         for key in Self.keys { UserDefaults.standard.removeObject(forKey: key) }
         TestIsolation.tearDown()
         super.tearDown()

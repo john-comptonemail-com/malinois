@@ -199,16 +199,14 @@ final class CoreTypesTests: XCTestCase {
     /// means it has stalled — measured from the last sample, or from the watch start if nothing
     /// has ever arrived (a stream that never starts is as deaf as one that stopped).
     func testMotionStallDetection() {
-        let t0 = Date()
-        XCTAssertFalse(MotionMonitor.isStalled(lastSample: nil, startedAt: t0, now: t0.addingTimeInterval(2)),
+        let t0: TimeInterval = 1_000   // uptime readings (item 180's A11)
+        XCTAssertFalse(MotionMonitor.isStalled(lastSample: nil, startedAt: t0, now: t0 + 2),
                        "fresh watch inside the threshold is not a stall")
-        XCTAssertTrue(MotionMonitor.isStalled(lastSample: nil, startedAt: t0, now: t0.addingTimeInterval(3.5)),
+        XCTAssertTrue(MotionMonitor.isStalled(lastSample: nil, startedAt: t0, now: t0 + 3.5),
                       "no first sample past the threshold is a stall")
-        XCTAssertFalse(MotionMonitor.isStalled(lastSample: t0.addingTimeInterval(100), startedAt: t0,
-                                               now: t0.addingTimeInterval(101)),
+        XCTAssertFalse(MotionMonitor.isStalled(lastSample: t0 + 100, startedAt: t0, now: t0 + 101),
                        "a recent sample is healthy no matter how long the watch has run")
-        XCTAssertTrue(MotionMonitor.isStalled(lastSample: t0.addingTimeInterval(100), startedAt: t0,
-                                              now: t0.addingTimeInterval(104)),
+        XCTAssertTrue(MotionMonitor.isStalled(lastSample: t0 + 100, startedAt: t0, now: t0 + 104),
                       "last sample past the threshold is a stall")
     }
 

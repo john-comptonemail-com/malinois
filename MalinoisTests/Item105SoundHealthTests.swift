@@ -229,4 +229,20 @@ final class Item105SoundHealthTests: XCTestCase {
         let unknown = CloudExfiltrator.makeStateRecord(stateEvent("someFutureKind"), kind: "someFutureKind", deviceName: "iPhone Air")
         XCTAssertNil(CloudExfiltrator.stateEvent(from: unknown), "an unknown kind is still dropped")
     }
+
+    /// The Sound tripwire's restart backoff measures uptime, not the calendar clock (item 180's A11): a recorder that is
+    /// down is rebuilt at most once per two seconds of uptime, however the calendar clock moves.
+    func testTheRecorderRestartBackoffMeasuresUptime() {
+        let audio = AudioMonitor()
+        var uptime: TimeInterval = 1_000
+        var restarts = 0
+        audio.uptimeForTesting = { uptime }
+        audio.restartForTesting = { restarts += 1 }
+        _ = audio.levelForTesting()   // the recorder is down: rebuilt
+        _ = audio.levelForTesting()   // within the backoff: not again
+        XCTAssertEqual(restarts, 1)
+        uptime += 3   // three seconds of uptime pass
+        _ = audio.levelForTesting()
+        XCTAssertEqual(restarts, 2, "past the backoff by uptime")
+    }
 }

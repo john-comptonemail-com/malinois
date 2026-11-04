@@ -31,9 +31,10 @@ extension MonitoringEngine {
         dryRunCounts = [:]
         lastCalibration = nil
         applyEnabledAndSensitivity()
-        // The vision row needs frames: warm the camera for the test if vision is effective.
+        // The vision row needs frames: the camera warmed for the test where the armed watch would keep it warm, by the
+        // camera-readiness setting and the charging state (item 190's codex-2), never where the watch would see nothing.
         syncVisionTap()
-        if visionTapWanted { warmActiveCamera() }
+        warmCameraForTestSensors()
         // Settle window first (BACKLOG 12): count down visibly, THEN calibrate — the user is
         // still holding the phone from tapping the button, and that handling is exactly the
         // noise the calibration must not learn.
@@ -113,7 +114,10 @@ extension MonitoringEngine {
         dryRunTimer?.invalidate(); dryRunTimer = nil
         dryRunSettleTimer?.invalidate(); dryRunSettleTimer = nil
         dryRunCountdown = nil
-        camera.shutDown()   // the dry run may have warmed it for the vision row
+        // The dry run may have warmed the camera for the vision row: stood down as at Auto's stand-down, Vision with it,
+        // so a warm-up this test asked for, still running, counts for nothing in the next test or watch: its frames, its
+        // tap's state and its late answer (item 190's codex-1 on b08c1f8 and deepseek-1 on 1c083ab, the owner's "a").
+        standDownCamera()
         for (_, m) in monitors { m.stop() }
         dryRunReadings = [:]
         dryRunTrips = [:]

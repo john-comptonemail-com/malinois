@@ -34,7 +34,10 @@ extension MonitoringEngine {
                 #if DEBUG
                 alertRefreshesAskedForTesting += 1
                 #endif
-                Task { await cloud.refreshSubscription(stillWanted: { [weak self] in self?.alertSubscriptionWanted ?? false }) }
+                // The callback holds the engine weakly, and the task holds only the cloud object: built inside the
+                // task, the callback's weak hold would sit under the task's strong one (Xcode 27.2's warning).
+                let stillWanted: @MainActor () -> Bool = { [weak self] in self?.alertSubscriptionWanted ?? false }
+                Task { [cloud] in await cloud.refreshSubscription(stillWanted: stillWanted) }
             }
         } else {
             if offlineSince == nil { offlineSince = Date() }   // the transition, not a re-report

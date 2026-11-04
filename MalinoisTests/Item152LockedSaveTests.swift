@@ -22,15 +22,17 @@ final class Item152LockedSaveTests: XCTestCase {
     /// The stores a test made: their queues are drained before the seams are reset, which they read off the main thread.
     private var stores: [EventStore] = []
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    // The async forms, so that they run on the main actor with the class's state, as Item140WatchPairingTests' do
+    // (item 181's point 2: from the synchronous overrides, which are nonisolated, Swift warned of each access).
+    override func setUp() async throws {
+        try await super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisLockedSave")
         waiting = try XCTUnwrap(EventStore.rootOverrideForTesting).appendingPathComponent("Waiting", isDirectory: true)
         try FileManager.default.createDirectory(at: waiting, withIntermediateDirectories: true)
         EventStore.pendingClipsFolderForTesting = waiting
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for store in stores { store.drainIOForTesting() }   // the gate's ThreadSanitizer pass on 8d776bd: a reset raced them
         stores = []
         EventStore.sealedForTesting = false
@@ -39,7 +41,7 @@ final class Item152LockedSaveTests: XCTestCase {
         EventStore.stagedCopyForTesting = nil
         EventStore.killBeforeReplacingForTesting = false
         TestIsolation.tearDown()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// Polls until `condition` holds, for at most three seconds.

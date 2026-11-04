@@ -2,12 +2,11 @@
 
 <a id="security-model--malinois"></a>
 
-This document describes **Malinois 1.9 (80), in development**. Final candidate validation and the owner's
-release approval are pending; the App Store has 1.8.2 (79), released 2026-10-29. Start with the practical guide below.
+This document describes **Malinois 1.10 (82)**. Start with the practical guide below.
 The [technical reference](#technical-reference) contains the implementation details
 and design rationale for security reviewers and maintainers.
 
-Malinois 1.9 requires iOS 18 or later; its Apple Watch companion still requires watchOS 10 or later.
+Malinois requires iOS 18 or later (since 1.9); its Apple Watch companion still requires watchOS 10 or later.
 
 Use Malinois only on your own device. It is intended to help you notice and record
 someone handling your unattended phone, not to monitor other people without their
@@ -24,6 +23,7 @@ knowledge.
 - [Your PIN, Guided Access and device authentication](#your-pin-guided-access-and-device-authentication)
 - [Where events and recordings are stored](#where-events-and-recordings-are-stored)
 - [iCloud verification and recovery](#icloud-verification-and-recovery)
+- [Evidence someone else can check](#evidence-someone-else-can-check)
 - [Limits to understand](#limits-to-understand)
 - [Report a security issue](#report-a-security-issue)
 - [Technical reference](#technical-reference)
@@ -285,6 +285,101 @@ there were, and the latest one's kind and time. It reads no event records. On Pr
 access and a matching account binding attempts a heartbeat every five minutes.
 Another device can show when that watch was last heard from. Failed heartbeats are not uploaded later; a gap can reflect a connection
 problem and is not proof of tampering.
+
+## Evidence someone else can check
+
+Since 1.10 the iPhone signs its event records, so someone you share an event with can
+check that it has not changed since the phone signed it. The key is made in the phone's
+Secure Enclave and never leaves it; Apple's App Attest service certifies that it belongs
+to Malinois on a genuine iPhone. Malinois asks for that certification at launch, which
+needs a network connection once; after a restore from a backup or a move to a new iPhone,
+it asks again the first time the phone signs a record or shares one. Records the log held
+when the first certification was asked for are not signed, and stay as they were.
+
+Each record written after the certification is signed whenever its content changes, for
+example when a photo or clip is attached. The signatures are kept in a file of their own
+beside the event log: signing never rewrites a record, and a failure to sign leaves the
+record unsigned, never lost. The phone also keeps the list of the keys it has had in its
+Keychain, for this iPhone only, where no backup can change it: if a backup restored to it
+has lost an earlier key's signatures, the next key says it follows that key, which every
+later bundle shows, and the event log says "Signatures this iPhone made earlier are
+missing". If the backup kept the earlier keys and lost only the last one, the check of
+every later ZIP also reports the earlier keys as cut off from the export's key. If someone
+edits a backup to add a key to the signature file, that key never joins the list, so the
+phone's next key never follows it, and the check of every later ZIP reports it as a
+problem. This holds as long as the list already has at least one of this iPhone's keys;
+the limits below cover the cases where it has none.
+
+The log removes its oldest records when it is full, and the phone signs a statement naming
+the signatures that went with them. Its list of what the limit removed is checked with a
+key only this iPhone can use, so an edited backup cannot add to it. If a signed record
+ever leaves the log any other way, the phone signs a statement saying so, keeps the
+record's signatures, and adds a line to the event log: "A signed record from Oct 14,
+9:03 PM is no longer in the log".
+
+When you share a signed event, Share adds one more file: a ZIP named "Malinois evidence"
+with the event's date and time. It adds it once the phone has checked its signatures
+against the event log it read, and while the event's photos, clips and traces are the ones
+the phone last signed (a change is signed a moment after it is saved); if the log could not
+be read, Share leaves the ZIP out, and Home says why. After a restore from a backup or a
+move to a new iPhone, Share leaves the ZIP out until Apple has certified the phone's new
+key, which needs a network connection. It holds the event's record as signed, at each revision; the
+watch around it, from the arming to the disarming; its photos, clips and sensor traces;
+Apple's certification of the key; the phone's statements about records that left the log;
+and the rest of your log only as fingerprints of what was signed, so its content stays
+private (the fingerprints do show how many signatures the phone made and, from iOS 27, the
+app's version at each). Making it adds one signature, of the moment it was exported, which
+also lists everything the ZIP shows in full.
+
+Anyone with a Mac can check it with Malinois's verifier, built from this repository
+(README, "Checking an evidence bundle"). A check that passes shows:
+
+- that each signature was made by a key Apple certified for Malinois;
+- that the record, and each photo, clip and trace in the ZIP, is byte for byte what was
+  signed;
+- that the ZIP accounts for every signature the export's key made up to the export, so no
+  later version of the record signed with that key was left out;
+- that the ZIP shows in full exactly what the export lists, from the export's key and the
+  keys it follows alone;
+- that while it used the export's key, the phone never said a signed record left its log
+  other than by the log's size limit.
+
+It cannot show:
+
+- that the phone's clock was right: every time in the bundle is the phone's;
+- what an event means: a recording shows what the camera saw, not who was there or why;
+- that the phone was not compromised: App Attest is Apple's check against that, not a
+  guarantee;
+- that the app that signed was the one on the App Store: a build that Malinois's developer
+  makes, for TestFlight or for development, can sign whatever it is made to. The verifier
+  names each key's Apple environment, and from iOS 27 its kind of build (App Store,
+  TestFlight or development), on its KEYS line;
+- anything about events recorded before the key was certified, or on another device;
+- that the phone recorded everything it signed: records someone adds to an edited backup
+  before restoring it are signed like the phone's own (the restore shows as a new key,
+  below);
+- what an earlier key signed after its last signature in the ZIP: after a restore from a
+  backup the phone signs with a new key, and a restore can take the newest records off
+  the phone without a trace (the verifier says when a key follows an earlier one);
+- what a backup edited and restored onto another iPhone, or a backup made before 1.10,
+  took out of the signature file: the list of keys that shows it on the first iPhone never
+  leaves that iPhone, and an older backup holds none, so there a key the edit put in can
+  be the one the next key follows;
+- that the size limit removed a record the phone says it removed: someone who can restore
+  an edited backup can fill the log with made-up records until the limit removes the one
+  they want, with every older one; once the log is full, they can also move a record to
+  the end of the log, or mark an incident as part of a flood or as backed up to iCloud, so
+  that the limit removes it before older ones; and someone who can restore edited backups
+  more than once can reuse an old list of what the limit removed, for a record the limit
+  had removed before and that came back.
+
+A check can also report a problem no one caused: if the phone stops in the instant after
+making a signature (a crash, a forced restart, a flat battery), that signature is never
+kept, and every later bundle signed with the same key reports it missing, just as it would
+report a signature someone removed.
+
+The bundle's README is not signed: get the verifier from this repository, not from a link
+that came with a bundle.
 
 ## Limits to understand
 
@@ -800,21 +895,18 @@ Two consequences matter for the threat model:
   they cannot drift from the App Store Connect entries or be quietly repointed; under
   Guided Access the section says that a tap will do nothing and offers copy-the-address
   instead.
-- **Design note — no cryptographic log authentication.** A tamper-evident log chain
-  was built and removed. It was removed because it could only detect attacks the
-  threat model already excludes, and on a real phone it raised false "tampering"
-  warnings, which for a tool like this is worse than the gap it closed. The design
-  chosen for a later release signs each record with a Secure Enclave key certified by
-  Apple and verifies the signatures outside the phone, so that a reader who does not
-  trust the phone's storage can check an exported record. Malinois currently provides
-  neither that chain nor device-authenticated record signatures. The app has no
-  individual-event delete control, and its cloud cleanup preserves facts and recent
-  evidence, but those
-  app policies do not make local or cloud records immutable. CloudKit account
-  isolation does not prove which device created a record or that an authorized
-  client has not altered it. Wholesale cloud loss can be noticed on a later check;
-  absence alone does not prove tampering. Stronger record authentication would be
-  a separate design change, not a property of the current app.
+- **Design note — no log chain; signed records instead.** A tamper-evident log chain
+  was built and removed. It was removed because it could only detect attacks the threat
+  model already excludes, and on a real phone it raised false "tampering" warnings,
+  which for a tool like this is worse than the gap it closed. Since 1.10 the phone
+  signs its records instead, with a Secure Enclave key certified by Apple, and the
+  signatures are checked outside the phone, so that a reader who does not trust the
+  phone's storage can check an exported record ("Evidence someone else can check",
+  above). The app has no individual-event delete control, and its cloud cleanup
+  preserves facts and recent evidence, but those app policies do not make local or
+  cloud records immutable. CloudKit account isolation does not prove which device
+  created a record or that an authorized client has not altered it. Wholesale cloud
+  loss can be noticed on a later check; absence alone does not prove tampering.
 - **Retained first-hand facts and annotations.** The core facts of an event —
   `id`, `startDate`, `motionTrace`, `audioTrace` — are
   `let` properties in the event value. Other fields change during capture, coalescing,
@@ -849,7 +941,10 @@ Two consequences matter for the threat model:
   account change and when its caller is cancelled (CloudKit's async calls could not be stopped
   before iOS 27); the iCloud clean-up's own two reads (its beats and its server-time query) keep
   their deadline and their account-change cancel, nothing cancelling their tasks. Before, a read that stalled held its caller for the session: a stalled check stopped
-  every later retry of the pending uploads (ADR 0003). The event is also queued for the on-device store before capture (an asynchronous write — a runtime persist failure raises a Home banner rather than passing silently, F6), so a successful event write can preserve the detection even if capture fails — and on the **free
+  every later retry of the pending uploads (ADR 0003). Since 1.10 the watch app's two reads, its account check and
+  the alert subscription's listing, have the same 20 s: past it the watch's alert screen says it could not check,
+  rather than keep its last answer; the read itself cannot be stopped, so it runs on and its answer is dropped.
+  The event is also queued for the on-device store before capture (an asynchronous write — a runtime persist failure raises a Home banner rather than passing silently, F6), so a successful event write can preserve the detection even if capture fails — and on the **free
   tier** that on-disk write is the whole story, since the iCloud pushes are Pro-gated
   (see [Protection tiering](#protection-tiering-free-vs-pro)). A still takes ~1 s to shoot
   and write and a clip far longer, so pushing the fact first (not just for clips)
@@ -921,7 +1016,11 @@ Two consequences matter for the threat model:
   under-protected** — so a large clip never lands in memory or blocks the UI at the moment
   of capture. Since 1.8.2 a recorded clip is raised to that protection before it leaves the
   folder it waits in (below), so one whose protection iOS will not raise stays there, whole,
-  and its save is tried again the next time the app starts.
+  and its save is tried again the next time the app starts. Since 1.10 the signatures of evidence signing are kept
+  in a file of their own beside the event log, under the same protection. The log is written as a new file each time,
+  which that protection allows while the phone is locked; the signatures are appended to their file, which it does
+  not, so a record written while the phone is locked is signed at the first write of the log after it unlocks (ADR
+  0066).
 - **Recordings waiting to be attached are protected less.** A clip records into
   Application Support/PendingCameraEvidence, which uses `completeUntilFirstUserAuthentication`:
   readable whenever the phone has been unlocked once since it started, so a finished clip
@@ -1296,7 +1395,9 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   download into this iPhone's own record asks only for the names its own upload gave its
   photos, one for each camera the record names, so a photo saved under another name cannot
   join it or give it a camera it never used; one saved under the name of this iPhone's own
-  photo can, since the app records no digest of what it uploaded. The app keeps no
+  photo can: the download does not check it against the photo's signed fingerprint. Since
+  1.10 the phone then signs the record again with it, and the Mac verifier says when a
+  signed photo's bytes changed between the record's revisions. The app keeps no
   device identity, so after a reinstall or an erase (a DFU restore included) the device's own
   earlier records come back as copies, labelled with the name they were stamped with, as another
   device's records are. Images that come back are cloud input, so they decode within explicit
@@ -1305,7 +1406,7 @@ requires the Malinois PIN. See ADR 0039 for migration and notification-extension
   at display size. Thumbnails of new captures are made the same way.
 - **Full-media retention is the owner's policy, floored for safety (1.2).** A Settings
   picker keeps full-resolution cloud media forever, prunes it manually, or auto-deletes
-  it past 1–12 months (default 12). Only photo records (and old heartbeat trails, below) are
+  it past 1, 3, 6 or 12 months (default 12). Only photo records (and old heartbeat trails, below) are
   deleted by this cleanup — it retains facts, thumbnails and audit records — and no EVENT newer than **30 days** can
   have media deleted by Malinois cleanup: the floor lives inside the purge entry point.
   Both the selected month policy and the floor use a lower bound from CloudKit system

@@ -31,7 +31,7 @@ Once armed, if the phone is moved, tilted, unplugged, handled, touched, or appro
 
 **When you come back:** before typing your PIN, look at "Armed for" above the pad: it should match how long ago you armed. After disarming, Home's "Last armed" line should start at the time you armed; if it starts later, your session ended and another began. Then open the Event Log and read every entry since you armed, not just the newest: a disarm you didn't make, "Monitoring interrupted" or a wrong PIN means someone tried, even if the phone looks untouched.
 
-Without Pro (free for every install during Early-Access), Malinois sends nothing off the phone, so a wiped or destroyed phone takes its record with it; only an earlier iOS backup might hold a copy. Sensors have thresholds and iOS can stop any app: [SECURITY.md](SECURITY.md) lists the known gaps. You can check all of this against the code: this repository holds the source of every release since 1.2, with no third-party code ([what this repository is](#what-this-repository-is), and what it can't prove).
+Without Pro (free for every install during Early-Access), Malinois sends none of your events off the phone (it only asks Apple to certify the key it signs them with, which carries none of them), so a wiped or destroyed phone takes its record with it; only an earlier iOS backup might hold a copy. Sensors have thresholds and iOS can stop any app: [SECURITY.md](SECURITY.md) lists the known gaps. You can check all of this against the code: this repository holds the source of every release since 1.2, with no third-party code ([what this repository is](#what-this-repository-is), and what it can't prove).
 
 ## Try it out
 
@@ -53,10 +53,10 @@ This is ultimately a personal project, but it's a project I think others might f
 
 ## How this is engineered
 
-- About 30,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 1,683 unit tests in 127 files, 40,982 lines of tests. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 263 of them, each tested on its own.
-- 55 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 36,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 2,061 unit tests in 139 files, 51,346 lines of tests. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 269 of them, each tested on its own.
+- 62 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
@@ -69,13 +69,13 @@ With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copi
 
 > ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
 
-## What's new in 1.9
+## What's new in 1.10
 
-- Malinois now requires iOS 18 or later. The Apple Watch app still runs on watchOS 10 or later.
-- Fixes a crash at startup on iOS 18 when Malinois's saved data was damaged.
-- A clip that iOS ends on its own, when storage runs out for example, now stops at once and is marked partial, and a clip still waiting to be saved is no longer removed at launch.
-- Turning cross-device alerts off no longer reports success unless iCloud confirms that every alert subscription was removed.
-- Also: a thumbnail that arrives late now shows on your other devices; a stalled iCloud request no longer holds up later upload retries; your other devices stop offering to download a capture whose iCloud copy is gone; recovery after an interrupted watch is more reliable; and leftover temporary upload images are cleaned up at launch.
+- Your iPhone now signs its event records, so someone you share an event with can check it has not changed since the phone signed it. The signing key stays in the iPhone's Secure Enclave, and Apple's App Attest service certifies it belongs to Malinois on a genuine iPhone; that needs a network connection once, and again after a restore. Events recorded before then are not signed. If a signed record ever leaves the log other than by its size limit, the log says so.
+- Sharing a signed event adds a ZIP of its evidence, which anyone with a Mac can check with Malinois's verifier, built from the app's public source code.
+- After you restore your iPhone from a backup, you can again download the full evidence of your restored events from iCloud.
+- On Apple Watch, an iCloud check that takes longer than 20 seconds now ends and says so.
+- Also: after an interruption or a camera error, the camera no longer restarts while a capture is still under way; changing the time on your iPhone no longer upsets the motion and Sound tripwires' trip checks; and the cleanup of old events in iCloud names each event only once.
 
 Earlier releases are listed under [Roadmap](#roadmap), at the end of this file.
 
@@ -103,7 +103,7 @@ against this source.
 
 ## Where to look
 
-- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 1,900
+- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 2,000
   lines: every defense mechanism, the attacks the app explicitly does *not* defend against, and how to
   report a vulnerability. If you read one file, read this one.
 - **`Malinois/`** — the app. No third-party dependencies, by design: what you
@@ -117,7 +117,7 @@ against this source.
 
 - The PIN's storage and lockout: `Malinois/Services/KeychainService.swift`.
 - The crash-durable log, its write-ahead journal and quarantine: `Malinois/Services/EventStore.swift`.
-- What happens at a trip, the record before the response: `Malinois/Services/MonitoringEngine.swift` (`respond`).
+- What happens at a trip, the record before the response: `Malinois/Services/MonitoringTripResponder+Responses.swift` (`respond`).
 - Which account may receive evidence, and the upload chain: `Malinois/Services/CloudEnrollment.swift` and `Malinois/Services/CloudExfiltrator.swift`.
 - The disarm hold and the attribution window: `Malinois/Services/DisarmEntryCoordinator.swift`.
 
@@ -128,10 +128,23 @@ against this source.
 - A Keychain that cannot be read is never taken for "no PIN": setup is never offered over a sealed one.
 - Monitoring continues during PIN entry; only the proximity sensor pauses, and PIN keys are not touch trips.
 - Detection, capture and the local log are free, and stay free.
-- Without Pro, Malinois itself sends nothing off the phone (the phone's own iCloud or computer backups are separate); with it, copies and alerts go only to your own iCloud account and your own devices.
+- Without Pro, Malinois itself sends none of your events off the phone (it only asks Apple to certify its signing key; the phone's own iCloud or computer backups are separate); with it, copies and alerts go only to your own iCloud account and your own devices.
 
 Building requires Xcode and your own signing settings; the project file ships
 with no development team set.
+
+## Checking an evidence bundle
+
+When Malinois 1.10 or later shares an event the iPhone signed, it adds a ZIP named "Malinois evidence" with the event's date and time. To check one on a Mac with Xcode, or only its command-line tools (`xcode-select --install`), build the verifier from this repository and run it on the ZIP as you received it:
+
+```sh
+git clone https://github.com/john-comptonemail-com/malinois.git
+cd malinois
+swiftc -O MalinoisEvidence/*.swift MalinoisVerifier/*.swift -o malinois-verify
+./malinois-verify "Malinois evidence 2026-10-31 1302.zip"
+```
+
+It prints each key Apple certified, the signatures, the counters, the export, the record's revisions and its attachments, then PASS or the problems it found. Apple's App Attestation root certificate is built in; to check against your own copy from https://www.apple.com/certificateauthority/, add `--root Apple_App_Attestation_Root_CA.pem`. Run it as an ordinary program: the certificate check uses macOS's trust service. What a check shows, and what it cannot, is in SECURITY.md ("Evidence someone else can check").
 
 ## License
 
@@ -270,3 +283,11 @@ Fixes for two rare timing problems found in a review.
 - The Event Log now records changes to more settings, how long monitoring was interrupted, and a skipped automatic re-arm; countdowns cancelled in a row count as one record, with one alert.
 - A clip's thumbnail now shows a frame near the biggest change in its first 12 seconds, rather than always the frame 1 second in.
 - Also: an earlier warning with Until clear, a warning when arming an iPhone without a passcode, the "Allow notifications" offer as soon as you verify iCloud access, reliability fixes for uploads, alarms and Apple Watch alerts, and clearer wording about Guided Access and iCloud backup.
+
+**Shipped in 1.9**
+
+- Malinois now requires iOS 18 or later. The Apple Watch app still runs on watchOS 10 or later.
+- Fixes a crash at startup on iOS 18 when Malinois's saved data was damaged.
+- A clip that iOS ends on its own, when storage runs out for example, now stops at once and is marked partial, and a clip still waiting to be saved is no longer removed at launch.
+- Turning cross-device alerts off no longer reports success unless iCloud confirms that every alert subscription was removed.
+- Also: a thumbnail that arrives late now shows on your other devices; a stalled iCloud request no longer holds up later upload retries; your other devices stop offering to download a capture whose iCloud copy is gone; recovery after an interrupted watch is more reliable; and leftover temporary upload images are cleaned up at launch.

@@ -204,6 +204,26 @@ final class CloudExfiltratorTests: XCTestCase {
         XCTAssertFalse(probe.queries.contains(CloudExfiltrator.metaRecordType))
     }
 
+    /// An event whose meta record exists in both record types (a v1 record and its v2 successor) is purged once: each
+    /// of its photo records is asked for once, and it counts as one event (item 180's A13).
+    @MainActor
+    func testAnEventInBothMetaRecordTypesIsPurgedOnce() async throws {
+        let server = Date(timeIntervalSince1970: 1_700_000_000)
+        let (cloud, probe) = retentionRig(observations: [CloudExfiltrator.metaRecordTypeV2: server])
+        let eventID = probe.eventID
+        cloud.retentionAccessForTesting?.mediaEvents = { cutoff, _ in
+            probe.cutoffs.append(cutoff)
+            return ([eventID], true)   // both types name the same event
+        }
+        let result = await cloud.purgeFullMedia(monthsOld: 1)
+        XCTAssertFalse(result.failed)
+        XCTAssertEqual(probe.cutoffs.count, 2, "both record types were walked")
+        XCTAssertEqual(result.eventsExamined, 1, "one event")
+        XCTAssertEqual(probe.deleted.count, CloudExfiltrator.fullMediaRecordNames(for: eventID).count,
+                       "each photo record asked for once")
+        XCTAssertEqual(Set(probe.deleted).count, probe.deleted.count, "no record named twice")
+    }
+
     @MainActor
     func testOneFailedClockQueryStillUsesOtherSafeObservation() async throws {
         let server = Date(timeIntervalSince1970: 1_700_000_000)

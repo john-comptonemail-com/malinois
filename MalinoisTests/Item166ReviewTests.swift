@@ -14,7 +14,9 @@
 //  capturing phone did not offer the download of a file it knew had landed; codex-26, an unlock handed a report owed to
 //  the engine before the recovery could bring its incident back; codex-24, an older event's missing record of what
 //  reached iCloud was read as none. Each written before its change, red at that commit. And BACKLOG 176's codex-2 (step
-//  67): an answer asked for before iCloud's copies were lost no longer settles the check after it.
+//  67): an answer asked for before iCloud's copies were lost no longer settles the check after it. And BACKLOG 187's
+//  deepseek-3 (DeepSeek's review of 1.10 at 09d997f): a photo's or clip's name from the log is a path only when it is a
+//  plain file name in the media folder, so a restored log cannot make the limit delete, or an upload send, a file outside.
 //
 
 import CloudKit
@@ -230,9 +232,10 @@ final class Item166ReviewTests: XCTestCase {
     // MARK: - codex-23 on ae720ca: a capture is marked lost only when none of it reached iCloud
 
     /// An engine whose uploads reach the save seam through every real step (the lease, the binding, the per-event queue,
-    /// each record), and its store, with a two-camera capture on disk, registered and logged.
-    private func twoCameraCaptureReadyToUpload() async throws -> (engine: MonitoringEngine, cloud: CloudExfiltrator,
-                                                                  store: EventStore, capture: Event) {
+    /// each record), and its store, with a two-camera capture on disk, registered and logged. Its files are named as the
+    /// app names them, or `named` (item 187: a name the log holds, its file written where that name leads).
+    private func twoCameraCaptureReadyToUpload(named: (primary: String, secondary: String)? = nil)
+        async throws -> (engine: MonitoringEngine, cloud: CloudExfiltrator, store: EventStore, capture: Event) {
         let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
         let enrollment = CloudEnrollment(file: root.appendingPathComponent("grant/state.json"), authenticate: { _ in true })
         let verified = await enrollment.enroll(account: "account-a", resolve: { "account-a" })
@@ -249,9 +252,9 @@ final class Item166ReviewTests: XCTestCase {
         cloud.accountIdentityForTesting = { "account-a" }
         var capture = Event(startDate: Date().addingTimeInterval(-60), endDate: Date().addingTimeInterval(-59),
                             triggeredSensors: [.motion], cloudSyncState: .pending)
-        capture.mediaFilename = UUID().uuidString + ".jpg"
+        capture.mediaFilename = named?.primary ?? UUID().uuidString + ".jpg"
         capture.primaryCamera = "front"
-        capture.secondaryMediaFilename = UUID().uuidString + ".jpg"
+        capture.secondaryMediaFilename = named?.secondary ?? UUID().uuidString + ".jpg"
         capture.secondaryCamera = "rear"
         capture.thumbnailData = Data([0xff, 0xd8, 0xff])
         try FileManager.default.createDirectory(at: store.mediaDirectory, withIntermediateDirectories: true)
@@ -261,6 +264,150 @@ final class Item166ReviewTests: XCTestCase {
         enrollment.registerLocalEvent(capture)
         store.add(capture)
         return (engine, cloud, store, capture)
+    }
+
+    // MARK: - Item 187's deepseek-3: a media name is a path only when it is a plain file name
+
+    /// DeepSeek's deepseek-3 on 09d997f: the store joined a photo's or clip's name from the log to the media folder as it
+    /// stood, so a log restored from an edited backup could name a file outside it (`../evidence-signatures.jsonl`), and
+    /// the count limit removing that row deleted the file, every signature made since the restore with it, and nothing
+    /// said so. A name is now a path only when it is a plain file name in the media folder, the signer's rule (the
+    /// owner's "deepseek-3 a").
+    func testTheLimitDeletesNoFileOutsideTheMediaFolderThatARowNames() throws {
+        let fm = FileManager.default
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        try fm.createDirectory(at: root.appendingPathComponent("Media", isDirectory: true), withIntermediateDirectories: true)
+        let outside = root.appendingPathComponent(EvidenceSignatureFile.name)
+        try Data("every signature since the restore\n".utf8).write(to: outside)
+        let now = Date()
+        var held = (0..<EventStore.maxIncidentEvents).map { index in
+            let at = now.addingTimeInterval(-Double(index + 1))
+            return Event(startDate: at, endDate: at, triggeredSensors: [.motion], cloudSyncState: .synced)
+        }
+        held[held.count - 1].mediaFilename = "../" + EvidenceSignatureFile.name
+        held[held.count - 1].secondaryMediaFilename = "../../\(root.lastPathComponent)/\(EvidenceSignatureFile.name)"
+        let oldest = held[held.count - 1]
+        try JSONEncoder().encode(held).write(to: root.appendingPathComponent("events.json"))
+        let store = EventStore()
+        store.add(Event(startDate: now, endDate: now, triggeredSensors: [.touch], cloudSyncState: .pending))
+        store.drainIOForTesting()
+        XCTAssertFalse(store.events.contains { $0.id == oldest.id }, "the limit removed the row")
+        XCTAssertTrue(fm.fileExists(atPath: outside.path), "and deleted no file outside the media folder")
+    }
+
+    /// Such a name names no file: no URL for the event's screen or Share, and no bytes against the media limit, which
+    /// counted the file outside and took the row's media for it.
+    func testANameThatIsNotAPlainFileNameHasNoURLAndCountsNoBytes() async throws {
+        let fm = FileManager.default
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let store = EventStore()
+        defer { store.drainIOForTesting() }
+        try fm.createDirectory(at: store.mediaDirectory, withIntermediateDirectories: true)
+        let at = Date().addingTimeInterval(-60)
+        var event = Event(startDate: at, endDate: at.addingTimeInterval(1), triggeredSensors: [.motion], cloudSyncState: .pending)
+        event.mediaFilename = "../outside.jpg"
+        event.secondaryMediaFilename = ".."
+        XCTAssertNil(store.mediaURL(for: event))
+        XCTAssertNil(store.secondaryMediaURL(for: event))
+        // Nor any other name that is not a plain file name: none at all and "." (the media folder itself, every photo in
+        // it), its parent, and a name with a folder in it; then a character the file system ends a name at.
+        for name in ["", ".", "..", "Media/photo.jpg"] {
+            var named = event
+            named.mediaFilename = name
+            named.secondaryMediaFilename = name
+            XCTAssertNil(store.mediaURL(for: named), name.debugDescription)
+            XCTAssertNil(store.secondaryMediaURL(for: named), name.debugDescription)
+        }
+        var cut = event
+        cut.mediaFilename = "..\u{0}"
+        XCTAssertNil(store.mediaURL(for: cut), "a name the file system would read as \"..\"")
+        var plain = event
+        plain.mediaFilename = "photo.jpg"
+        plain.secondaryMediaFilename = "clip.mov"
+        XCTAssertEqual(store.mediaURL(for: plain), store.mediaDirectory.appendingPathComponent("photo.jpg"))
+        XCTAssertEqual(store.secondaryMediaURL(for: plain), store.mediaDirectory.appendingPathComponent("clip.mov"))
+        // The byte limit: the file outside is not the row's.
+        let outside = root.appendingPathComponent("outside.jpg")
+        try Data(count: 100).write(to: outside)
+        store.add(event)
+        try await runTheByteLimit(on: store)
+        let kept = try XCTUnwrap(store.events.first { $0.id == event.id })
+        XCTAssertEqual(kept.mediaFilename, "../outside.jpg", "no bytes counted, so nothing taken")
+        XCTAssertNotEqual(kept.mediaDiscarded, true)
+        XCTAssertTrue(fm.fileExists(atPath: outside.path))
+    }
+
+    /// Item 190's deepseek-5 (the owner's "go on the fixes"): a plain name in the media folder under which an edited
+    /// backup put a link (to the event log, or anywhere) or a folder names no file either: the event's screen, Share and
+    /// an upload take none, as the export's bundle already took none. A name with nothing under it yet keeps its URL, for
+    /// the callers that look.
+    func testALinkOrAFolderUnderAPlainNameNamesNoFile() throws {
+        let fm = FileManager.default
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let store = EventStore()
+        defer { store.drainIOForTesting() }
+        try fm.createDirectory(at: store.mediaDirectory, withIntermediateDirectories: true)
+        let theLog = root.appendingPathComponent("the-log.json")
+        try Data("every record of this phone's".utf8).write(to: theLog)
+        try fm.createSymbolicLink(at: store.mediaDirectory.appendingPathComponent("photo.jpg"), withDestinationURL: theLog)
+        try fm.createDirectory(at: store.mediaDirectory.appendingPathComponent("clip.mov"), withIntermediateDirectories: true)
+        try Data("a photo's bytes".utf8).write(to: store.mediaDirectory.appendingPathComponent("plain.jpg"))
+        let at = Date().addingTimeInterval(-60)
+        var event = Event(startDate: at, endDate: at.addingTimeInterval(1), triggeredSensors: [.motion], cloudSyncState: .pending)
+        event.mediaFilename = "photo.jpg"
+        event.secondaryMediaFilename = "clip.mov"
+        XCTAssertNil(store.mediaURL(for: event), "a link")
+        XCTAssertNil(store.secondaryMediaURL(for: event), "a folder")
+        let items = EventDetailView.shareItems(sentence: "an event", media: [store.mediaURL(for: event),
+                                                                             store.secondaryMediaURL(for: event)], bundle: nil)
+        XCTAssertEqual(items.count, 1, "Share sends the sentence alone")
+        var plain = event
+        plain.mediaFilename = "plain.jpg"
+        plain.secondaryMediaFilename = "not-written-yet.mov"
+        XCTAssertEqual(store.mediaURL(for: plain), store.mediaDirectory.appendingPathComponent("plain.jpg"))
+        XCTAssertEqual(store.secondaryMediaURL(for: plain), store.mediaDirectory.appendingPathComponent("not-written-yet.mov"))
+    }
+
+    /// An upload reads the row's files by the same rule: a name outside the media folder sends no file to iCloud.
+    func testAnUploadSendsNoFileOutsideTheMediaFolderThatARowNames() async throws {
+        let (engine, cloud, store, capture) = try await twoCameraCaptureReadyToUpload(named: ("../outside.jpg", "../outside.jpg"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.mediaDirectory.appendingPathComponent("../outside.jpg").path),
+                      "a file where the name leads")
+        let sent = SentNames()
+        cloud.saveAttemptForTesting = { records in sent.names += records.map(\.recordID.recordName) }
+        defer { cloud.saveAttemptForTesting = nil }
+        await engine.uploadSnapshotForTesting(capture, throughSweep: false)
+        XCTAssertFalse(sent.names.isEmpty, "the record went up")
+        XCTAssertFalse(sent.names.contains { $0.hasPrefix("photo-") }, "and no photo: \(sent.names)")
+    }
+
+    /// Qwen's qwen-5 on 09d997f (item 187's round B): when the journal could not be opened for an append, the fallback
+    /// wrote the new line as a whole file, so a journal that was there kept that line alone, and the events before it that
+    /// the log had not taken yet rested on memory. The fallback now makes a journal only where none is: an append it
+    /// cannot make leaves the journal as it was.
+    func testAnAppendThatCannotOpenTheJournalNeverWritesOverIt() throws {
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let store = EventStore()
+        defer {
+            EventStore.journalOpenFailsForTesting = false
+            store.drainIOForTesting()
+        }
+        let now = Date()
+        let first = Event(startDate: now, endDate: now, triggeredSensors: [.touch], cloudSyncState: .pending)
+        store.add(first)   // its line written at its birth
+        let journal = root.appendingPathComponent("events.journal")
+        func journalText() throws -> String { String(bytes: try Data(contentsOf: journal), encoding: .utf8) ?? "" }
+        XCTAssertTrue(try journalText().contains(first.id.uuidString))
+        EventStore.journalOpenFailsForTesting = true
+        let second = Event(startDate: now.addingTimeInterval(1), endDate: now.addingTimeInterval(1), triggeredSensors: [.touch],
+                           cloudSyncState: .pending)
+        store.add(second)
+        XCTAssertTrue(try journalText().contains(first.id.uuidString), "the first event's line still there")
+    }
+
+    /// The names of the records an upload saved.
+    private final class SentNames {
+        var names: [String] = []
     }
 
     /// The byte limit run with a budget the capture's two files exceed: the next record's add starts its pass.
@@ -1382,10 +1529,13 @@ final class Item166ReviewTests: XCTestCase {
 
     /// A launch removes the oldest incident at the limit and owes its report, with no engine listening; another row has
     /// synced since, so a later recovery's limit takes it instead. `restorable`: the oldest's birth line is still in the
-    /// journal (its retirement never ran), so the next launch's recovery brings it back. Then the log is sealed, and the
-    /// next launch waits for the first unlock with a report already listening.
-    private func anUnlockOwingTheOldest(restorable: Bool) async throws -> (store: EventStore, oldest: Event,
-                                                                             handed: HandedOver, phone: LockState) {
+    /// journal (its retirement never ran). `removalRecorded`: the limit's removal of it reached its file, so the next
+    /// launch knows the limit removed it and brings it back from neither the journal nor what the locked launch read
+    /// (item 182, codex-1 on 995f7d98); without it (no key: the file is not written) the recovery brings it back. Then
+    /// the log is sealed, and the next launch waits for the first unlock with a report already listening.
+    private func anUnlockOwingTheOldest(restorable: Bool, removalRecorded: Bool = true) async throws
+        -> (store: EventStore, oldest: Event, handed: HandedOver, phone: LockState) {
+        if !removalRecorded { EventStore.limitRemovalsKeyForTesting = { _ in nil } }
         let (_, oldest, _) = try await logAtTheIncidentLimit()
         let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
         do {
@@ -1425,11 +1575,23 @@ final class Item166ReviewTests: XCTestCase {
     /// "not fully backed up" record spending that watch's or day's one record. The reports owed are handed over after the
     /// recovery, without the incidents it brought back.
     func testAnUnlockHandsOverNoReportForAnIncidentTheRecoveryBringsBack() async throws {
-        let (store, oldest, handed, _) = try await anUnlockOwingTheOldest(restorable: true)
+        defer { EventStore.limitRemovalsKeyForTesting = nil }
+        let (store, oldest, handed, _) = try await anUnlockOwingTheOldest(restorable: true, removalRecorded: false)
         XCTAssertTrue(store.events.contains { $0.id == oldest.id }, "the recovery brought the oldest back")
         let reported = await eventually(within: 0.5) { handed.ids.contains(oldest.id) }
         XCTAssertFalse(reported, "no report for an incident the log holds again")
         XCTAssertFalse(store.removalsAwaitingReport.contains(oldest.id), "nor one owed")
+        store.drainIOForTesting()
+    }
+
+    /// Item 182 (codex-1 on 995f7d98): an incident the limit removed, its removal on disk, is a removal, not a write that
+    /// never landed: the unlock brings it back from neither its journal line nor what the locked launch read, and its
+    /// report still owed is handed over.
+    func testAnUnlockDoesNotBringBackAnIncidentTheLimitRemoved() async throws {
+        let (store, oldest, handed, _) = try await anUnlockOwingTheOldest(restorable: true)
+        XCTAssertFalse(store.events.contains { $0.id == oldest.id }, "not brought back")
+        let reported = await eventually { handed.ids.contains(oldest.id) }
+        XCTAssertTrue(reported, "its report still owed is handed over")
         store.drainIOForTesting()
     }
 

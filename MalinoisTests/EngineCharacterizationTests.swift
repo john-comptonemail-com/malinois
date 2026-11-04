@@ -11,6 +11,7 @@
 //  (the isolation seam), so nothing leaks between tests or into the simulator's real log.
 //
 
+import UIKit
 import XCTest
 @testable import Malinois
 
@@ -91,6 +92,622 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 5),
                       "grace 0 + calibration + review should reach .armed", file: file, line: line)
     }
+
+    // MARK: - Test Sensors keeps the camera as the armed watch would (item 190's codex-2, the owner's "A6 a")
+
+    /// Codex's codex-2 on aa71756: Test Sensors warmed the camera for its Vision row whatever the camera-readiness
+    /// setting, so with Battery saver, or Auto on battery, the test showed Vision tripping where the armed watch keeps the
+    /// camera cold and sees nothing. Now it keeps the camera as the watch would: never with Battery saver, always with
+    /// Instant, and with Auto as the charging state says.
+    func testTestSensorsWarmsTheCameraOnlyWhereTheWatchWould() {
+        let charging = MonitoringEngine.isChargingState(UIDevice.current.batteryState)
+        for readiness in [CameraReadiness.batterySaver, .instant, .auto] {
+            let rig = makeRig { $0.cameraReadiness = readiness; $0.enabledSensors.insert(.vision) }
+            rig.engine.startDryRun()
+            let wanted = readiness.keepsCameraWarm(charging: charging)
+            // The warm-up runs in a task of its own: wait for it, or long enough that it would have come.
+            pump(until: { !rig.camera.warmUps.isEmpty }, timeout: wanted ? 2 : 0.5)
+            XCTAssertEqual(!rig.camera.warmUps.isEmpty, wanted, "\(readiness), charging \(charging)")
+            rig.engine.stopDryRun()
+        }
+        // Without Vision there is no row to warm the camera for, whatever the setting.
+        let still = makeRig { $0.cameraReadiness = .instant; $0.enabledSensors.remove(.vision) }
+        still.engine.startDryRun()
+        pump(until: { !still.camera.warmUps.isEmpty }, timeout: 0.5)
+        XCTAssertTrue(still.camera.warmUps.isEmpty, "no Vision, no camera")
+        still.engine.stopDryRun()
+    }
+
+    /// And a charger plugged in or out during the test, with Auto, warms the camera or stands it down, as during a watch.
+    func testTestSensorsFollowsTheChargerWithAuto() {
+        let rig = makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        rig.engine.startDryRun()
+        rig.engine.handleBatteryStateChange(charging: false)   // on battery, whatever this machine says
+        pump(until: { false }, timeout: 0.5)   // what the start owed has come
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 2), "plugged in: warmed for the Vision row")
+        let stoodDown = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > stoodDown }, timeout: 2), "unplugged: stood down")
+        rig.engine.stopDryRun()
+        // Without Vision, plugging in warms nothing.
+        let still = makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.remove(.vision) }
+        still.engine.startDryRun()
+        still.engine.handleBatteryStateChange(charging: false)
+        pump(until: { false }, timeout: 0.3)
+        let before = still.camera.warmUps.count
+        still.engine.handleBatteryStateChange(charging: true)
+        pump(until: { still.camera.warmUps.count > before }, timeout: 0.5)
+        XCTAssertEqual(still.camera.warmUps.count, before, "no Vision, no camera")
+        still.engine.stopDryRun()
+    }
+
+    /// Codex's codex-5 on 29d6501: unplugged during the test with Auto, the camera stood down, but Vision's row kept its
+    /// last reading, WOULD TRIP when it was hot, where README and the test's hint promise "No frames". Once the camera
+    /// stands down the row says "No frames"; once it warms and frames come again, it reads them.
+    func testVisionsRowSaysNoFramesOnceAutoStandsTheCameraDown() throws {
+        let rig = makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        rig.engine.startDryRun()
+        rig.engine.handleBatteryStateChange(charging: false)
+        rig.engine.handleBatteryStateChange(charging: true)   // plugged in: the camera warm for the Vision row
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        // After the settle countdown and the calibration, the row reads frames: the scene, then a hand across it.
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the test is watching")
+        vision.ingest(Self.scene)
+        vision.ingest(Self.handAcross)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision]?.hot == true }, timeout: 2), "a hot reading")
+        let warm = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged: Auto stands the camera down
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > warm }, timeout: 2), "stood down")
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision]?.value == "No frames" }, timeout: 2),
+                      "the row says no frames come: \(String(describing: rig.engine.dryRunReadings[.vision]))")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        // A frame already on its way when the camera stood down changes nothing (codex-3 on b7702f5, the owner's "a").
+        vision.ingest(Self.handAcross)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a late frame changes nothing")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        // Plugged in again: once the warm-up has finished, frames come, and the row reads them.
+        rig.engine.handleBatteryStateChange(charging: true)
+        pump(until: { false }, timeout: 0.4)
+        vision.ingest(Self.scene)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision].map { $0.value != "No frames" } ?? false }, timeout: 2),
+                      "reading frames again")
+        rig.engine.stopDryRun()
+    }
+
+    /// codex-3 and deepseek-3 on 424d8ce: the engine told Vision the camera warmed as it asked for the warm-up, before
+    /// any frame, so the row read its last reading from before the stand-down, WOULD TRIP when that was hot, and kept it
+    /// when the warm-up failed. The row says "No frames" until the warmed camera reads a frame; a warm-up that fails, or
+    /// a stand-down before any frame came, leaves it so, whatever frame was already on its way.
+    func testVisionsRowSaysNoFramesUntilTheWarmedCameraReads() throws {
+        let rig = makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        rig.engine.startDryRun()
+        rig.engine.handleBatteryStateChange(charging: false)
+        rig.engine.handleBatteryStateChange(charging: true)
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the test is watching")
+        vision.ingest(Self.scene)
+        vision.ingest(Self.handAcross)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision]?.hot == true }, timeout: 2), "a hot reading")
+        var down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged: Auto stands the camera down
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down")
+        // Plugged in again, and no frame yet.
+        rig.engine.handleBatteryStateChange(charging: true)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "no reading before the warmed camera's first")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        // Unplugged before any frame came: a frame already on its way changes nothing.
+        down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down again")
+        vision.ingest(Self.handAcross)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a late frame changes nothing")
+        // Plugged in again, and the warm-up fails: no frame comes.
+        rig.camera.warmUpError = CameraController.CameraError.unavailable
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the warm-up failed")
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a failed warm-up reads nothing")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        rig.engine.stopDryRun()
+    }
+
+    /// The same in Vision alone (codex-3 on 424d8ce): asked to warm again, the camera's first frame that only re-anchors
+    /// (around a capture, or the first after a long cold spell) makes no reading, and the row still says no frames come;
+    /// the first frame it reads ends that.
+    func testVisionsRowWaitsForTheWarmedCamerasFirstReading() {
+        let vision = VisionMonitor()
+        vision.beginCalibration()
+        vision.ingest(Self.scene)
+        vision.endCalibration()
+        vision.start()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(vision.liveReading()?.hot, true, "a hot reading")
+        vision.cameraStoodDown()
+        vision.cameraWarming()
+        XCTAssertEqual(vision.liveReading()?.value, "No frames", "asked to warm, no frame yet")
+        vision.cameraWarmed()   // and the warm-up finished (codex-2 on 63e77b0)
+        vision.suppress(for: 0)
+        vision.ingest(Self.scene)   // re-anchors only
+        XCTAssertEqual(vision.liveReading()?.value, "No frames", "a frame that only re-anchors reads nothing")
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // the settle countdown, then a reading
+        XCTAssertNotEqual(vision.liveReading()?.value, "No frames", "the warmed camera's first reading")
+        XCTAssertEqual(vision.liveReading()?.hot, false)
+    }
+
+    /// codex-2 on 63e77b0: a frame read after the engine asked for the camera warm, before that warm-up had finished, as a
+    /// frame from the camera standing down can be, ended "No frames", and a warm-up that then failed left its reading.
+    /// Only a frame read once the warm-up the engine asked for has finished ends it; a stand-down cancels the request, a
+    /// warm-up finishing after it included, and one that finished before it counts for nothing after it.
+    func testVisionsRowWaitsForTheWarmUpItAskedFor() {
+        let vision = VisionMonitor()
+        vision.beginCalibration()
+        vision.ingest(Self.scene)
+        vision.endCalibration()
+        vision.start()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(vision.liveReading()?.hot, true, "a hot reading")
+        vision.cameraStoodDown()
+        vision.cameraWarming()
+        vision.ingest(Self.handAcross)   // the camera standing down, its last frame late
+        XCTAssertEqual(vision.liveReading()?.value, "No frames", "read before the warm-up finished")
+        vision.cameraStoodDown()
+        vision.cameraWarmed()   // a warm-up finishing after the stand-down that cancelled it
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(vision.liveReading()?.value, "No frames", "a cancelled warm-up")
+        vision.cameraWarming()
+        vision.cameraWarmed()
+        vision.cameraStoodDown()   // warmed, and stood down again before any frame
+        vision.cameraWarming()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(vision.liveReading()?.value, "No frames", "a warm-up before the stand-down")
+        vision.cameraWarmed()
+        vision.ingest(Self.scene)
+        XCTAssertNotEqual(vision.liveReading()?.value, "No frames", "the warmed camera's first frame read")
+    }
+
+    /// The same through the engine (codex-2 on 63e77b0): it tells Vision when the warm-up it asked for has finished, and
+    /// a warm-up that fails tells it nothing.
+    func testVisionsRowReadsOnlyOnceTheWarmUpItAskedForHasFinished() throws {
+        try checkVisionWaitsForTheWarmUp(makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) })
+    }
+
+    /// And with both cameras, whose warm-up is the engine's other path (codex-2 on 63e77b0).
+    func testVisionsRowReadsOnlyOnceTheWarmUpItAskedForHasFinishedWithBothCameras() throws {
+        let rig = makeRig { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision); $0.cameraPosition = .both }
+        rig.camera.supportsMultiCam = true
+        try checkVisionWaitsForTheWarmUp(rig)
+        XCTAssertGreaterThan(rig.camera.multiCamWarmUps, 0, "both cameras warmed")
+    }
+
+    /// A hot reading; the camera stood down; plugged in again at once, a frame from the camera standing down read before
+    /// the warm-up has finished, then a frame once it has; stood down again, and a frame after a warm-up that failed.
+    private func checkVisionWaitsForTheWarmUp(_ rig: Rig) throws {
+        rig.engine.startDryRun()
+        rig.engine.handleBatteryStateChange(charging: false)
+        rig.engine.handleBatteryStateChange(charging: true)
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the test is watching")
+        vision.ingest(Self.scene)
+        vision.ingest(Self.handAcross)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision]?.hot == true }, timeout: 2), "a hot reading")
+        var down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged: Auto stands the camera down
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down")
+        rig.engine.handleBatteryStateChange(charging: true)
+        vision.ingest(Self.handAcross)   // the camera standing down, its last frame late
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "read before the warm-up finished")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        vision.ingest(Self.scene)   // the warm-up has finished
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision].map { $0.value != "No frames" } ?? false }, timeout: 2),
+                      "reading frames once the warm-up has finished")
+        down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down again")
+        rig.camera.warmUpError = CameraController.CameraError.unavailable
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the warm-up failed")
+        vision.ingest(Self.handAcross)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a failed warm-up's frames read nothing")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.hot, false)
+        rig.engine.stopDryRun()
+    }
+
+    /// codex-1 on 6223aae: the engine told Vision a warm-up finished only when it finished within its deadline, whose
+    /// wait abandons a warm-up rather than stopping it, so one that succeeded after it left the row at "No frames" while
+    /// the warmed camera's frames were read. A warm-up that succeeds late reaches Vision too.
+    func testVisionsRowReadsTheFramesOfAWarmUpThatSucceededAfterItsDeadline() throws {
+        try checkVisionReadsAfterALateWarmUp(makeRig(timing: Self.lateWarmUpTiming) {
+            $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision)
+        })
+    }
+
+    /// And with both cameras (codex-1 on 6223aae).
+    func testVisionsRowReadsTheFramesOfAWarmUpThatSucceededAfterItsDeadlineWithBothCameras() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) {
+            $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision); $0.cameraPosition = .both
+        }
+        rig.camera.supportsMultiCam = true
+        try checkVisionReadsAfterALateWarmUp(rig)
+        XCTAssertGreaterThan(rig.camera.multiCamWarmUps, 0, "both cameras warmed")
+    }
+
+    /// The rig's timing with a warm-up deadline the test camera can outlast (`FakeCamera.warmUpDelay`).
+    private static var lateWarmUpTiming: EngineTiming {
+        var timing = fastTiming
+        timing.warmUpDeadline = 0.2
+        return timing
+    }
+
+    /// A warm-up that succeeds after its deadline, once a stand-down has cancelled its request, counts for nothing
+    /// (codex-1 on 6223aae).
+    func testALateWarmUpAfterAStandDownCountsForNothing() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        let vision = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 0.6   // longer than the deadline
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the deadline passed")
+        let down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged again before the warm-up succeeds
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down again")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 2), "the warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "its request was cancelled")
+        rig.engine.stopDryRun()
+    }
+
+    /// A warm-up that succeeds after its deadline, once a newer warm request has superseded it, counts for nothing: the
+    /// row waits for the newer one's (codex-1 on 6223aae; the undo check's need).
+    func testALateWarmUpANewerRequestSupersededCountsForNothing() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        let vision = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 0.6   // longer than the deadline
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)   // the first warm request
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "its deadline passed")
+        rig.camera.warmUpDelay = 1.5
+        rig.engine.warmActiveCamera()   // a newer warm request, its warm-up slower still
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 2), "the first warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a superseded warm-up counts for nothing")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed + 1 }, timeout: 3), "the newer warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision].map { $0.value != "No frames" } ?? false }, timeout: 2),
+                      "the newer one's frames read")
+        rig.engine.stopDryRun()
+    }
+
+    /// codex-1 on b08c1f8: closing Test Sensors shut the camera down without telling Vision, so a warm-up still running
+    /// past its deadline then, succeeding after a cold reopen (unplugged while closed), was accepted, and a frame from
+    /// it showed a reading in a test whose camera is cold. Closing the test stands Vision down as Auto's stand-down does,
+    /// and the frames that come before the engine has the camera up again count for nothing: no reading, no would-trip,
+    /// no count (deepseek-1 and deepseek-2 on 1c083ab: the row said "No frames" while they tripped), and the tap's state
+    /// at the deadline, a camera's now cold, says nothing either. The reopening is cold by the setting, whatever this
+    /// machine's charger says.
+    func testAWarmUpAClosedTestAskedForCountsForNothingInTheNext() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        let vision = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 1.5   // outlasts the deadline, the closing and the reopening
+        rig.camera.visionTapActive = false   // and its tap not up when the deadline passes
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the deadline passed")
+        rig.engine.stopDryRun()   // closed while charging
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged while closed: no stand-down
+        rig.settings.cameraReadiness = .batterySaver   // and the reopening cold, whatever this machine's charger says
+        rig.engine.startDryRun()   // reopened: no warm request
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the reopened test is watching")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 3), "the closed test's warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)   // frames from that warm-up's session
+        vision.ingest(Self.handAcross)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a closed test's warm-up counts for nothing")
+        XCTAssertNil(rig.engine.dryRunTrips[.vision], "its frames trip nothing")
+        XCTAssertNil(rig.engine.dryRunCounts[.vision], "and count nothing")
+        rig.engine.stopDryRun()
+    }
+
+    /// deepseek-1 on 1c083ab: the same warm-up's frames tripped a watch armed after the test on a camera kept cold, and
+    /// fired a real tamper event. The watch counts them for nothing too.
+    func testAWarmUpAClosedTestAskedForTripsNothingInAWatchArmedAfterIt() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        let vision = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 1.5   // outlasts the deadline, the closing and the arming
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the deadline passed")
+        rig.engine.stopDryRun()
+        rig.settings.cameraReadiness = .batterySaver   // the watch asks for no warm-up of its own
+        arm(rig)
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 3), "the closed test's warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)   // frames from that warm-up's session
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: { rig.store.events.contains { $0.triggeredSensors.contains(.vision) } }, timeout: 1),
+                       "no tamper event from a closed test's warm-up")
+        XCTAssertEqual(rig.engine.state, .armed)
+        rig.engine.disarm()
+    }
+
+    /// deepseek-1 on 1c083ab: closing Test Sensors left its warm request current, so a warm-up still running then, whose
+    /// deadline passed after the close, put its failure notice on Home and its tap's state on the reopened test's row and
+    /// the arming screen. Closing the test makes the request stale, as the disarm does: its late answer writes nothing.
+    func testAClosedTestsWarmUpWritesNothingAfterTheClose() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .auto; $0.enabledSensors.insert(.vision) }
+        _ = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 1.5   // outlasts the deadline
+        rig.camera.visionTapActive = false   // and its tap not up when the deadline passes
+        let warmed = rig.camera.warmUps.count
+        rig.engine.handleBatteryStateChange(charging: true)
+        rig.engine.stopDryRun()   // closed before the deadline
+        rig.settings.cameraReadiness = .batterySaver
+        rig.engine.startDryRun()   // reopened cold
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the reopened test is watching")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 3), "the closed test's warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        XCTAssertNil(rig.engine.cameraNotice, "no notice from a closed test's warm-up")
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "nor its tap's state on the row")
+        XCTAssertFalse(rig.engine.visionTapUnavailable, "or on the arming screen")
+        rig.engine.stopDryRun()
+    }
+
+    // MARK: Every stand-down the engine makes stands Vision down (item 190's deepseek-1 on 1c083ab, the owner's "a")
+
+    /// A watch whose camera was warmed at the arming's start (Instant then) and is cold at go-live (Battery saver by then):
+    /// going live shut the camera down without telling Vision, so frames from the warm-up still running then were
+    /// judged, and tripped. Going live on a cold camera stands Vision down.
+    func testAWatchGoingLiveOnAColdCameraCountsItsArmingsWarmUpForNothing() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .instant; $0.enabledSensors.insert(.vision) }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        rig.camera.warmUpDelay = 1.5   // outlasts the deadline and the arming
+        let warmed = rig.camera.warmUps.count
+        rig.engine.beginArming()   // Instant: the camera warmed for the watch
+        rig.settings.cameraReadiness = .batterySaver   // and cold by go-live
+        rig.engine.confirmGuidedAccessAndStartGrace()
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 5))
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 3), "the arming's warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)   // frames from that warm-up's session
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: { rig.store.events.contains { $0.triggeredSensors.contains(.vision) } }, timeout: 1),
+                       "no tamper event from the arming's warm-up")
+        rig.engine.disarm()
+    }
+
+    /// A capture on a cold camera (Battery saver) has the camera up for its frames; the stand-down after it shut the
+    /// camera down without telling Vision, so a frame from the camera standing down, read late, was judged, and tripped.
+    /// The stand-down after a capture stands Vision down too.
+    func testTheStandDownAfterACaptureOnAColdCameraCountsItsLateFramesForNothing() throws {
+        let rig = makeRig {
+            $0.cameraReadiness = .batterySaver; $0.captureMode = .photo; $0.cameraPosition = .front
+            $0.enabledSensors.insert(.vision)
+        }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        arm(rig)
+        let down = rig.camera.shutDowns
+        let begun = rig.camera.attemptBegins
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.attemptBegins > begun }, timeout: 3), "the capture began, Vision suppressed")
+        // Measured from the capture's start, which suppressed Vision just before it (deepseek-2 on f476178: from the trip,
+        // the wait could end inside the suppression on a loaded machine, and the test pass without the fix).
+        let suppressionEnds = Date().addingTimeInterval(4.1)
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed && !rig.camera.stills.isEmpty && rig.camera.shutDowns > down },
+                           timeout: 5), "the capture taken, and the camera stood down after it")
+        pump(until: { Date() >= suppressionEnds }, timeout: 5)   // past the capture's suppression (4 s)
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // frames from the camera standing down
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: { rig.store.events.contains { $0.triggeredSensors.contains(.vision) } }, timeout: 1),
+                       "no tamper event from the stood-down camera's frames")
+        rig.engine.disarm()
+    }
+
+    /// A disarm shut the camera down without telling Vision, so a warm-up still running then, read in a Test Sensors
+    /// opened cold after it, was judged, and tripped. The disarm stands Vision down too.
+    func testADisarmCountsAWarmUpStillRunningForNothingInTheNextTest() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) { $0.cameraReadiness = .instant; $0.enabledSensors.insert(.vision) }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        rig.camera.warmUpDelay = 1.5   // outlasts the deadline, the watch and the disarm
+        let warmed = rig.camera.warmUps.count
+        arm(rig)
+        rig.engine.disarm()   // its warm-ups still running
+        rig.settings.cameraReadiness = .batterySaver
+        rig.engine.startDryRun()   // opened cold
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the test is watching")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmed }, timeout: 3), "the watch's warm-up succeeded, late")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)   // frames from that warm-up's session
+        vision.ingest(Self.handAcross)
+        pump(until: { false }, timeout: 0.4)
+        XCTAssertEqual(rig.engine.dryRunReadings[.vision]?.value, "No frames", "a disarmed watch's warm-up counts for nothing")
+        XCTAssertNil(rig.engine.dryRunTrips[.vision], "its frames trip nothing")
+        XCTAssertNil(rig.engine.dryRunCounts[.vision], "and count nothing")
+        rig.engine.stopDryRun()
+    }
+
+    /// codex-1 on f476178 (from Codex's probe): a capture's timeout quarantines the camera, which shuts it down without
+    /// telling the engine, and the timed-out response's own stand-down is refused while the stalled capture still holds
+    /// the camera, so on a cold camera Vision, which the capture's start had let read frames, judged the frames that
+    /// came then, during the stall and after it, and tripped. A timeout is a stand-down too.
+    func testATimedOutCaptureOnAColdCameraCountsItsFramesForNothing() throws {
+        var timing = Self.fastTiming
+        timing.warmUpDeadline = 0.5
+        timing.captureFinalizationDeadline = 0.05
+        let rig = makeRig(timing: timing) {
+            $0.cameraReadiness = .batterySaver; $0.captureMode = .photo; $0.cameraPosition = .front
+            $0.illumination = .off; $0.enabledSensors.insert(.vision)
+        }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        rig.camera.holdStills = true
+        defer {
+            rig.engine.disarm()
+            rig.camera.releaseStills()
+            XCTAssertTrue(pump(until: { !rig.engine.capturePipeline.isBusy }, timeout: 5), "every held capture drained")
+            rig.store.drainIOForTesting()
+        }
+        arm(rig)
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.stills.count == 1 }, timeout: 3), "the cold capture's still, held")
+        let suppressionEnds = Date().addingTimeInterval(4.1)   // the capture suppressed Vision before asking for the still
+        XCTAssertTrue(pump(until: {
+            rig.engine.state == .armed && rig.store.events.contains {
+                !$0.isStateChange && $0.captureFailure == CaptureFailureReason.captureTimedOut.rawValue
+            }
+        }, timeout: 3), "the capture timed out, and the watch is armed again")
+        XCTAssertTrue(rig.engine.capturePipeline.isBusy, "the stalled capture still holds the camera")
+        let visionTripped = { rig.store.events.contains { $0.triggeredSensors.contains(.vision) } }
+        pump(until: { Date() >= suppressionEnds }, timeout: 5)
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // frames during the stall
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: visionTripped, timeout: 1), "no tamper event from the stalled camera's frames")
+        rig.camera.releaseStills()
+        XCTAssertTrue(pump(until: { !rig.engine.capturePipeline.isBusy }, timeout: 5), "the stalled capture drained")
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // and after the drain
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: visionTripped, timeout: 1), "nor from its frames after the drain")
+    }
+
+    /// deepseek-1 on f476178: the same through the capture's own warm-up, whose deadline expires the capture as the
+    /// attempt's does: frames from the late warm-up, once the response had ended, tripped. That timeout is a stand-down
+    /// too.
+    func testACaptureWhoseWarmUpTimedOutOnAColdCameraCountsItsFramesForNothing() throws {
+        let rig = makeRig(timing: Self.lateWarmUpTiming) {
+            $0.cameraReadiness = .batterySaver; $0.captureMode = .photo; $0.cameraPosition = .front
+            $0.illumination = .off; $0.enabledSensors.insert(.vision)
+        }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        arm(rig)
+        rig.camera.warmUpDelay = 1.5   // the capture's warm-up outlasts its deadline
+        let begun = rig.camera.attemptBegins
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.attemptBegins > begun }, timeout: 3), "the capture began, Vision suppressed")
+        let suppressionEnds = Date().addingTimeInterval(4.1)
+        XCTAssertTrue(pump(until: {
+            rig.engine.state == .armed && rig.store.events.contains {
+                !$0.isStateChange && $0.captureFailure == CaptureFailureReason.warmUpTimedOut.rawValue
+            }
+        }, timeout: 3), "the capture's warm-up timed out, and the watch is armed again")
+        pump(until: { Date() >= suppressionEnds }, timeout: 5)   // the late warm-up has finished by then
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // frames from that warm-up
+        vision.ingest(Self.handAcross)
+        XCTAssertFalse(pump(until: { rig.store.events.contains { $0.triggeredSensors.contains(.vision) } }, timeout: 1),
+                       "no tamper event from a timed-out capture's warm-up")
+        rig.engine.disarm()
+    }
+
+    /// The stand-downs' rule leaves a capture's frames read. A capture warms the camera itself, without the engine's warm
+    /// request, so a Vision that waited for that request would be blind for the whole of a capture once Auto had stood
+    /// the camera down: its trips would neither lengthen an until-clear clip nor reach the record. A capture has the
+    /// camera up, so its frames are read once its suppression ends, after a stand-down too. (Green before the round: it
+    /// fails only without the capture's part of the fix.)
+    func testVisionReadsACapturesFramesAfterAutoStandsTheCameraDown() throws {
+        var timing = Self.fastTiming
+        timing.untilClearIdle = 5   // the clip outlasts the capture's suppression of Vision (4 s)
+        timing.untilClearMax = 7
+        let rig = makeRig(timing: timing) {
+            $0.cameraReadiness = .auto; $0.captureMode = .untilClear; $0.cameraPosition = .front
+            $0.enabledSensors.insert(.vision)
+        }
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        arm(rig)
+        rig.engine.handleBatteryStateChange(charging: true)   // warm, whatever this machine's charger said at go-live
+        pump(until: { false }, timeout: 0.3)
+        let down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged: Auto stands the camera down
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down")
+        rig.engine.handleTrip(.motion)
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        let started = Date()
+        pump(until: { Date().timeIntervalSince(started) >= 4.2 }, timeout: 5)   // past the capture's suppression
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // re-anchored and settled
+        vision.ingest(Self.handAcross)   // movement in the capture's frames
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 8), "the clip ends")
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3))
+        let event = rig.store.events.first { !$0.isStateChange }
+        XCTAssertEqual(event?.triggeredSensors, [.motion, .vision], "Vision's trip during the capture is on the record")
+        rig.engine.disarm()
+    }
+
+    /// The same in Vision alone (deepseek-1 on 1c083ab): frames while the camera stands down were judged and tripped,
+    /// whatever the row said. Until the engine has the camera up again, the warm-up it asked for finished or a capture
+    /// started, they count for nothing.
+    func testVisionCountsFramesForNothingWhileTheCameraStandsDown() {
+        let vision = VisionMonitor()
+        var trips = 0
+        vision.onTrip = { _ in trips += 1 }
+        vision.beginCalibration()
+        vision.ingest(Self.scene)
+        vision.endCalibration()
+        vision.start()
+        vision.cameraStoodDown()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 0, "stood down")
+        vision.cameraWarming()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 0, "asked to warm, the warm-up not finished")
+        vision.cameraWarmed()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 1, "the warm-up it asked for finished")
+        vision.rearm()
+        vision.cameraStoodDown()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 1, "stood down again")
+        vision.suppress(for: 0)   // a capture has the camera up
+        for _ in 0...VisionMonitor.settleFrames { vision.ingest(Self.scene) }   // re-anchored and settled
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 2, "a capture's frames are read")
+    }
+
+    /// The Test Sensors run started, a hot reading made, and the camera stood down (Auto, unplugged): Vision's monitor.
+    private func hotThenStoodDown(_ rig: Rig) throws -> VisionMonitor {
+        rig.engine.startDryRun()
+        rig.engine.handleBatteryStateChange(charging: false)
+        rig.engine.handleBatteryStateChange(charging: true)
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision] != nil }, timeout: 8), "the test is watching")
+        vision.ingest(Self.scene)
+        vision.ingest(Self.handAcross)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision]?.hot == true }, timeout: 2), "a hot reading")
+        let down = rig.camera.shutDowns
+        rig.engine.handleBatteryStateChange(charging: false)   // unplugged: Auto stands the camera down
+        XCTAssertTrue(pump(until: { rig.camera.shutDowns > down }, timeout: 2), "stood down")
+        return vision
+    }
+
+    /// A hot reading; the camera stood down; plugged in again, a warm-up that outlasts its deadline and then succeeds;
+    /// then a frame, which the row reads with no other warm request.
+    private func checkVisionReadsAfterALateWarmUp(_ rig: Rig) throws {
+        let vision = try hotThenStoodDown(rig)
+        rig.camera.warmUpDelay = 0.6   // longer than the deadline
+        let warmed = rig.camera.warmUps.count + rig.camera.multiCamWarmUps
+        rig.engine.handleBatteryStateChange(charging: true)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2), "the deadline passed")
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count + rig.camera.multiCamWarmUps > warmed }, timeout: 2),
+                      "then the warm-up succeeded")
+        pump(until: { false }, timeout: 0.2)
+        vision.ingest(Self.scene)
+        XCTAssertTrue(pump(until: { rig.engine.dryRunReadings[.vision].map { $0.value != "No frames" } ?? false }, timeout: 2),
+                      "the warmed camera's frames read, with no other warm request")
+        rig.engine.stopDryRun()
+    }
+
+    /// A still scene, and the same with a hand across half of it, as the camera's frame tap gives them.
+    private static let scene = VisionFrame(luma: [UInt8](repeating: 100, count: VisionFrame.width * VisionFrame.height))
+    private static let handAcross = VisionFrame(luma: (0..<(VisionFrame.width * VisionFrame.height)).map {
+        $0 % VisionFrame.width < VisionFrame.width / 2 ? UInt8(20) : UInt8(220)
+    })
 
     // MARK: - The trigger response
 
@@ -558,6 +1175,46 @@ final class EngineCharacterizationTests: XCTestCase {
         XCTAssertFalse(pump(until: { rig.store.events.filter { $0.stateChange == "cameraError" }.count > 1 }, timeout: 0.5),
                        "repeats inside the debounce add no record")
         XCTAssertEqual(rig.camera.warmUps.count, warmUpsAfterFirst, "and trigger no further re-warm")
+        rig.engine.disarm()
+    }
+
+    /// A re-warm after a runtime error waits while a flood, blackout or retry capture holds the camera, as it already
+    /// waits for a trip's own capture (item 180's A12). The re-warm when nothing holds it: the test above.
+    func testARuntimeErrorDoesNotRewarmWhileACadenceCaptureHoldsTheCamera() {
+        let rig = makeRig { $0.cameraPosition = .front; $0.cameraReadiness = .instant }   // always warm
+        arm(rig)
+        rig.engine.tripResponder.cadenceCaptureBusy = true   // a flood, blackout or retry capture in flight
+        let warmUpsBefore = rig.camera.warmUps.count
+        rig.camera.onSessionEvent?(.runtimeError("media services were reset"))
+        XCTAssertTrue(pump(until: { rig.store.events.contains { $0.stateChange == "cameraError" } }, timeout: 3),
+                      "the failure is on the record")
+        XCTAssertFalse(pump(until: { rig.camera.warmUps.count > warmUpsBefore }, timeout: 0.5),
+                       "and no re-warm while the capture holds the camera")
+        rig.engine.tripResponder.cadenceCaptureBusy = false
+        rig.engine.disarm()
+    }
+
+    /// The end of an interruption re-warms the camera, but not while a flood, blackout or retry capture holds it (item
+    /// 180's A12).
+    func testAnInterruptionsEndDoesNotRewarmWhileACadenceCaptureHoldsTheCamera() {
+        let rig = makeRig { $0.cameraPosition = .front; $0.cameraReadiness = .instant }   // always warm
+        arm(rig)
+        rig.camera.onSessionEvent?(.interrupted(.anotherApp))
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2))
+        var warmUpsBefore = rig.camera.warmUps.count
+        rig.camera.onSessionEvent?(.interruptionEnded)
+        XCTAssertTrue(pump(until: { rig.camera.warmUps.count > warmUpsBefore }, timeout: 3),
+                      "the control: with nothing holding the camera, the end of an interruption re-warms it")
+
+        rig.engine.tripResponder.cadenceCaptureBusy = true   // a flood, blackout or retry capture in flight
+        rig.camera.onSessionEvent?(.interrupted(.anotherApp))
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice != nil }, timeout: 2))
+        warmUpsBefore = rig.camera.warmUps.count
+        rig.camera.onSessionEvent?(.interruptionEnded)
+        XCTAssertTrue(pump(until: { rig.engine.cameraNotice == nil }, timeout: 2), "the interruption ended")
+        XCTAssertFalse(pump(until: { rig.camera.warmUps.count > warmUpsBefore }, timeout: 0.5),
+                       "and no re-warm while the capture holds the camera")
+        rig.engine.tripResponder.cadenceCaptureBusy = false
         rig.engine.disarm()
     }
 

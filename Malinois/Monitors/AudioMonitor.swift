@@ -62,6 +62,12 @@ final class AudioMonitor: SensorMonitor {
     var currentLevelForTesting: (() -> Double)?
     var recordingForTesting: (() -> Bool)?
     var nowForTesting: (() -> Date)?
+    /// The uptime clock a test drives (item 180's A11).
+    var uptimeForTesting: (() -> TimeInterval)?
+    /// Stands in for the recorder's rebuild, so a test counts restarts without audio (item 180's A11).
+    var restartForTesting: (() -> Void)?
+    /// One level read, as the watching tick takes it (item 180's A11).
+    func levelForTesting() -> Double { currentLevel() }
     func queuedMeterTickForTesting(calibration: Bool) -> () -> Void {
         { [weak self] in
             if calibration { self?.sampleCalibration() } else { self?.evaluate() }
@@ -122,7 +128,8 @@ final class AudioMonitor: SensorMonitor {
         healthy = (recorder != nil) && started
     }
 
-    private var lastRestartAttempt: Date?
+    /// On the uptime clock, which setting the time cannot move (item 180's A11).
+    private var lastRestartAttempt: TimeInterval?
     private let restartBackoff: TimeInterval = 2
 
     private func currentLevel() -> Double {
@@ -136,16 +143,30 @@ final class AudioMonitor: SensorMonitor {
         // stalled — but at most once per `restartBackoff`, so a genuinely unavailable mic
         // (a call in progress, another app holding it) doesn't turn into a 10 Hz session-
         // thrash loop (R-03). The engine also pauses us around clip capture (pauseAudioForCapture).
-        if recorder?.isRecording != true,
-           Date().timeIntervalSince(lastRestartAttempt ?? .distantPast) > restartBackoff {
-            lastRestartAttempt = Date()
+        let now = uptime()
+        if recorder?.isRecording != true, lastRestartAttempt.map({ now - $0 > restartBackoff }) ?? true {
+            lastRestartAttempt = now
             restartRecorder()
         }
         recorder?.updateMeters()
         return Double(recorder?.averagePower(forChannel: 0) ?? -160)
     }
 
+    /// The uptime clock's reading now.
+    private func uptime() -> TimeInterval {
+        #if DEBUG
+        if let uptimeForTesting { return uptimeForTesting() }
+        #endif
+        return ProcessInfo.processInfo.systemUptime
+    }
+
     private func restartRecorder() {
+        #if DEBUG
+        if let restartForTesting {
+            restartForTesting()
+            return
+        }
+        #endif
         recorder?.stop()
         recorder = nil
         makeRecorderIfNeeded()   // rebuilds the session + recorder and calls record()

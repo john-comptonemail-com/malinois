@@ -259,3 +259,17 @@ cap removed the local full capture and no copy is available in iCloud. A cloud c
 deleted after local pruning (ADR 0006's 1.9 amendment). The restored-record rule above is unchanged: a restore explicitly noted in `restoredHolds` remains unchecked, and
 this installation does not adopt an unknown original account. The documented legacy exception also remains:
 a first-hand record bound to no account by 1.8.1 or earlier has no such history note and may still be marked.
+
+## Amendment (2026-10-30, 1.10): a restored record makes no claim for a read
+
+Fable's review of 1.9 (BACKLOG 180's A6): a record the restore held was refused for every read, its empty binding
+matching no account. Its detail screen offered the full capture's download, which then said "Nothing came back",
+and a fetch that met the account's copy of it counted the refusal as a failure. The owner ruled (a) (2026-10-30): a
+record the restore held makes no claim of its own for a read. `authorizeRecord` treats it as a record this phone
+did not make: the account that supplied a copy under its ID (`registerRemoteEvents`) reads it, and before any copy
+was seen there is nothing to read. Every read goes only to the verified account's own iCloud (the lease's
+account), so the pull now brings that account's copy of a restored record as it brings any other. The record's
+upload stays held (`authorizeUpload` is unchanged), and a record held because nothing could upload when it was
+made still refuses a copy under its ID (the 1.8.1 amendment's hold rule). Tests: `CloudEnrollmentTests`
+(`testARestoredHoldMakesNoClaimForAReadAndStaysHeldForItsUpload`); `Item153BindingPruneTests`' held record is
+unchanged.

@@ -4,7 +4,7 @@ These are the project's architecture decision records: one file per decision, wr
 made and amended in place when it changed, as the source cites them ("ADR 0039"). A record that was later
 superseded, suspended or rejected stays here with its status, because the code and later records refer to it.
 The records cite a private findings ledger by item number; those entries are not published, and
-the numbers are kept so the records read as written. Taken from the private repository at commit faab7cd;
+the numbers are kept so the records read as written. Taken from the private repository at commit 0fffadf;
 published with each release from 1.8 on, as the source is.
 
 | Record | Status |
@@ -64,3 +64,10 @@ published with each release from 1.8 on, as the source is.
 | [ADR 0062: In Siren mode the siren plays from this iPhone's speaker](0062-in-siren-mode-the-siren-plays-from-this-iphones-speaker.md) | accepted |
 | [ADR 0063: 1.9 hardening and engine components, in separately verified stages](0063-hardening-and-engine-components-in-separately-verified-stages.md) | accepted |
 | [ADR 0064: A covered proximity sensor may blank the screen while recording: kept, and said](0064-a-covered-proximity-sensor-may-blank-the-screen-while-recording.md) | accepted |
+| [ADR 0065: Evidence signing's format and its shared core](0065-evidence-signings-format-and-its-shared-core.md) | accepted |
+| [ADR 0066: Evidence signing's signer](0066-evidence-signings-signer.md) | accepted |
+| [ADR 0067: Evidence signing's export bundle](0067-evidence-signings-export-bundle.md) | accepted |
+| [ADR 0068: The Mac verifier](0068-the-mac-verifier.md) | accepted |
+| [ADR 0069: Evidence signing: records that leave the log](0069-evidence-signings-records-that-leave-the-log.md) | accepted |
+| [ADR 0070: Evidence signing's export bundle, its check and the Mac verifier, as they stand](0070-evidence-signings-export-bundle-check-and-verifier.md) | accepted |
+| [ADR 0071: Evidence signing: the keys this install certified, kept where a backup cannot change them](0071-evidence-signings-keys-kept-in-the-keychain.md) | accepted |

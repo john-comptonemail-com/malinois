@@ -34,6 +34,8 @@ final class FakeCaptureHost: CapturePipelineHost {
     func syncVisionTap() { visionSyncs += 1 }
     func report(cameraNotice: String?) { notices.append(cameraNotice) }
     func captureCameraBecameAvailable() {}
+    private(set) var quarantines = 0
+    func captureCameraQuarantined() { quarantines += 1 }
     private(set) var lateEvidenceStored = 0
     func captureEvidenceStoredLate() { lateEvidenceStored += 1 }
     func clearCaptureNotice(matching notice: String) {
@@ -341,6 +343,27 @@ final class EvidenceCapturePipelineTests: XCTestCase {
         let next = await pipeline.capture(from: .rear, mode: .photo, illumination: .off)
         XCTAssertNotNil(next.capture)
         XCTAssertEqual(camera.stills.count, 2)
+    }
+
+    /// Item 190's codex-1 on f476178: a timeout quarantines the camera, which shuts it down, and told its host nothing,
+    /// so the engine's Vision went on judging frames. The host hears of it at the timeout, while the stalled still
+    /// still holds the camera, and once.
+    func testATimeoutTellsTheHostItsCameraStoodDown() async {
+        let camera = FakeCamera()
+        camera.holdStills = true
+        var timing = Self.fastTiming
+        timing.captureFinalizationDeadline = 0.03
+        let host = FakeCaptureHost()
+        let pipeline = EvidenceCapturePipeline(camera: camera, timing: timing)
+        pipeline.host = host
+        let outcome = await pipeline.capture(from: .front, mode: .photo, illumination: .off)
+        XCTAssertEqual(outcome.failure, .captureTimedOut)
+        XCTAssertTrue(pipeline.isBusy, "the stalled still still holds the camera")
+        XCTAssertEqual(host.quarantines, 1, "told at the timeout")
+        camera.releaseStills()
+        let drained = await waitUntil { !pipeline.isBusy }
+        XCTAssertTrue(drained, "the stalled still drained")
+        XCTAssertEqual(host.quarantines, 1, "and once")
     }
 
     func testDisarmRearmDuringLightQueryDoesNotStartCaptureOrResumeNewAudio() async {

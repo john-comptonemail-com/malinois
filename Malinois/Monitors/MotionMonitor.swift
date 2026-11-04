@@ -51,15 +51,15 @@ final class MotionMonitor: SensorMonitor {
     /// Motion is the only continuous-stream tripwire (20 Hz). If, while watching, no sample
     /// arrives for `stallThreshold`, the stream has stalled — an OS throttle under pressure, an
     /// interruption nothing reports — and the PRIMARY tripwire is silently deaf with no sign of
-    /// it. Mirrors AudioMonitor's self-heal: restart the updates, bounded by a backoff so a
-    /// genuinely unavailable sensor can't thrash.
-    private var lastSampleAt: Date?
-    private var watchStartedAt: Date?
+    /// it. Mirrors AudioMonitor's self-heal: restart the updates. The stall clock restarts with them, so a
+    /// genuinely unavailable sensor is restarted at most once per `stallThreshold` and cannot thrash (a backoff of 2 s
+    /// beside it could never decide: item 182's undo check). Measured on the uptime clock, which setting the time cannot
+    /// move (item 180's A11): on the calendar clock, a clock set back hid a stall, and one set forward made one.
+    private var lastSampleAt: TimeInterval?
+    private var watchStartedAt: TimeInterval?
     private var watchdog: Timer?
-    private var lastRestartAttempt: Date?
     nonisolated static let stallThreshold: TimeInterval = 3
     private let watchdogInterval: TimeInterval = 1.5
-    private let restartBackoff: TimeInterval = 2
     /// Stalls detected this watch, counted afresh at each `start()`.
     private(set) var stallCount = 0
     /// Called on the main actor after a stall is detected and the restart issued, with this watch's count. The engine
@@ -69,16 +69,23 @@ final class MotionMonitor: SensorMonitor {
     /// Pure (unit-tested): has the stream gone quiet past the threshold? Measured from the last
     /// sample, or from when the watch started if nothing has arrived yet — a stream that never
     /// delivers its first sample is just as deaf as one that stopped.
-    nonisolated static func isStalled(lastSample: Date?, startedAt: Date, now: Date,
+    nonisolated static func isStalled(lastSample: TimeInterval?, startedAt: TimeInterval, now: TimeInterval,
                                       threshold: TimeInterval = stallThreshold) -> Bool {
-        now.timeIntervalSince(lastSample ?? startedAt) > threshold
+        now - (lastSample ?? startedAt) > threshold
     }
 
-    private func checkForStall(now: Date = Date()) {
+    /// The uptime clock's reading now.
+    private func uptime() -> TimeInterval {
+        #if DEBUG
+        if let uptimeForTesting { return uptimeForTesting() }
+        #endif
+        return ProcessInfo.processInfo.systemUptime
+    }
+
+    private func checkForStall(now given: TimeInterval? = nil) {
+        let now = given ?? uptime()
         guard let startedAt = watchStartedAt,
-              Self.isStalled(lastSample: lastSampleAt, startedAt: startedAt, now: now),
-              now.timeIntervalSince(lastRestartAttempt ?? .distantPast) > restartBackoff else { return }
-        lastRestartAttempt = now
+              Self.isStalled(lastSample: lastSampleAt, startedAt: startedAt, now: now) else { return }
         stallCount += 1
         manager.stopDeviceMotionUpdates()
         startUpdates()
@@ -96,30 +103,36 @@ final class MotionMonitor: SensorMonitor {
     /// could watch trips at once; one put back in the same pose cannot be told.
     func resumeAfterSuspension() {
         guard watchStartedAt != nil else { return }   // not watching
-        watchStartedAt = Date()
+        watchStartedAt = uptime()
         lastSampleAt = nil
     }
 
     #if DEBUG
+    /// The uptime clock a test drives (item 180's A11).
+    var uptimeForTesting: (() -> TimeInterval)?
+
     /// A watch the test drives in place of CoreMotion, which the Simulator lacks (item 153's MAL-06): the pose learned
     /// at calibration, and the watch started at `start`.
     func startWatchingForTesting(at start: Date, restingGravity gravity: (x: Double, y: Double, z: Double)) {
         restingGravity = gravity
         sessionRestingGravity = gravity
         hasTripped = false
-        watchStartedAt = start
+        watchStartedAt = uptime(at: start)
         lastSampleAt = nil
         stallCount = 0
     }
 
     /// One sample as CoreMotion would deliver it, at `time`.
     func sampleForTesting(gravity: (x: Double, y: Double, z: Double), accel: Double = 0, at time: Date) {
-        lastSampleAt = time
+        lastSampleAt = uptime(at: time)
         evaluate(gravity: CMAcceleration(x: gravity.x, y: gravity.y, z: gravity.z), accelMagnitude: accel)
     }
 
     /// The watchdog's check, as its timer runs it, at `now`.
-    func checkForStallForTesting(now: Date) { checkForStall(now: now) }
+    func checkForStallForTesting(now: Date) { checkForStall(now: uptime(at: now)) }
+
+    /// A test's date, as the uptime clock reads it: its distance from now, from the clock's reading now.
+    private func uptime(at date: Date) -> TimeInterval { uptime() + date.timeIntervalSinceNow }
     #endif
 
     /// The update stream itself, separated out so the watchdog can restart it in place.
@@ -132,7 +145,7 @@ final class MotionMonitor: SensorMonitor {
             let a = motion.userAcceleration
             let mag = sqrt(a.x*a.x + a.y*a.y + a.z*a.z)
             Task { @MainActor in
-                self.lastSampleAt = Date()
+                self.lastSampleAt = self.uptime()
                 self.evaluate(gravity: g, accelMagnitude: mag)
             }
         }
@@ -261,7 +274,7 @@ final class MotionMonitor: SensorMonitor {
         guard manager.isDeviceMotionAvailable else { return }
         hasTripped = false
         traceBuffer.removeAll()
-        watchStartedAt = Date()
+        watchStartedAt = uptime()
         lastSampleAt = nil
         stallCount = 0
         startUpdates()

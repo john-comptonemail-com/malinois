@@ -162,9 +162,10 @@ extension MonitoringCloudCoordinator {
         // The files the log's copy names once the pin holds, not those of the copy this upload was handed: the byte limit
         // may have discarded them in between, and a dropped file still on disk while its write fails must not land after
         // the discard (item 166's codex-27). A row gone from the log keeps its copy's files, as before.
+        // By the store's rule for a name from the log: one that is not a plain file name sends no file (item 187).
         let attached = eventStore.events.first { $0.id == event.id } ?? event
-        let mediaURL = attached.mediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
-        let secondaryURL = attached.secondaryMediaFilename.map { eventStore.mediaDirectory.appendingPathComponent($0) }
+        let mediaURL = eventStore.mediaURL(for: attached)
+        let secondaryURL = eventStore.secondaryMediaURL(for: attached)
         let outcome: CloudExfiltrator.ExfilOutcome
         #if DEBUG
         if let push = evidencePushForTesting {

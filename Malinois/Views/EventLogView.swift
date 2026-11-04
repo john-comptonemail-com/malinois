@@ -230,9 +230,9 @@ struct EventRow: View {
                 Text(event.startDate, format: .dateTime.month().day().hour().minute().second())
                     .font(.subheadline.weight(.semibold))
                 Text(event.sensorSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .font(Self.isAlarm(event) ? .caption.weight(.semibold) : .caption)
+                    .foregroundStyle(Self.summaryColor(for: event).map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
+                    .lineLimit(Self.summaryLineLimit(for: event))
                 HStack(spacing: 6) {
                     if event.ownerAttributed == true {
                         Label("You (disarm)", systemImage: "person.fill.checkmark")
@@ -265,6 +265,19 @@ struct EventRow: View {
         .opacity(event.ownerAttributed == true ? 0.5 : 1)
     }
 
+    /// A row the owner must not miss: the evidence signer's lines, signed records gone from the log other than by its
+    /// limit (item 182; the owner, 2026-10-31: "could we make those 'no longer in the log' entries red or somehow
+    /// otherwise highlight them? Easy to miss as they are") and signatures missing (item 190's A3). Static so a test can
+    /// read it.
+    static func isAlarm(_ event: Event) -> Bool { Event.isSignerLine(event) }
+
+    /// The summary's color for a row the owner must not miss, red; nil keeps the secondary style.
+    static func summaryColor(for event: Event) -> Color? { isAlarm(event) ? .red : nil }
+
+    /// How many lines the summary may take: no limit for a row the owner must not miss, its whole sentence at every text
+    /// size (three lines cut it at the larger ones: item 190's claude-1); one otherwise.
+    static func summaryLineLimit(for event: Event) -> Int? { isAlarm(event) ? nil : 1 }
+
     private var isVideo: Bool { event.mediaFilename?.lowercased().hasSuffix(".mov") ?? false }
 
     @ViewBuilder
@@ -286,9 +299,10 @@ struct EventRow: View {
                 }
         } else {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.15))
+                .fill(Self.isAlarm(event) ? Color.red.opacity(0.15) : Color.secondary.opacity(0.15))
                 .frame(width: 52, height: 52)
-                .overlay(Image(systemName: Self.placeholderIcon(for: event.stateChange)).foregroundStyle(.secondary))
+                .overlay(Image(systemName: Self.placeholderIcon(for: event.stateChange))
+                    .foregroundStyle(Self.summaryColor(for: event).map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary)))
         }
     }
 
@@ -318,6 +332,8 @@ struct EventRow: View {
         case let kind? where Event.clockChangeSeconds(kind: kind) != nil: return "clock.badge.exclamationmark"   // item 113
         case let kind? where Event.resumedSeconds(kind: kind) != nil: return "eye"   // item 153's MAL-06
         case let kind? where Event.sirenElsewhereDevice(kind: kind) != nil: return "headphones"   // 1.8.2's step 26
+        case let kind? where Event.signedRecordsGone(kind: kind) != nil || kind == Event.signaturesMissingKind:
+            return "exclamationmark.triangle.fill"   // items 182 and 190, in red
         default:         return "camera.metering.none"
         }
     }

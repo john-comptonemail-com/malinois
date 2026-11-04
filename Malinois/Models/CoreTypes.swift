@@ -70,7 +70,7 @@ enum SensorType: String, Codable, CaseIterable, Identifiable {
         case .power:     return "Plug in or unplug the charging cable."
         case .proximity: return "Cover the top of the phone near the front camera. The screen turns off while it's covered - that IS the sensor working; you'll see the count go up when you uncover."
         case .audio:     return "Clap or speak close to the phone."
-        case .vision:    return "Wave a hand in front of the camera. Needs the camera warm - plug in (Auto) or use Instant mode; on battery it shows \"No frames\"."
+        case .vision:    return "Wave a hand in front of the camera. Needs the camera warm, as when armed: Instant mode, or Auto while charging; otherwise it shows \"No frames\"."
         case .camera:    return "Captures evidence on any trigger."
         case .touch:     return "Tap the pad below."
         }

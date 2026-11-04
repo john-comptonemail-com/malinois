@@ -779,6 +779,115 @@ enum KeychainService {
         return (status, result as? Data)
     }
 
+    // MARK: - The event limit's removals (item 182; codex-1 on 73441cbe, the owner's "1 - a")
+
+    private static let limitRemovalsKeyAccount = "com.malinois.limitRemovals.key"
+
+    /// The key that checks the event limit's removals on disk (`EventStore`'s `limit-removals.json`): 32 random bytes,
+    /// for this device only and readable after the first unlock (the log is written while the phone is locked). No
+    /// backup restores it onto another iPhone, and none hands it to whoever edits the backup. Made when `create` and
+    /// there is none (an add only, never over an item that could not be read); nil when there is none, or it cannot be
+    /// read now.
+    static func limitRemovalsKey(create: Bool) -> SymmetricKey? {
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: limitRemovalsKeyAccount
+        ]
+        var query = item
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data, data.count == 32 { return SymmetricKey(data: data) }
+        guard create, status == errSecItemNotFound else { return nil }
+        let key = SymmetricKey(size: .bits256)
+        var attrs = item
+        attrs[kSecValueData as String] = key.withUnsafeBytes { Data($0) }
+        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess ? key : nil
+    }
+
+    #if DEBUG
+    /// Test-only: how the removals' key is kept (its item's accessibility and whether it syncs), nil when there is none.
+    static func limitRemovalsKeyKeptForTesting() -> (accessible: String, synchronizable: Bool)? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: limitRemovalsKeyAccount,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any],
+              let accessible = attributes[kSecAttrAccessible as String] as? String else { return nil }
+        return (accessible, (attributes[kSecAttrSynchronizable as String] as? Bool) ?? false)
+    }
+
+    /// Test-only: removes the removals' key, so the next write makes it afresh.
+    static func deleteLimitRemovalsKeyForTesting() { delete(account: limitRemovalsKeyAccount) }
+    #endif
+
+    // MARK: - The evidence signer's list of certified keys (item 190's A3, the owner's "a")
+
+    private static let evidenceKeyListAccount = "com.malinois.evidence.keys"
+
+    /// The keys this install certified, as the evidence signer keeps them (`EvidenceKeyList`): for this device only and
+    /// readable after the first unlock, never synced. An empty list when there is none; nil when it cannot be read now.
+    /// A list that cannot be decoded reads as empty, so the signer's next read rebuilds it from the signature file.
+    static func evidenceKeyList() -> EvidenceKeyList? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: evidenceKeyListAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return EvidenceKeyList() }
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return (try? JSONDecoder().decode(EvidenceKeyList.self, from: data)) ?? EvidenceKeyList()
+    }
+
+    /// Keeps `list` in place of the one kept; false when it could not.
+    static func setEvidenceKeyList(_ list: EvidenceKeyList) -> Bool {
+        guard let data = try? JSONEncoder().encode(list) else { return false }
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: evidenceKeyListAccount
+        ]
+        let status = SecItemUpdate(item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+        var attrs = item
+        attrs[kSecValueData as String] = data
+        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+    }
+
+    #if DEBUG
+    /// Test-only: how the list is kept (its item's accessibility and whether it syncs), nil when there is none.
+    static func evidenceKeyListKeptForTesting() -> (accessible: String, synchronizable: Bool)? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: evidenceKeyListAccount,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any],
+              let accessible = attributes[kSecAttrAccessible as String] as? String else { return nil }
+        return (accessible, (attributes[kSecAttrSynchronizable as String] as? Bool) ?? false)
+    }
+
+    static func deleteEvidenceKeyListForTesting() { delete(account: evidenceKeyListAccount) }
+    #endif
+
     private static func delete(account: String, synchronizable: Bool = false) {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

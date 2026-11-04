@@ -208,4 +208,32 @@ final class Item57WatchAlertsTests: XCTestCase {
         let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
         XCTAssertTrue(delegate.contains("requestAuthorization(options: [.alert, .sound])"))
     }
+
+    /// The watch's two iCloud status reads each end at their deadline (item 180's codex-5): a stalled read leaves the
+    /// screen saying it could not check, not its last answer, and neither waits for it. An answer in time is the answer.
+    func testTheWatchsCloudReadsEndAtTheirDeadline() async throws {
+        let start = ContinuousClock.now
+        let account = await WatchCloudCheck.account(within: 0.2) { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            return .available
+        }
+        XCTAssertEqual(account, .unknown)
+        let subscriptions = await WatchCloudCheck.subscriptions(within: 0.2) { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            return .found
+        }
+        XCTAssertEqual(subscriptions, .unreadable(WatchCloudCheck.pastDeadline))
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(3), "neither waited for its stalled read")
+        let inTime = await WatchCloudCheck.account(within: 2) { @MainActor in .available }
+        XCTAssertEqual(inTime, .available)
+        XCTAssertEqual(WatchAlertStatus.describe(.init(subscriptions: .unreadable(WatchCloudCheck.pastDeadline))).detail,
+                       "iCloud didn't answer: The check took longer than 20 seconds. Open Malinois on the watch again later.")
+    }
+
+    /// The watch's app delegate reads both through the deadline (codex-5).
+    func testTheWatchReadsItsCloudStatusThroughTheDeadline() throws {
+        let delegate = try text("MalinoisWatch/WatchAppDelegate.swift")
+        XCTAssertTrue(delegate.contains("WatchCloudCheck.account {"))
+        XCTAssertTrue(delegate.contains("WatchCloudCheck.subscriptions {"))
+    }
 }

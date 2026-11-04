@@ -259,3 +259,13 @@ Regression cases: `Item166ReviewTests.testACheckWhoseReadNeverAnswersEndsAtTheDe
 operation held unanswered through a test hook in place of the database, `Item166ReviewTests`' check, latest-beat and
 full-download cases (the download's stall and its caller's cancel) and `Item152SettingsGuardTests`' listing and warm-up
 cases. The Simulator has no iCloud container: a live CloudKit answer, progress and partial failure stay unexercised.
+
+## Amendment (2026-10-30, 1.10): the watch's two reads have deadlines too
+
+The amendment above bounded the iPhone's reads. The watch app's two, its account check and the alert subscription's
+listing, still raced none, so a stalled one left the watch's alert screen on its last answer (BACKLOG 180's
+codex-5). Now each races the same 20 s (`WatchCloudCheck`, as `WatchRelayInbox.readList` races its list): past it
+the account reads as not known, and the subscription as "couldn't check", with the reason "The check took longer
+than 20 seconds." The watch uses CloudKit's async calls, which a deadline cannot stop: a read past its deadline
+runs on, and its answer is dropped. Regression cases: `Item57WatchAlertsTests` (reads that never answer, and the
+app delegate reading through the deadline).

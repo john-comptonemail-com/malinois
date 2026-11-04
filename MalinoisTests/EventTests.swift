@@ -1517,11 +1517,12 @@ final class EventTests: XCTestCase {
         seeded.append(try XCTUnwrap(EventStore.journalLine(for: old)))
         try seeded.write(to: journal)
 
-        // A relaunch: recovery resurrects the old event, the cap evicts it again…
+        // A relaunch: recovery brings back the event whose write never landed, the last thing that came in, so it stays
+        // first whatever its time and the cap takes the log's oldest arrival instead (item 182, codex-1 on 995f7d98: never a
+        // sort by time, which a clock set back would steer)…
         let store = EventStore()
-        XCTAssertFalse(store.events.contains { $0.id == old.id },
-                       "the recovered old event is over-cap — evicted immediately")
-        // …and the line must now RETIRE once the persist lands (poll past the async tail).
+        XCTAssertEqual(store.events.first?.id, old.id, "the recovered event came in last: kept, first")
+        // …and the line must RETIRE once the persist lands (poll past the async tail), never resurrecting at every launch.
         var lineGone = false
         for _ in 0..<20 {
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -1532,7 +1533,7 @@ final class EventTests: XCTestCase {
             }
         }
         XCTAssertTrue(lineGone,
-                      "the evicted-at-recovery event's journal line retires — it must not resurrect at every launch")
+                      "the recovered event's journal line retires — it must not resurrect at every launch")
     }
 
     /// BACKLOG 53: every birth-line append is full-synced before `add` returns — the barrier

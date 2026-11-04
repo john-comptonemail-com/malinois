@@ -440,6 +440,8 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "unsyncedRemoved":   return "Events not fully backed up to iCloud were removed to make room (log full)"   // items 114, 116
         case "reArmSkipped":      return "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming itself"   // item 153's MAL-10
         case "settingsReset":     return "Settings couldn't be read and were reset to their defaults"   // codex-10
+        case Self.signaturesMissingKind?:   // item 190's A3
+            return "Signatures this iPhone made earlier are missing: its earlier events can no longer be shared signed"
         case "backupOff":         return "iCloud backup turned off: events recorded while it is off are never uploaded"   // item 115; item 168's deepseek-2
         case "backupOn":          return "iCloud backup turned on"
         default:         break
@@ -448,6 +450,7 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         if let kind = stateChange, let words = Self.clockChangeSummary(kind: kind) { return words }   // item 113
         if let kind = stateChange, let words = Self.resumedSummary(kind: kind) { return words }   // item 153's MAL-06
         if let kind = stateChange, let words = Self.sirenElsewhereSummary(kind: kind) { return words }   // 1.8.2's step 26
+        if let kind = stateChange, let words = Self.signedRecordsGoneSummary(kind: kind) { return words }   // item 182
         // A status entry this build does not know (a newer build's kind, or a damaged log) is
         // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
         // kinds; this covers the local log (item 105, F-09).
@@ -475,6 +478,73 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         }
         if let n = sustainedCount, n > 1 { return "\(base), sustained ×\(n)" }
         return base
+    }
+
+    // MARK: - Signatures missing from the signature file (item 190's A3, the owner's "a")
+
+    /// The status kind for signatures this iPhone made that the signature file had lost, the Keychain's list of its keys
+    /// showing it (an edited backup restored): its earlier records can no longer be shared signed.
+    static let signaturesMissingKind = "signaturesMissing"
+
+    /// Whether `event` is one of the evidence signer's lines in the log, placed by its time rather than first: a
+    /// statement that signed records left the log (item 182), or that signatures are missing (item 190).
+    static func isSignerLine(_ event: Event) -> Bool {
+        guard let kind = event.stateChange else { return false }
+        return kind == signaturesMissingKind || signedRecordsGone(kind: kind) != nil
+    }
+
+    // MARK: - Signed records no longer in the log (item 182; the owner's "a", "2 - a" and wording, 2026-10-31)
+
+    private static let signedRecordsGonePrefix = "signedRecordsGone."
+
+    /// The status kind for signed records that left the log other than by its limit (item 182): their count, then the
+    /// first and last of their starts in whole seconds since 1970 by the phone's clock, "signedRecordsGone.3.<first>.<last>";
+    /// "signedRecordsGone.3" when their starts are not known. The counts and times ride in the kind, so the cloud record
+    /// needs no new field.
+    static func signedRecordsGoneKind(count: Int, first: Date?, last: Date?) -> String {
+        guard let first = first.flatMap(wholeSeconds), let last = last.flatMap(wholeSeconds) else {
+            return signedRecordsGonePrefix + String(count)
+        }
+        return signedRecordsGonePrefix + "\(count).\(first).\(last)"
+    }
+
+    /// What a signed-records-gone kind records; nil for any other kind or a malformed one: only the numbers as
+    /// `signedRecordsGoneKind` writes them, at least one record, the first time not after the last, one time for one
+    /// record, and times from 1970 to 3000.
+    static func signedRecordsGone(kind: String) -> (count: Int, first: Date?, last: Date?)? {
+        guard kind.hasPrefix(signedRecordsGonePrefix) else { return nil }
+        let parts = kind.dropFirst(signedRecordsGonePrefix.count).split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 3, let count = Int(parts[0]), String(count) == parts[0],
+              count >= 1, count <= 1_000_000 else { return nil }
+        guard parts.count == 3 else { return (count, nil, nil) }
+        guard let first = Int64(parts[1]), String(first) == parts[1], let last = Int64(parts[2]), String(last) == parts[2],
+              first >= 0, first <= last, last <= 32_503_680_000, count > 1 || first == last else { return nil }
+        return (count, Date(timeIntervalSince1970: TimeInterval(first)), Date(timeIntervalSince1970: TimeInterval(last)))
+    }
+
+    /// "A signed record from Oct 14, 9:03 PM is no longer in the log", or "3 signed records, from Oct 14, 9:03 PM to
+    /// Oct 15, 8:10 AM, are no longer in the log" (the owner's approved words, 2026-10-31), the times as the watch's
+    /// alerts show them; without times, "A signed record is no longer in the log" or "3 signed records are no longer in
+    /// the log". nil unless `kind` is one.
+    static func signedRecordsGoneSummary(kind: String) -> String? {
+        guard let gone = signedRecordsGone(kind: kind) else { return nil }
+        guard let first = gone.first, let last = gone.last else {
+            return gone.count == 1 ? "A signed record is no longer in the log" : "\(gone.count) signed records are no longer in the log"
+        }
+        if gone.count == 1 { return "A signed record from \(goneTime(first)) is no longer in the log" }
+        return "\(gone.count) signed records, from \(goneTime(first)) to \(goneTime(last)), are no longer in the log"
+    }
+
+    /// A time as the watch's alerts show one ("Oct 14, 9:03 PM", in the phone's own format).
+    private static func goneTime(_ date: Date) -> String {
+        "\(date.formatted(.dateTime.month(.abbreviated).day())), \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    /// Whole seconds since 1970, rounded down; nil for a time a kind cannot carry.
+    private static func wholeSeconds(_ date: Date) -> Int64? {
+        let seconds = date.timeIntervalSince1970.rounded(.down)
+        guard seconds.isFinite, seconds >= 0, seconds <= 32_503_680_000 else { return nil }
+        return Int64(seconds)
     }
 
     // MARK: - Clock changes (item 113)

@@ -535,7 +535,8 @@ final class Item116ReviewTests: XCTestCase {
             Event(startDate: day.addingTimeInterval(Double(10_000 + i)), endDate: day, triggeredSensors: [],
                   cloudSyncState: .pending, stateChange: "thermalSerious")
         }
-        store.merge(incidents + statuses)
+        // This phone's rows handed to a merge come first as given, the newest first (item 182, codex-1 on 995f7d98).
+        store.merge(Array((incidents + statuses).reversed()))
         XCTAssertFalse(store.events.contains { $0.id == oldest.id }, "the incident was trimmed")
         var delivered: [Event] = []
         store.onCountEviction = { removed, _ in delivered.append(contentsOf: removed) }

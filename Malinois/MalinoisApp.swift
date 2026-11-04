@@ -27,6 +27,10 @@ struct MalinoisApp: App {
     @StateObject private var engine: MonitoringEngine
     /// Sends this iPhone's own alerts straight to its paired watch (item 57, ADR 0043).
     private let watchRelay: WatchAlertRelay
+    /// Signs this iPhone's records after each write of the log (item 90, ADR 0065).
+    private let evidenceSigning: EvidenceSigning
+    /// Makes a signed record's export bundle for Share (item 90, phase 4; ADR 0067).
+    private let evidenceExporter: EvidenceExporter
 
     #if DEBUG
     /// Set when this app builds its services (item 84): a unit test asserts that the test
@@ -40,6 +44,8 @@ struct MalinoisApp: App {
         #endif
         let services = Self.makeServices()
         self.watchRelay = services.watchRelay
+        self.evidenceSigning = services.evidenceSigning
+        self.evidenceExporter = services.evidenceExporter
         _settings = StateObject(wrappedValue: services.settings)
         _eventStore = StateObject(wrappedValue: services.eventStore)
         _cloud = StateObject(wrappedValue: services.cloud)
@@ -56,6 +62,9 @@ struct MalinoisApp: App {
         let camera: CameraController
         let entitlements: ProEntitlements
         let watchRelay: WatchAlertRelay
+        let evidenceSigning: EvidenceSigning
+        /// Makes a signed record's export bundle for Share (item 90, phase 4).
+        let evidenceExporter: EvidenceExporter
         let engine: MonitoringEngine
     }
 
@@ -71,6 +80,7 @@ struct MalinoisApp: App {
         Task.detached(priority: .background) {
             CameraController.sweepOrphanedClips()
             CameraController.sweepPendingClipsAtLaunch()
+            EvidenceExporter.removeLeftovers()   // a share's bundle the app ended before removing (item 90, phase 4)
         }
         // Before this launch can start any upload; repeated construction preserves assets still in use.
         CloudExfiltrator.sweepOrphanedThumbnails()
@@ -90,13 +100,23 @@ struct MalinoisApp: App {
         let watchRelay = WatchAlertRelay(store: eventStore, settings: settings, entitlements: entitlements,
                                          send: relaySend)
         watchRelay.start()
+        // Before the engine too, so the records it writes at launch are signed (item 90, phase 2).
+        let evidenceSigning = EvidenceSigning(store: eventStore)
         let engine = MonitoringEngine(settings: settings,
                                       eventStore: eventStore,
                                       cloud: cloud,
                                       camera: camera,
                                       entitlements: entitlements)
+        // The signer's lines in the event log (item 182): a signed record that left the log other than by its limit.
+        evidenceSigning.writeLines { [weak engine] kind, id, at in
+            guard let engine else { return false }
+            engine.logSignerLine(kind, id: id, at: at)
+            return true
+        }
+        let evidenceExporter = EvidenceExporter(signer: evidenceSigning.signer, mediaDirectory: eventStore.mediaDirectory)
         return Services(settings: settings, eventStore: eventStore, cloud: cloud, camera: camera,
-                        entitlements: entitlements, watchRelay: watchRelay, engine: engine)
+                        entitlements: entitlements, watchRelay: watchRelay, evidenceSigning: evidenceSigning,
+                        evidenceExporter: evidenceExporter, engine: engine)
     }
 
     var body: some Scene {
@@ -108,6 +128,7 @@ struct MalinoisApp: App {
                 .environmentObject(cloud)
                 .environmentObject(camera)
                 .environmentObject(entitlements)
+                .environment(\.evidenceExporter, evidenceExporter)
                 .task {
                     // Registration needs no permission and feeds the CloudKit pushes; the
                     // permission to SHOW an alert is asked in context instead (item 69).

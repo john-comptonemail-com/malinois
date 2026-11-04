@@ -164,3 +164,60 @@ struct WatchAlertStatus: Equatable {
         return lines
     }
 }
+
+/// The watch's two iCloud status reads, the account and the subscription listing, each held to a deadline (item 180's
+/// codex-5): a read that does not answer in time leaves the screen saying it could not check, not its last answer.
+/// Foundation-only like the rest of this file, so the iPhone test suite checks it with reads that never answer.
+enum WatchCloudCheck {
+    /// Each read's deadline, the one the iPhone's reads without files have (item 180's A2).
+    static let readDeadline: TimeInterval = 20
+    /// The screen's reason when the subscription listing is past its deadline.
+    static let pastDeadline = "The check took longer than 20 seconds."
+
+    /// The account read's answer, or `.unknown` when it does not come within `deadline`.
+    @MainActor
+    static func account(within deadline: TimeInterval = WatchCloudCheck.readDeadline,
+                        read: @escaping @MainActor @Sendable () async -> WatchAlertStatus.Account)
+        async -> WatchAlertStatus.Account {
+        await first(read, within: deadline, orElse: .unknown)
+    }
+
+    /// The subscription listing's answer, or `.unreadable(pastDeadline)` when it does not come within `deadline`.
+    @MainActor
+    static func subscriptions(within deadline: TimeInterval = WatchCloudCheck.readDeadline,
+                              read: @escaping @MainActor @Sendable () async -> WatchAlertStatus.Subscriptions)
+        async -> WatchAlertStatus.Subscriptions {
+        await first(read, within: deadline, orElse: .unreadable(pastDeadline))
+    }
+
+    /// The read's answer, or `late` when it does not come within `deadline`, as `WatchRelayInbox.readList` races its
+    /// list. A read past its deadline still runs to its end, and its answer is dropped.
+    @MainActor
+    private static func first<T: Sendable>(_ read: @escaping @MainActor @Sendable () async -> T,
+                                           within deadline: TimeInterval, orElse late: T) async -> T {
+        await withCheckedContinuation { (done: CheckedContinuation<T, Never>) in
+            let answer = OneAnswer()
+            Task { @MainActor in
+                let value = await read()
+                if answer.claim() { done.resume(returning: value) }
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, deadline) * 1_000_000_000))
+                if answer.claim() { done.resume(returning: late) }
+            }
+        }
+    }
+}
+
+/// Which of a read and its deadline answered first (`WatchCloudCheck`).
+@MainActor
+private final class OneAnswer {
+    private var given = false
+
+    /// True the first time only.
+    func claim() -> Bool {
+        guard !given else { return false }
+        given = true
+        return true
+    }
+}

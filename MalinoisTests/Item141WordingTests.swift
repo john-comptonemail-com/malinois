@@ -153,16 +153,34 @@ final class Item141WordingTests: XCTestCase {
 
     /// No string in the app, its watch app or their extensions, and no Info.plist value, speaks of theft.
     func testNoTextInTheAppSpeaksOfTheft() throws {
+        XCTAssertEqual(try Self.theftWordFindings(under: Self.root), [], "the app's words speak of theft")
+    }
+
+    /// The sweep fails when it reads no file (item 181's point 1): on Xcode Cloud's test machine, which has no copy of
+    /// the repository, it found no file, so nothing to flag, and passed.
+    func testTheTheftWordSweepFailsWhenItReadsNoFile() throws {
+        let empty = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MalinoisItem181Empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        XCTAssertEqual(try Self.theftWordFindings(under: empty), ["the sweep read no file under \(empty.path)"])
+    }
+
+    /// Each string or Info.plist line in the app's four folders under `root` that speaks of theft, as "file:line:
+    /// text"; and a finding of its own when it read no file at all, as on a machine without the repository.
+    static func theftWordFindings(under root: URL) throws -> [String] {
         let words = try NSRegularExpression(pattern: #"\b(theft|thief|thieves|stolen)\b|switched off or taken"#,
                                             options: [.caseInsensitive])
         let literal = try NSRegularExpression(pattern: #""(?:[^"\\\n]|\\.)*""#)
         var found: [String] = []
+        var read = 0
         for folder in ["Malinois", "MalinoisWatch", "MalinoisNotificationService", "MalinoisWatchNotificationService"] {
-            let files = FileManager.default.enumerator(at: Self.root.appendingPathComponent(folder),
+            let files = FileManager.default.enumerator(at: root.appendingPathComponent(folder),
                                                        includingPropertiesForKeys: nil)
             while let url = files?.nextObject() as? URL {
                 guard ["swift", "plist", "strings", "xcstrings"].contains(url.pathExtension) else { continue }
                 let text = try String(contentsOf: url, encoding: .utf8)
+                read += 1
                 for (index, line) in text.components(separatedBy: "\n").enumerated() {
                     let code = url.pathExtension == "swift"
                     if code && line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
@@ -176,6 +194,7 @@ final class Item141WordingTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(found, [], "the app's words speak of theft")
+        if read == 0 { found.append("the sweep read no file under \(root.path)") }
+        return found
     }
 }

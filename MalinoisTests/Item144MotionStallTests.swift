@@ -164,4 +164,17 @@ final class Item144MotionStallTests: XCTestCase {
         XCTAssertTrue(WatchAlertRelay.alerts(for: [stateEvent("motionStalled")], alertsOn: true, proActive: true).isEmpty,
                       "nothing relayed to the watch")
     }
+
+    /// The stall watchdog measures uptime, not the calendar clock (item 180's A11): a clock set back or forward neither
+    /// hides a stall nor makes one. Five seconds of uptime with no sample is a stall, however little the calendar clock
+    /// moved meanwhile.
+    func testTheStallWatchdogMeasuresUptime() {
+        let motion = MotionMonitor()
+        var uptime: TimeInterval = 1_000
+        motion.uptimeForTesting = { uptime }
+        motion.startWatchingForTesting(at: Date(), restingGravity: (0, 0, -1))
+        uptime += 5   // five seconds of uptime, and no sample
+        motion.checkForStallForTesting(now: Date())
+        XCTAssertEqual(motion.stallCount, 1)
+    }
 }

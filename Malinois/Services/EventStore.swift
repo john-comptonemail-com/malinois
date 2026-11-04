@@ -10,6 +10,7 @@
 import Foundation
 import OSLog
 import Combine
+import CryptoKit
 import UIKit
 
 @MainActor
@@ -42,7 +43,9 @@ final class EventStore: ObservableObject {
     /// deferred or failed since: the one state in which a record missing from it is provably
     /// not on disk either. Item 52's follow-up 2 adds the log's own arm records to the
     /// heartbeat's list of watches only then, before count migration can remove arm rows;
-    /// a log still locked after a restart, or one started fresh, reads as empty.
+    /// a log still locked after a restart, or one started fresh, reads as empty. Item 90's
+    /// signer reads it at each write: a signed record missing from a log this launch did not
+    /// read left with that log, and was not retired by the limit.
     var hasReadTheLog: Bool { loadedCleanly && !loadFailed && !awaitingUnlock }
 
     /// True while a deferred load reads the log at unlock (item 57, the 1.6 review's finding 1):
@@ -155,6 +158,10 @@ final class EventStore: ObservableObject {
     /// BACKLOG 176's codex-3: the writer stops before renaming a file that replaces one, leaving its temporary file, as
     /// a kill there would.
     nonisolated(unsafe) static var killBeforeReplacingForTesting = false
+    /// Item 182 (codex-2 on 995f7d98): the log's full sync before a journal checkpoint fails, as a disk refusing it would.
+    nonisolated(unsafe) static var fullSyncFailsForTesting = false
+    /// The journal's open for an append fails, as a refused open would (item 187's round B, qwen-5).
+    nonisolated(unsafe) static var journalOpenFailsForTesting = false
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -188,6 +195,35 @@ final class EventStore: ObservableObject {
     private var rootURL: URL { Self.ensured(root) }
     private var metadataURL: URL { rootURL.appendingPathComponent("events.json") }
     var mediaDirectory: URL { Self.mediaDirectoryURL(in: root) }
+    /// Where evidence signing keeps its signatures: beside the log, in a file of their own (BACKLOG item 90; the
+    /// owner's ruling of 2026-10-31, "1 - a").
+    nonisolated var evidenceSignaturesURL: URL { root.appendingPathComponent(EvidenceSignatureFile.name) }
+
+    /// Hears each write of the log once it is on disk (item 90's signer): the write's number, rising, and the events
+    /// written. Called on the main actor after the write, never on a trigger's path.
+    var onDurableWrite: ((Int, [Event]) -> Void)?
+    /// The number of the last write queued, for `onDurableWrite`.
+    private var writesQueued = 0
+    /// This phone's own records in the log as the store first read it: at launch, or at the unlock when the launch could
+    /// not read it; nil until then. The signer tells by it history the log kept from a reinstall's empty log (item 190's
+    /// codex-2 and deepseek-3 on b7702f5, the owner's "a").
+    private(set) var logReadAtLaunch: Set<UUID>?
+    /// Told `logReadAtLaunch` when it comes after the signer was made (the unlock).
+    var onLogRead: ((Set<UUID>) -> Void)?
+
+    /// Keeps this phone's own records in the log as read, once it can be written, and tells `onLogRead`: at launch no one
+    /// listens yet, and the signer reads `logReadAtLaunch`.
+    private func noteTheLogRead(_ onDisk: [Event]) {
+        guard acceptsWrites else { return }
+        let read = Set(onDisk.filter { !$0.isMirrored }.map(\.id))
+        logReadAtLaunch = read
+        onLogRead?(read)
+    }
+
+    /// Whether the log may be written now: its load is not waiting for the phone's unlock and did not fail. The records
+    /// in memory are then the log's, on a first launch with no log too (item 90's signer notes them when this install's
+    /// key is first certified, never to be signed).
+    var acceptsWrites: Bool { !loadFailed && !awaitingUnlock }
 
     /// - Parameter protectedDataAvailable: whether the device's protected data can be read; UIKit's
     ///   answer unless a test injects one.
@@ -195,26 +231,54 @@ final class EventStore: ObservableObject {
         root = Self.resolvedRoot()
         self.protectedDataAvailable = protectedDataAvailable
         load()
+        let onDisk = events, writesAtLoad = writesQueued   // the log as read, for the signer (item 182, codex-3)
+        noteTheLogRead(onDisk)
         loadReportsOwed()   // item 166's A1: before the journal's recovery and the launch trims add their own (codex-22)
+        loadLimitRemovals()   // item 182: before the journal's recovery too, whose log write writes them (codex-3)
         recoverFromJournal()
         dropReportsOwedForEventsHeld()   // the journal may have brought one back
+        dropLimitRemovalsHeld()          // or a removal's record
         enforceCountCapsAfterLoad()
         recoverMediaAttachments()
         attachWaitingClips()   // a clip a sealed phone kept waiting before the app ended (step 63)
         writeBackBoundedCopies()
         sweepOrphanedMedia()
         establishSeenMark()   // item 81
+        handTheSignerTheLogRead(onDisk, writesAtLoad: writesAtLoad)
+    }
+
+    /// Tells the signer the log on disk as the store read it, when no write follows to tell it (item 182, codex-3 on
+    /// 68bd96b3, the owner's "a"), so the signer compares at launch, or at the unlock, not only at the first write. Not
+    /// while the load failed or waits for the unlock, and not once a write is queued, whose own notice holds the log as
+    /// written. After the caller's work, so the signer's hearing is set up first at launch.
+    private func handTheSignerTheLogRead(_ onDisk: [Event], writesAtLoad: Int) {
+        guard acceptsWrites, writesQueued == writesAtLoad else { return }
+        writesQueued += 1
+        let writeNumber = writesQueued
+        Task { @MainActor [weak self] in self?.onDurableWrite?(writeNumber, onDisk) }
     }
 
     // MARK: - Mutations
 
-    func add(_ incoming: Event) {
+    /// Adds a record of this phone's, first in the log whatever its time: the limit takes rows by their place in the
+    /// log, so a clock set back never has a new row taken in its own add (the clock, on 92bf0605, the owner's "a").
+    /// The signer's line, `placedByItsTime`, at its absence statement's time, goes below every row newer than it
+    /// instead, so it takes no newer row's place in the limit (codex-2 on c2202a26).
+    func add(_ incoming: Event, placedByItsTime: Bool = false) {
         var event = incoming
         if keepsNewEventsLocal() { event.keptLocal = true }   // item 115: recorded while iCloud backup is off
         appendToJournal(event)        // durable FIRST — the record exists before anything else (ADR 0005)
-        events.insert(event, at: 0)   // newest first
-        let removedMedia = pruneToCountCap()   // cheap, in-memory — safe on the trigger path
-        persist()
+        // An iCloud copy under the record's ID gives way to it: the evidence signer's line, written again after it was
+        // lost here (codex-4 on 417158fe). Left beside it, a later pull would keep the copy.
+        events.removeAll { $0.id == event.id && $0.isMirrored }
+        let place = placedByItsTime ? (events.lastIndex { $0.startDate > event.startDate }.map { $0 + 1 } ?? 0) : 0
+        events.insert(event, at: place)
+        // The row this add puts in is never the one its own limit takes, and the rows it does take have their journal
+        // lines retired with this write, as the journal's recovery and the load do (codex-1 on 92bf0605, the owner's
+        // "a").
+        let before = Set(events.map(\.id))
+        let removedMedia = pruneToCountCap(sparing: event.id)   // cheap, in-memory — safe on the trigger path
+        persist(alsoRetiring: before.subtracting(events.map(\.id)))
         // Media deletes enqueue AFTER the metadata write (34.H4): the queue is serial, so the
         // snapshot that no longer references these files reaches disk before the files go — a
         // kill in between leaves an orphan for the launch sweep, never a dangling reference.
@@ -223,7 +287,12 @@ final class EventStore: ObservableObject {
     }
 
     /// Folds events mirrored from iCloud into the log, newest-first: a new id is added, and a
-    /// copy of one already held replaces it only as `supersedes` allows.
+    /// copy of one already held replaces it only as `supersedes` allows. The log keeps the order things happened on
+    /// this phone, never a sort by time, which a clock set back would steer (codex-1 on 995f7d98, the owner's "a"): the
+    /// rows it holds stay where they are; this phone's own rows it did not hold (the journal's recovery, what was
+    /// written while the phone was locked) go first, as given, the newest first; another device's copies, and this
+    /// phone's signer lines (written at their statement's time, `add`'s `placedByItsTime`), take their place by their
+    /// time, below every row newer than them (codex-1 on 2bbc3574).
     ///
     /// **First-hand evidence always wins.** An incoming copy never replaces an event captured
     /// on this device, whatever it claims; it is discarded outright, never merged field by
@@ -241,6 +310,7 @@ final class EventStore: ObservableObject {
         var byID = [UUID: Event](minimumCapacity: local.count + incoming.count)
         var order: [UUID] = []
         for e in local where byID.updateValue(e, forKey: e.id) == nil { order.append(e.id) }
+        var arrived: [UUID] = [], byTime: [UUID] = []
         for e in incoming {
             if let existing = byID[e.id] {
                 if supersedes(incoming: e, existing: existing) {
@@ -249,11 +319,20 @@ final class EventStore: ObservableObject {
                     byID[e.id] = learned
                 }
             } else {
-                order.append(e.id)
                 byID[e.id] = e
+                if e.isMirrored || Event.isSignerLine(e) {   // the signer's lines by their time (items 182, 190)
+                    byTime.append(e.id)
+                } else {
+                    arrived.append(e.id)
+                }
             }
         }
-        return order.compactMap { byID[$0] }.sorted { $0.startDate > $1.startDate }
+        var result = (arrived + order).compactMap { byID[$0] }
+        for id in byTime {
+            guard let row = byID[id] else { continue }
+            result.insert(row, at: result.lastIndex { $0.startDate > row.startDate }.map { $0 + 1 } ?? 0)
+        }
+        return result
     }
 
     /// Whether an incoming copy may replace one already held.
@@ -346,7 +425,8 @@ final class EventStore: ObservableObject {
     /// Reconciles the on-disk log with entries queued while the log was unreadable.
     ///
     /// Both sides are first-hand records from this device, so both survive; ids dedupe them and
-    /// the result is newest-first like everything else.
+    /// the result is newest-first like everything else: what was written while the phone was locked (`queued`, the
+    /// newest first) goes first, as it came, whatever its time (codex-1 on 995f7d98).
     ///
     /// **This replaces a real data-loss path** (external review, 2026-08-26). The old code
     /// cleared `awaitingUnlock` *without reading the disk copy* whenever anything had been added
@@ -369,9 +449,10 @@ final class EventStore: ObservableObject {
     @discardableResult
     func merge(_ incoming: [Event]) -> Int {
         let before = events
-        events = Self.merged(local: events, incoming: incoming)
-        let changes = Self.mergeChanges(from: before, to: events)
-        guard changes.inserted + changes.updated > 0 else { return 0 }
+        let next = Self.merged(local: events, incoming: incoming)
+        let changes = Self.mergeChanges(from: before, to: next)
+        guard changes.inserted + changes.updated > 0 else { return 0 }   // the log as it was (codex-1 on 995f7d98)
+        events = next
         Log.store.info("Merged \(changes.inserted, privacy: .public) new + \(changes.updated, privacy: .public) updated mirrored event(s) from iCloud")
         let removedMedia = pruneToCountCap()
         persist()
@@ -508,21 +589,29 @@ final class EventStore: ObservableObject {
     /// Enforces independent incident and status budgets. Class priority applies within
     /// a pool, never across it: old status entries cannot evict a recent incident.
     /// Returns media names for deletion after the caller has queued its metadata write.
+    /// `spared`: the row an add puts in, never taken by that add's limit, counted as already going as a row whose
+    /// upload runs (codex-1 on 92bf0605).
     @discardableResult
-    private func pruneToCountCap() -> [String] {
+    private func pruneToCountCap(sparing spared: UUID? = nil) -> [String] {
         // Preserve every legacy first-hand watch before a smaller status budget drops
         // its arm row. The shared registry's marker makes this a one-time operation.
         if hasReadTheLog { BeatSessionRegistry.seedIfNeeded(from: events) }
+        // Each pool by the rows' place in the log, newest first, never by their times, which a clock set back can
+        // change (the clock, on 92bf0605, the owner's "a"; an edited backup's order is a stated limit, SECURITY.md).
         let victims = Set(Self.countEvictionOrder(
             events: events.map { EvictionRow(id: $0.id,
                                              isFlood: $0.sustainedCount != nil,
                                              isSynced: $0.cloudSyncState == .synced,
                                              isAudit: $0.isStateChange || $0.interrupted == true,
                                              isMirrored: $0.isMirrored,
-                                             inFlight: uploadsInFlight[$0.id] != nil) },
+                                             inFlight: uploadsInFlight[$0.id] != nil || linesHeldForTheSigner.contains($0.id)
+                                                 || $0.id == spared) },
             incidentCap: Self.maxIncidentEvents, auditCap: Self.maxAuditEvents))
-        // Item 114: a budget still over after this pass waited for an upload; check again when it ends.
-        defer { if !uploadsInFlight.isEmpty, overACountBudget { limitsWaitForUploads = true } }
+        // Item 114: a budget still over after this pass waited for an upload, or for a line the evidence signer holds;
+        // check again when it ends or is let go.
+        defer {
+            if !uploadsInFlight.isEmpty || !linesHeldForTheSigner.isEmpty, overACountBudget { limitsWaitForUploads = true }
+        }
         guard !victims.isEmpty else { return [] }
         var removedNames: [String] = []
         var removed: [Event] = []
@@ -532,6 +621,12 @@ final class EventStore: ObservableObject {
             removed.append(e)
             return true
         }
+        // This phone's own records the limit removed, for evidence signing: on disk before the log that drops them
+        // (item 182; `persist`), each with what the removed row was (codex-1 on eaac8b96).
+        for event in removed where !event.isMirrored { limitRemovalsAsRemoved[event.id] = event.evidenceIdentity }
+        // Every row the limit removes owes its journal line's retirement, whichever path asked for the pass (codex-2 on
+        // 2bbc3574): kept owed until a checkpoint retires it.
+        journalRetirementsOwed.formUnion(removed.lazy.map(\.id))
         let watch = evictionWatch()
         // What the marker could count, without a thumbnail, none dropped (item 116, Q1), owed on disk: the file queue
         // writes it before the log the caller saves next, so a kill before the report runs does not lose it (item 166's
@@ -681,6 +776,198 @@ final class EventStore: ObservableObject {
     /// nothing forces StoreKit to answer. Each carries the id of its report owed.
     private var unreportedEvictions: [(events: [Event], watch: Date?, owed: UUID)] = []
 
+    // MARK: - The event limit's removals, for evidence signing (item 182)
+
+    /// The file beside the log that names this phone's own records the event limit removed, until evidence signing has
+    /// accounted for them.
+    static let limitRemovalsFileName = "limit-removals.json"
+
+    /// This phone's own records the event limit removed, until the signer has accounted for them (`forgetLimitRemovals`):
+    /// written beside the log before the log that drops them and read back at launch, so a kill between the two cannot
+    /// make a removal by the limit look like a record that left the log some other way (item 182, the owner's "a"; the
+    /// reports owed keep the same order, codex-22). The signer hears them with each write (`EvidenceSigning`). Each with
+    /// what the removed row was, its start, kind and interruption, so the signer retires a record only when the row the
+    /// limit removed was that record (codex-1 on eaac8b96 and c2202a26, the owner's "a").
+    private(set) var limitRemovalsAsRemoved: [UUID: RecordIdentity] = [:]
+
+    /// The IDs of the limit's removals (`limitRemovalsAsRemoved`).
+    var limitRemovals: Set<UUID> { Set(limitRemovalsAsRemoved.keys) }
+
+    /// The removals as last written to disk (nil: not known), so a log write writes them first when they differ.
+    /// `ioQueue`-confined.
+    nonisolated(unsafe) private var limitRemovalsOnDisk: [UUID: RecordIdentity]?
+
+    /// A file of removals that cannot be read and could not be set aside: never written over.
+    private var limitRemovalsFrozen = false
+
+    /// This phone's key for the removals' check, once read or made. `ioQueue`-confined.
+    nonisolated(unsafe) private var limitRemovalsKeyRead: SymmetricKey?
+
+    private var limitRemovalsURL: URL { rootURL.appendingPathComponent(Self.limitRemovalsFileName) }
+
+    /// Forgets the removals the signer has accounted for: retired with a signed statement, or never signed here. One
+    /// whose journal line is still owed retirement stays until the line is retired, then goes, so a kill before the
+    /// checkpoint cannot leave the line to bring the row back as a write that never landed (codex-1 on 995f7d98).
+    func forgetLimitRemovals(_ ids: Set<UUID>) {
+        let owed = ids.intersection(journalRetirementsOwed)
+        limitRemovalsForgottenOnRetirement.formUnion(owed)
+        let before = limitRemovalsAsRemoved.count
+        for id in ids.subtracting(owed) { limitRemovalsAsRemoved[id] = nil }
+        if limitRemovalsAsRemoved.count != before { saveLimitRemovals() }
+    }
+
+    /// Forgets the removals the signer accounted for whose journal lines are no longer owed retirement.
+    private func forgetRemovalsNoLongerOwed() {
+        let ready = limitRemovalsForgottenOnRetirement.subtracting(journalRetirementsOwed)
+        guard !ready.isEmpty else { return }
+        limitRemovalsForgottenOnRetirement.subtract(ready)
+        forgetLimitRemovals(ready)
+    }
+
+    /// Writes the removals on the file queue, so a write asked for before a log write lands before it; the file goes once
+    /// none is left. Not while the log waits for the first unlock or could not be read: no log is written then either.
+    private func saveLimitRemovals() {
+        guard !loadFailed, !awaitingUnlock, !limitRemovalsFrozen else { return }
+        let removals = limitRemovalsAsRemoved
+        let url = limitRemovalsURL
+        let options = writeProtection
+        ioQueue.async { [weak self] in _ = self?.writeLimitRemovalsOnQueue(removals, to: url, options: options) }
+    }
+
+    /// Writes `removals`, checked with this phone's key (or removes the file when there are none), and records them as
+    /// what is on disk; false when that failed, the key's read too. The log is written all the same: signing never
+    /// holds the log up. A removal that never reached the disk can only be named gone after a kill, never a record that
+    /// left otherwise named retired (ADR 0066).
+    nonisolated private func writeLimitRemovalsOnQueue(_ removals: [UUID: RecordIdentity], to url: URL,
+                                                       options: Data.WritingOptions) -> Bool {
+        do {
+            if removals.isEmpty {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            } else {
+                guard let key = limitRemovalsKeyOnQueue() else { throw CocoaError(.fileWriteNoPermission) }
+                try Self.limitRemovalsData(removals, key: key).write(to: url, options: options)
+            }
+            limitRemovalsOnDisk = removals
+            return true
+        } catch {
+            Log.store.error("Failed to save the limit's removals: \(Log.ref(error), privacy: .public)")
+            return false
+        }
+    }
+
+    /// At launch and after the unlock's reload, before the journal's recovery, whose log write writes them (codex-3 on
+    /// 73441cbe): the removals not yet accounted for, as far as this phone's key vouches for them (codex-1 on 73441cbe,
+    /// the owner's "1 - a"). A file that cannot be read, or whose check does not hold with the key (edited, or made with a
+    /// key this phone does not have, as after a restore onto another iPhone), is set aside, never taken for none and
+    /// written over: the signer names its signed records gone, never retired.
+    private func loadLimitRemovals() {
+        guard !awaitingUnlock, !loadFailed else { return }
+        let url = limitRemovalsURL
+        var stored: [UUID: RecordIdentity] = [:]
+        if fileManager.fileExists(atPath: url.path) {
+            if let data = try? Data(contentsOf: url), let key = Self.limitRemovalsKey(create: false),
+               let checked = Self.limitRemovals(in: data, key: key) {
+                stored = checked
+            } else {
+                setLimitRemovalsAside(url)
+            }
+        }
+        if !limitRemovalsFrozen {
+            let onDisk = stored
+            ioQueue.async { [weak self] in self?.limitRemovalsOnDisk = onDisk }
+        }
+        limitRemovalsAsRemoved.merge(stored) { inMemory, _ in inMemory }
+        if limitRemovalsAsRemoved != stored { saveLimitRemovals() }
+    }
+
+    /// After the journal's recovery: a record the log holds was not removed after all (a kill before the log's write),
+    /// unless only an iCloud copy holds its ID.
+    private func dropLimitRemovalsHeld() {
+        guard !awaitingUnlock, !loadFailed else { return }
+        let before = limitRemovalsAsRemoved.count
+        for event in events where !event.isMirrored { limitRemovalsAsRemoved[event.id] = nil }
+        if limitRemovalsAsRemoved.count != before { saveLimitRemovals() }
+    }
+
+    private func setLimitRemovalsAside(_ url: URL) {
+        let backup = url.deletingPathExtension().appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
+        if (try? fileManager.moveItem(at: url, to: backup)) == nil {
+            limitRemovalsFrozen = true
+            Log.store.fault("limit-removals.json unreadable or unchecked and could not be set aside; it is not written over")
+        } else {
+            Log.store.error("limit-removals.json unreadable or unchecked; preserved as \(backup.lastPathComponent, privacy: .public)")
+        }
+    }
+
+    /// This phone's key for the removals' check, made at the first write that needs it. `ioQueue`-confined.
+    nonisolated private func limitRemovalsKeyOnQueue() -> SymmetricKey? {
+        if let limitRemovalsKeyRead { return limitRemovalsKeyRead }
+        limitRemovalsKeyRead = Self.limitRemovalsKey(create: true)
+        return limitRemovalsKeyRead
+    }
+
+    /// The key that checks the removals' file: this phone's, kept in the keychain for this device only
+    /// (`KeychainService.limitRemovalsKey`), or a test's.
+    nonisolated static func limitRemovalsKey(create: Bool) -> SymmetricKey? {
+        #if DEBUG
+        if let limitRemovalsKeyForTesting { return limitRemovalsKeyForTesting(create) }
+        #endif
+        return KeychainService.limitRemovalsKey(create: create)
+    }
+
+    #if DEBUG
+    /// A test's key for the removals' check, in place of the keychain's.
+    nonisolated(unsafe) static var limitRemovalsKeyForTesting: (@Sendable (Bool) -> SymmetricKey?)?
+    #endif
+
+    /// The removals' file: each removal, by ID ascending, with what the removed row was, and their check, an HMAC-SHA256
+    /// with this phone's key, so an edited backup restored can neither add a record to them (codex-1 on 73441cbe) nor
+    /// change what a removed row was (codex-1 on eaac8b96 and c2202a26). A file of an earlier form does not read: set
+    /// aside, its records are named gone.
+    private struct CheckedLimitRemovals: Codable {
+        let removals: [LimitRemoval]
+        let check: Data
+    }
+
+    /// One of the removals in their file: the ID, and the removed row's start, kind and interruption.
+    private struct LimitRemoval: Codable {
+        let id: UUID
+        let start: Int64?
+        let kind: String?
+        /// True for an interruption record; left out otherwise.
+        let interrupted: Bool?
+    }
+
+    /// The removals' file holding `removals`, checked with `key`.
+    nonisolated static func limitRemovalsData(_ removals: [UUID: RecordIdentity], key: SymmetricKey) throws -> Data {
+        let sorted = removals.sorted { $0.key.uuidString < $1.key.uuidString }
+            .map { LimitRemoval(id: $0.key, start: $0.value.start, kind: $0.value.kind,
+                                interrupted: $0.value.interrupted ? true : nil) }
+        let check = Data(HMAC<SHA256>.authenticationCode(for: limitRemovalsCheckInput(sorted), using: key))
+        return try JSONEncoder().encode(CheckedLimitRemovals(removals: sorted, check: check))
+    }
+
+    /// The removals `data` holds when it is the removals' file and its check holds with `key`; nil otherwise.
+    nonisolated static func limitRemovals(in data: Data, key: SymmetricKey) -> [UUID: RecordIdentity]? {
+        guard let file = try? StoredJSON.decode(CheckedLimitRemovals.self, from: data),
+              HMAC<SHA256>.isValidAuthenticationCode(file.check, authenticating: limitRemovalsCheckInput(file.removals),
+                                                     using: key) else { return nil }
+        return Dictionary(file.removals.map { ($0.id, RecordIdentity(start: $0.start, kind: $0.kind,
+                                                                     interrupted: $0.interrupted == true)) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// What the check covers: this file's use of the key and its form, then each removal in the file's order, one a line:
+    /// its ID, its start or "-", its kind's bytes in base64 or "-", and 1 for an interruption record or 0.
+    nonisolated private static func limitRemovalsCheckInput(_ removals: [LimitRemoval]) -> Data {
+        let lines = removals.map { removal in
+            [removal.id.uuidString, removal.start.map(String.init) ?? "-",
+             removal.kind.map { Data($0.utf8).base64EncodedString() } ?? "-", removal.interrupted == true ? "1" : "0"]
+                .joined(separator: " ")
+        }
+        return Data((["malinois limit removals 3"] + lines).joined(separator: "\n").utf8)
+    }
+
     // MARK: - Reports owed (item 166's A1)
 
     /// The file beside the log that holds the event limit's reports still owed.
@@ -828,12 +1115,31 @@ final class EventStore: ObservableObject {
     func endUpload(_ id: UUID) {
         guard let running = uploadsInFlight[id] else { return }
         uploadsInFlight[id] = running > 1 ? running - 1 : nil
-        guard uploadsInFlight.isEmpty, limitsWaitForUploads else { return }
+        guard uploadsInFlight.isEmpty else { return }
+        applyLimitsThatWaited()
+    }
+
+    /// The limits again, when they waited for an upload or a held line; nothing when they did not wait.
+    private func applyLimitsThatWaited() {
+        guard limitsWaitForUploads else { return }
         limitsWaitForUploads = false
         let removedMedia = pruneToCountCap()
         persist()
         deleteMediaNames(removedMedia)   // after the checkpoint (34.H4), as in add()
         scheduleByteCapPrune()
+    }
+
+    /// The evidence signer's lines still owed their note (item 182; codex-3 on ba2e282e, the owner's "a"): the limit takes
+    /// none of them, as it takes no record whose upload is running, so none leaves the log before the signer notes it
+    /// written, and the limit's removal of one shows the log held it.
+    private(set) var linesHeldForTheSigner: Set<UUID> = []
+
+    /// Holds `ids`, the signer's owed lines, from the limit, in place of those held before; once one is let go, limits
+    /// that waited apply again.
+    func holdLinesForTheSigner(_ ids: Set<UUID>) {
+        let letGo = !linesHeldForTheSigner.isSubset(of: ids)
+        linesHeldForTheSigner = ids
+        if letGo { applyLimitsThatWaited() }
     }
 
     /// Whether an upload of the event is running.
@@ -881,7 +1187,9 @@ final class EventStore: ObservableObject {
         let inFlight = Set(uploadsInFlight.keys)   // item 114: an upload's media waits for it to end
         let (evict, discarded, waited) = await Task.detached { () -> (Set<UUID>, Set<UUID>, Bool) in
             func size(_ name: String) -> Int64 {
-                let attrs = try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path)
+                // A name that is not a plain file name names no file of the log's (item 187).
+                guard let file = EventStore.mediaFile(named: name, in: dir) else { return 0 }
+                let attrs = try? FileManager.default.attributesOfItem(atPath: file.path)
                 return (attrs?[.size] as? Int64) ?? 0
             }
             let sizes = snapshot.map { (id: $0.id, isFlood: $0.isFlood, isSynced: $0.isSynced,
@@ -998,15 +1306,24 @@ final class EventStore: ObservableObject {
         }
     }
 
-    /// Deletes media files, on `ioQueue`, except those a set-aside log may refer to.
+    /// Deletes media files, on `ioQueue`, except those a set-aside log may refer to, and never by a name that is not a
+    /// plain file name (`mediaFile(named:in:)`, item 187): such a name names no file of the log's.
     nonisolated private func removeMediaOnQueue(_ names: [String]) {
         let dir = Self.mediaDirectoryURL(in: root)
         let kept = Self.mediaNamesSetAsideLogsMayReference(names, in: Self.ensured(root))
         if !kept.isEmpty {
             Log.store.info("Kept \(kept.count, privacy: .public) media file(s) a set-aside log refers to")
         }
+        var refused = 0
         for name in names where !kept.contains(name) {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+            guard let file = Self.mediaFile(named: name, in: dir) else {
+                refused += 1
+                continue
+            }
+            try? FileManager.default.removeItem(at: file)
+        }
+        if refused > 0 {
+            Log.store.fault("Deleted no file for \(refused, privacy: .public) media name(s) that are not plain file names")
         }
     }
 
@@ -1185,7 +1502,12 @@ final class EventStore: ObservableObject {
         let url = journalFile
         var appended = false
         var sync: (synced: Bool, errno: Int32, elapsed: Duration)?
-        if let handle = try? FileHandle(forUpdating: url) {
+        #if DEBUG
+        let openFails = Self.journalOpenFailsForTesting
+        #else
+        let openFails = false
+        #endif
+        if !openFails, let handle = try? FileHandle(forUpdating: url) {
             if let end = try? handle.seekToEnd(), end > 0, (try? handle.seek(toOffset: end - 1)) != nil,
                let last = try? handle.read(upToCount: 1), last.first != 0x0A {
                 line.insert(0x0A, at: 0)
@@ -1193,7 +1515,9 @@ final class EventStore: ObservableObject {
             appended = ((try? handle.seekToEnd()) != nil) && ((try? handle.write(contentsOf: line)) != nil)
             if appended { sync = Self.fullSync(handle) } else { try? handle.close() }
         } else {
-            appended = (try? line.write(to: url, options: [.completeFileProtectionUnlessOpen])) != nil
+            // Only a journal that is not there yet is made here: one that could not be opened is never written over, or
+            // the lines the log has not taken yet would be lost (item 187, qwen-5 on 09d997f). The append then fails.
+            appended = (try? line.write(to: url, options: [.completeFileProtectionUnlessOpen, .withoutOverwriting])) != nil
             // First line of a fresh file: the write created it; reopen for the barrier.
             if appended, let handle = try? FileHandle(forWritingTo: url) { sync = Self.fullSync(handle) }
         }
@@ -1262,22 +1586,34 @@ final class EventStore: ObservableObject {
         guard let data = try? Data(contentsOf: journalFile) else { return }
         journalHasEntries = !data.isEmpty
         let known = Set(events.map(\.id))
-        let missing = Self.journaledEvents(in: data).filter { !known.contains($0.id) }
-        guard !missing.isEmpty else { return }
-        events = Self.merged(local: events, incoming: missing)
-        let beforePrune = Set(events.map(\.id))
-        let removedMedia = pruneToCountCap()
-        // A recovered line whose event the cap immediately re-evicts must still retire
-        // (ext-review #3's second path): it used to survive every checkpoint, so each
-        // launch resurrected it, evicted it again, and left the line — churn forever and
-        // an unbounded journal. Retired only via the SUCCESS path of the persist that
-        // durably records the absence; a failed persist keeps the line, the safe direction.
-        // Include previously known rows removed by an upgrade, not only recovered
-        // rows: their journal lines must not resurrect on another launch either.
-        let retired = beforePrune.subtracting(events.map(\.id))
+        let unheld = Self.journaledEvents(in: data).filter { !known.contains($0.id) }
+        // A row the limit removed after its write landed, its line not yet retired at a kill, is not a write that never
+        // landed: never brought back, its removal kept for the signer, its line retired (codex-1 on 995f7d98).
+        let removedByTheLimit = Set(unheld.lazy.map(\.id).filter { self.limitRemovalsAsRemoved[$0] != nil })
+        let missing = unheld.filter { !removedByTheLimit.contains($0.id) }
+        guard !missing.isEmpty || !removedByTheLimit.isEmpty else { return }
+        var retired = removedByTheLimit
+        var removedMedia: [String] = []
+        if !missing.isEmpty {
+            // The journal holds them as they came, the oldest first; the log puts the newest first (codex-1 on
+            // 995f7d98).
+            events = Self.merged(local: events, incoming: Array(missing.reversed()))
+            let beforePrune = Set(events.map(\.id))
+            removedMedia = pruneToCountCap()
+            // A recovered line whose event the cap immediately re-evicts must still retire
+            // (ext-review #3's second path): it used to survive every checkpoint, so each
+            // launch resurrected it, evicted it again, and left the line — churn forever and
+            // an unbounded journal. Retired only via the SUCCESS path of the persist that
+            // durably records the absence; a failed persist keeps the line, the safe direction.
+            // Include previously known rows removed by an upgrade, not only recovered
+            // rows: their journal lines must not resurrect on another launch either.
+            retired.formUnion(beforePrune.subtracting(events.map(\.id)))
+        }
         persist(alsoRetiring: retired)
         deleteMediaNames(removedMedia)
-        Log.store.warning("Recovered \(missing.count, privacy: .public) event(s) from the journal — their log write never landed")
+        if !missing.isEmpty {
+            Log.store.warning("Recovered \(missing.count, privacy: .public) event(s) from the journal — their log write never landed")
+        }
     }
 
     /// The UNION of every successfully-persisted snapshot's ids in the current burst,
@@ -1290,6 +1626,15 @@ final class EventStore: ObservableObject {
     /// its event; retiring late is safe only while the line's event is merely redundant,
     /// not intentionally removed.
     private var pendingCheckpointIDs: Set<UUID>?
+
+    /// The journal lines owed retirement: the rows a write's limit, the recovery or the load removed, kept until a
+    /// checkpoint has retired them, across failed writes and failed syncs, and handed to every write until then
+    /// (codex-2 on 995f7d98, the owner's "a").
+    private var journalRetirementsOwed: Set<UUID> = []
+
+    /// The removals the signer accounted for while their journal lines were owed retirement: forgotten once retired
+    /// (codex-1 on 995f7d98).
+    private var limitRemovalsForgottenOnRetirement: Set<UUID> = []
 
     /// Pure (unit-tested): how a new successful snapshot's ids join a pending checkpoint
     /// (ext-review #3, 2026-08-31). REPLACING lost ids across the debounce: persist-with-X
@@ -1328,13 +1673,20 @@ final class EventStore: ObservableObject {
     /// retirement itself (BACKLOG 53). So the pass first full-syncs the log on `ioQueue` —
     /// one flush per checkpoint pass, which is one per burst — and retires on return.
     private func journalCheckpoint(persistedIDs: Set<UUID>) {
-        guard journalHasEntries else { return }
+        guard journalHasEntries else {
+            journalRetirementsOwed.subtract(persistedIDs)   // no journal: no line left to retire
+            forgetRemovalsNoLongerOwed()
+            return
+        }
         let logURL = metadataURL
         ioQueue.async { [weak self] in
             var synced = false
             if let handle = try? FileHandle(forWritingTo: logURL) {
                 let result = Self.fullSync(handle)
                 synced = result.synced
+                #if DEBUG
+                if Self.fullSyncFailsForTesting { synced = false }
+                #endif
                 let ms = result.elapsed / .milliseconds(1)
                 if synced {
                     Log.store.info("Full log sync landed in \(ms, format: .fixed(precision: 2), privacy: .public) ms before retiring journal lines")
@@ -1360,18 +1712,24 @@ final class EventStore: ObservableObject {
     /// after the snapshot was taken keep their lines, so a mid-persist `add` loses nothing; a
     /// rewrite also sheds any torn tail, self-healing the file.
     private func retireJournalLines(persistedIDs: Set<UUID>) {
-        guard journalHasEntries else { return }
+        guard journalHasEntries else {
+            journalRetirementsOwed.subtract(persistedIDs)
+            forgetRemovalsNoLongerOwed()
+            return
+        }
         let url = journalFile
-        guard let data = try? Data(contentsOf: url) else { return }
+        guard let data = try? Data(contentsOf: url) else { return }   // still owed
         let survivors = Self.journaledEvents(in: data).filter { !persistedIDs.contains($0.id) }
         if survivors.isEmpty {
-            try? FileManager.default.removeItem(at: url)
+            guard (try? FileManager.default.removeItem(at: url)) != nil else { return }   // still owed
             journalHasEntries = false
         } else {
             var out = Data()
             for event in survivors { if let line = Self.journalLine(for: event) { out.append(line) } }
-            try? out.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+            guard (try? out.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])) != nil else { return }
         }
+        journalRetirementsOwed.subtract(persistedIDs)   // retired (codex-2 on 995f7d98)
+        forgetRemovalsNoLongerOwed()
     }
 
     func update(_ event: Event, persistNow: Bool = true) {
@@ -1593,14 +1951,38 @@ final class EventStore: ObservableObject {
         if changed { persist() }
     }
 
+    /// The event's photo or clip file, for its screen, Share and an upload: nil without one, when its name is not a plain
+    /// file name (`mediaFile(named:in:)`), or when what is under it is not a plain file, a link or a folder an edited
+    /// backup put there (item 190's deepseek-5; the export's bundle already took none). A name with nothing under it yet
+    /// keeps its URL, for the callers that look.
     func mediaURL(for event: Event) -> URL? {
-        guard let name = event.mediaFilename else { return nil }
-        return mediaDirectory.appendingPathComponent(name)
+        guard let name = event.mediaFilename, let url = Self.mediaFile(named: name, in: mediaDirectory) else { return nil }
+        return Self.isPlainFileOrNothing(url) ? url : nil
     }
 
+    /// The event's second camera's file, as `mediaURL(for:)`.
     func secondaryMediaURL(for event: Event) -> URL? {
-        guard let name = event.secondaryMediaFilename else { return nil }
-        return mediaDirectory.appendingPathComponent(name)
+        guard let name = event.secondaryMediaFilename, let url = Self.mediaFile(named: name, in: mediaDirectory) else { return nil }
+        return Self.isPlainFileOrNothing(url) ? url : nil
+    }
+
+    /// Whether what is at `url` is a plain file, or nothing: its own attributes, a link's never followed (item 190).
+    nonisolated static func isPlainFileOrNothing(_ url: URL) -> Bool {
+        guard let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType else {
+            return true
+        }
+        return type == .typeRegular
+    }
+
+    /// The file a photo's or clip's name from the log stands for in the media folder `directory`, when the name is a
+    /// plain file name: not empty, not "." or "..", with no "/" and no NUL (which ends a name at the file system); nil for
+    /// any other name, which names no file (item 187, deepseek-3 on 09d997f, the owner's "a"). The app names its files
+    /// by UUID; only a log restored from an edited backup holds another name, and would otherwise lead the limit to delete,
+    /// or an upload to send, a file outside the media folder, or the folder itself. The one rule for every path a name
+    /// from the log becomes, the signer's and the export's included.
+    nonisolated static func mediaFile(named name: String, in directory: URL) -> URL? {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else { return nil }
+        return directory.appendingPathComponent(name)
     }
 
     /// A captured payload to persist. Stills arrive as in-memory JPEG data; clips
@@ -2160,14 +2542,21 @@ final class EventStore: ObservableObject {
     /// resurrecting them at every launch. On failure nothing retires, so the journal
     /// still recovers them — the safe direction.
     private func persist(alsoRetiring: Set<UUID> = []) {
+        journalRetirementsOwed.formUnion(alsoRetiring)   // owed until a checkpoint retires them, whatever this write does
         guard !loadFailed, !awaitingUnlock else { return }   // never overwrite an un-backed-up (R-05) or still-encrypted (V-01) log
+        let retiring = journalRetirementsOwed
         let snapshot = events
+        writesQueued += 1
+        let writeNumber = writesQueued
         let url = metadataURL
         let options = writeProtection
         let cleanLoad = loadedCleanly
         let owed = reportsOwed
         let owedURL = reportsOwedURL
         let owedFrozen = reportsOwedFrozen
+        let removals = limitRemovalsAsRemoved
+        let removalsURL = limitRemovalsURL
+        let removalsFrozen = limitRemovalsFrozen
         #if DEBUG
         let observer = Self.checkpointObserverForTesting   // read here, on the main actor (item 155's T1)
         let delay = Self.writeDelayForTesting
@@ -2178,6 +2567,11 @@ final class EventStore: ObservableObject {
             #endif
             guard let self else { return }
             do {
+                // The limit's removals before the log that drops them (item 182): a write that fails is tried again by the
+                // next log write, and never holds this one up.
+                if !removalsFrozen, removals != self.limitRemovalsOnDisk {
+                    _ = self.writeLimitRemovalsOnQueue(removals, to: removalsURL, options: options)
+                }
                 // A log never drops an event whose report is owed until that report is on disk (item 166's A1, codex-22):
                 // a write of the reports owed that failed is tried again here, and the log waits while it fails.
                 if owed != self.reportsOwedOnDisk, !(owedFrozen && owed.isEmpty) {
@@ -2198,8 +2592,10 @@ final class EventStore: ObservableObject {
                 }
                 // This snapshot is durably on disk — its events' journal lines are now
                 // redundant and can be retired (on the main actor, the journal's one writer).
-                let persistedIDs = Set(snapshot.map(\.id)).union(alsoRetiring)
+                let persistedIDs = Set(snapshot.map(\.id)).union(retiring)
                 Task { @MainActor in self.scheduleJournalCheckpoint(persistedIDs: persistedIDs) }
+                // On disk: the signer may sign what it holds (item 90), on the main actor, never on the write's queue.
+                Task { @MainActor in self.onDurableWrite?(writeNumber, snapshot) }
             } catch {
                 Log.store.fault("Failed to persist event metadata: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 if !self.persistFailedOnQueue {
@@ -2334,23 +2730,36 @@ final class EventStore: ObservableObject {
         // again.
         isReadingHistory = true
         load()
+        let onDisk = events, writesAtLoad = writesQueued   // the log as read, for the signer (item 182, codex-3)
+        noteTheLogRead(onDisk)
         loadReportsOwed()      // item 166's A1: before the recovery's and the reconciliation's trims (codex-22)
+        loadLimitRemovals()    // item 182: before the recovery too, whose log write writes them (codex-3)
         recoverFromJournal()   // the protected file is readable now too (ADR 0005)
         isReadingHistory = false
         dropReportsOwedForEventsHeld()
+        dropLimitRemovalsHeld()
         handOverUnreported()   // the reports still owed, now that the recovery has run (codex-26)
         recoverMediaAttachments()
         attachWaitingClips()   // step 63
         writeBackBoundedCopies()
         establishSeenMark()    // item 81: the history is known now; what was queued stays new
-        guard !queued.isEmpty else { enforceCountCapsAfterLoad(); return }
-        events = Self.reconciledAfterUnlock(disk: events, queued: queued)
+        // What the launch's recovery brought back from the journal while the removals could not be read is not brought
+        // back if the limit removed it, as the recovery now does: its line retired (codex-1 on 995f7d98).
+        let removedByTheLimit = Set(queued.lazy.map(\.id).filter { self.limitRemovalsAsRemoved[$0] != nil })
+        let kept = queued.filter { !removedByTheLimit.contains($0.id) }
+        guard !kept.isEmpty else {
+            if !removedByTheLimit.isEmpty { persist(alsoRetiring: removedByTheLimit) }
+            enforceCountCapsAfterLoad()
+            handTheSignerTheLogRead(onDisk, writesAtLoad: writesAtLoad)
+            return
+        }
+        events = Self.reconciledAfterUnlock(disk: events, queued: kept)
         let beforePrune = Set(events.map(\.id))
         let removedMedia = pruneToCountCap()
-        persist(alsoRetiring: beforePrune.subtracting(events.map(\.id)))
+        persist(alsoRetiring: beforePrune.subtracting(events.map(\.id)).union(removedByTheLimit))
         deleteMediaNames(removedMedia)   // after the checkpoint (34.H4)
         scheduleByteCapPrune()
-        Log.store.info("Reconciled \(queued.count, privacy: .public) queued event(s) with the log on unlock")
+        Log.store.info("Reconciled \(kept.count, privacy: .public) queued event(s) with the log on unlock")
     }
 }
 

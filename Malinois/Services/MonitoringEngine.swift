@@ -777,15 +777,18 @@ final class MonitoringEngine: ObservableObject {
     /// correctly-worded push on the owner's other devices (BACKLOG 59) — never through the
     /// tamper subscription, whose static body would be wrong and noisy for a routine arm.
     @discardableResult
-    func logStateChange(_ kind: String, id: UUID = UUID(), sessionCloudAllowed: Bool? = nil) -> Event {
+    func logStateChange(_ kind: String, id: UUID = UUID(), sessionCloudAllowed: Bool? = nil, at: Date? = nil) -> Event {
         // `.pending` rather than `.localOnly`: these now DO leave the device (BACKLOG 8),
         // via the silent `TamperEventState` type. `exfiltrate` resolves the state — and
         // marks it `.localOnly` for a genuinely free user, so the badge stays honest.
-        // `id` is the caller's when the record must be found again: a reset's (codex-17 on 1.8.2).
-        let event = Event(id: id, startDate: Date(), endDate: Date(),
+        // `id` is the caller's when the record must be found again: a reset's (codex-17 on 1.8.2). `at` is the caller's
+        // when the record's time is not the time of writing: the signer's line, at its absence statement's (codex-2 on
+        // eaac8b96).
+        let time = at ?? Date()
+        let event = Event(id: id, startDate: time, endDate: time,
                           triggeredSensors: [], cloudSyncState: .pending, stateChange: kind)
         cloud.enrollment.registerLocalEvent(event)
-        eventStore.add(event)
+        eventStore.add(event, placedByItsTime: at != nil)   // the signer's line by its time (the clock, on 92bf0605)
         eventCount = eventStore.events.count
         let record = event
         // Authorization decided NOW, when the record is created — the task runs after the
@@ -798,6 +801,15 @@ final class MonitoringEngine: ObservableObject {
             await exfiltrate(record, cloudAllowedOverride: allowed)
         }
         return event
+    }
+
+    /// The evidence signer's line (item 182): a status record written as `logStateChange` writes one, under the ID the
+    /// signer made from its statement and at the time it gives, its statement's, so a line written again is the line as
+    /// signed (codex-2 on eaac8b96), unless this phone's own log holds that ID already; an iCloud copy under it gives way
+    /// to it (`EventStore.add`; codex-4 on 417158fe).
+    func logSignerLine(_ kind: String, id: UUID, at: Date) {
+        guard !eventStore.events.contains(where: { $0.id == id && !$0.isMirrored }) else { return }
+        logStateChange(kind, id: id, at: at)
     }
 
     // MARK: - Thermal sentinel (item 38): the records and the listener are in
@@ -961,17 +973,37 @@ final class MonitoringEngine: ObservableObject {
     /// are fixed. Plugging in mid-watch restores instant capture; unplugging stands
     /// the camera down (deferred, so a simultaneous unplug trigger still shoots warm).
     private func handleBatteryStateChange() {
-        let charging = Self.isChargingState(UIDevice.current.batteryState)
+        handleBatteryStateChange(charging: Self.isChargingState(UIDevice.current.batteryState))
+    }
+
+    /// As the plug or unplug the system reports, `charging` the new state. Internal for a test (item 190's codex-2).
+    /// Test Sensors follows it as a watch does, for its Vision row (the owner's "A6 a").
+    func handleBatteryStateChange(charging: Bool) {
         guard charging != isCharging else { return }
         isCharging = charging
-        guard state == .armed, settings.cameraReadiness == .auto, settings.isEnabled(.camera) else { return }
+        // Test Sensors runs only disarmed: arming ends it.
+        guard state == .armed || dryRunActive, settings.cameraReadiness == .auto, settings.isEnabled(.camera) else { return }
         if cameraShouldBeWarm {
             cameraStandbyTimer?.invalidate(); cameraStandbyTimer = nil
-            // Only re-warm if we're not already mid-capture (the session is up then).
-            if !isHandlingTrigger && !isCapturingUntilClear { warmActiveCamera() }
+            if dryRunActive {
+                if visionTapWanted { warmActiveCamera() }
+            } else if !isHandlingTrigger && !isCapturingUntilClear {
+                // Only re-warm if we're not already mid-capture (the session is up then).
+                warmActiveCamera()
+            }
         } else {
             scheduleCameraStandby()
         }
+    }
+
+    /// Test Sensors' camera, kept as the armed watch keeps it (item 190's codex-2, the owner's "A6 a"): warmed for the
+    /// Vision row only when the camera-readiness setting keeps it warm now, the charging state measured afresh as arming
+    /// measures it, so the test never shows Vision tripping where the watch would see nothing. Internal for
+    /// MonitoringEngine+TestSensors.swift.
+    func warmCameraForTestSensors() {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        isCharging = Self.isChargingState(UIDevice.current.batteryState)
+        if visionTapWanted && cameraShouldBeWarm { warmActiveCamera() }
     }
 
     /// Defer standing the camera down: if the unplug also fired a trigger, that
@@ -986,8 +1018,25 @@ final class MonitoringEngine: ObservableObject {
 
     private func standByCameraIfIdle() {
         cameraStandbyTimer = nil
-        guard state == .armed, !cameraShouldBeWarm, !isHandlingTrigger, !isCapturingUntilClear else { return }
+        guard state == .armed || dryRunActive, !cameraShouldBeWarm, !isHandlingTrigger, !isCapturingUntilClear else { return }
+        standDownCamera()
+    }
+
+    /// Stands the camera down, and Vision with it: a frame still on its way, or from a warm-up still running, counts for
+    /// nothing until the engine has the camera up again, and that warm-up's late answer writes nothing (no tap state, no
+    /// failure notice), as at the disarm (item 190's codex-5 on 29d6501 and deepseek-1 on 1c083ab, the owner's "a").
+    /// Every stand-down the engine makes comes here. Internal for MonitoringEngine+TestSensors.swift.
+    func standDownCamera() {
         camera.shutDown()
+        noteCameraStoodDown()
+    }
+
+    /// The camera stood down, by the engine or by a capture's timeout (the pipeline's quarantine,
+    /// `captureCameraQuarantined`): a warm-up still running is stale, and Vision counts frames for nothing until the
+    /// engine has the camera up again (item 190's deepseek-1 on 1c083ab, codex-1 and deepseek-1 on f476178).
+    private func noteCameraStoodDown() {
+        cameraWarmGeneration += 1
+        visionMonitor?.cameraStoodDown()
     }
 
     // MARK: - Arming flow
@@ -1083,10 +1132,11 @@ final class MonitoringEngine: ObservableObject {
 
     // MARK: - Camera warm-up at arm (the bounded warm-up itself is EvidenceCapturePipeline.withDeadline)
 
-    /// Bumped on every new warm intent. A warm-up that outlived its deadline still finishes
-    /// eventually on the session queue; comparing against the generation it was started
-    /// under keeps its state writes (vision-tap status, warm-up-failure notices) from
-    /// clobbering whatever a NEWER warm has since established.
+    /// Bumped on every new warm intent, every stand-down (`standDownCamera`) and the disarm. A
+    /// warm-up that outlived its deadline still finishes eventually on the session queue;
+    /// comparing against the generation it was started under keeps its state writes
+    /// (vision-tap status, warm-up-failure notices) from clobbering whatever a NEWER warm has
+    /// since established, or from landing once the engine has stood the camera down.
     private var cameraWarmGeneration = 0
 
     /// Brings up the session for whichever camera(s) the settings select — used both
@@ -1097,6 +1147,7 @@ final class MonitoringEngine: ObservableObject {
         // no "camera unavailable" notice — the arming screen carries the honest one.
         guard camera.videoPermission != .notDetermined else { return }
         syncVisionTap()
+        visionMonitor?.cameraWarming()   // Test Sensors' Vision row: no frames until this warm-up finishes (item 190's codex-3)
         // Warm the shape the NEXT CAPTURE will actually use, not the configured one.
         //
         // These two decisions used to disagree, and the disagreement was expensive. Warming
@@ -1118,7 +1169,13 @@ final class MonitoringEngine: ObservableObject {
         let generation = cameraWarmGeneration
         if effectiveCameraPosition == .both && camera.supportsMultiCam {
             Task { [camera] in
-                do { _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUpMultiCam(forClips: forClips) } }
+                do {
+                    _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { [weak self] in
+                        let reconfigured = try await camera.warmUpMultiCam(forClips: forClips)
+                        await self?.cameraWarmUpSucceeded(generation)   // and with both cameras (item 190's codex-1 on 6223aae)
+                        return reconfigured
+                    }
+                }
                 catch { if generation == cameraWarmGeneration { reportCameraWarmupFailure(error) } }
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
@@ -1133,7 +1190,13 @@ final class MonitoringEngine: ObservableObject {
             default:    warmCamera = .front   // front, both-unsupported
             }
             Task { [camera] in
-                do { _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { try await camera.warmUp(forClips: forClips, camera: warmCamera) } }
+                do {
+                    _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { [weak self] in
+                        let reconfigured = try await camera.warmUp(forClips: forClips, camera: warmCamera)
+                        await self?.cameraWarmUpSucceeded(generation)   // in time or late (item 190's codex-1 on 6223aae)
+                        return reconfigured
+                    }
+                }
                 catch { if generation == cameraWarmGeneration { reportCameraWarmupFailure(error) } }
                 guard generation == cameraWarmGeneration else { return }   // a newer warm owns the state now
                 visionMonitor?.tapActive = camera.visionTapActive
@@ -1141,6 +1204,14 @@ final class MonitoringEngine: ObservableObject {
                 refreshMicNotice()
             }
         }
+    }
+
+    /// The camera's warm-up for the warm request numbered `generation` succeeded, in time or after its deadline, whose
+    /// wait abandons a warm-up rather than stopping it: Test Sensors' Vision row reads frames from now, unless a newer
+    /// warm owns the state (item 190's codex-2 on 63e77b0 and codex-1 on 6223aae, the owner's "a").
+    private func cameraWarmUpSucceeded(_ generation: Int) {
+        guard generation == cameraWarmGeneration else { return }
+        visionMonitor?.cameraWarmed()
     }
 
     /// Permission preflight (F7): a denied camera or microphone must be surfaced at ARM
@@ -1356,7 +1427,7 @@ final class MonitoringEngine: ObservableObject {
         // Reconcile the camera to the readiness policy at go-live: charging may have
         // changed during the grace/calibration since beginArming's pre-warm decision.
         isCharging = Self.isChargingState(UIDevice.current.batteryState)
-        if cameraShouldBeWarm { warmActiveCamera() } else { camera.shutDown() }
+        if cameraShouldBeWarm { warmActiveCamera() } else { standDownCamera() }
     }
 
     /// Recomputes the "siren too quiet to be heard" warning. Reads `outputVolume` on the
@@ -1716,7 +1787,7 @@ final class MonitoringEngine: ObservableObject {
         for (_, m) in monitors { m.stop() }
         stopThermalSentinel()   // item 38
         clockWatch.stop()       // item 113
-        camera.shutDown()
+        standDownCamera()
         if let armedSince {
             let end = Date()
             lastArmedDuration = end.timeIntervalSince(armedSince)
@@ -1791,7 +1862,7 @@ extension MonitoringEngine: CapturePipelineHost {
         guard !cameraShouldBeWarm, !capturePipeline.isBusy,
               !isHandlingTrigger, !isCapturingUntilClear else { return }
         cameraStandbyTimer?.invalidate(); cameraStandbyTimer = nil
-        camera.shutDown()
+        standDownCamera()
     }
 
     var captureSessionIsOver: Bool { state == .disarmed }
@@ -1828,6 +1899,7 @@ extension MonitoringEngine: CapturePipelineHost {
     }
     func suppressVision(for seconds: TimeInterval) { visionMonitor?.suppress(for: seconds) }
     func captureCameraBecameAvailable() { scheduleInterruptedCaptureRetry() }
+    func captureCameraQuarantined() { noteCameraStoodDown() }
 
     func clearCaptureNotice(matching notice: String) {
         if cameraNotice == notice { cameraNotice = nil }
@@ -2121,7 +2193,9 @@ extension MonitoringEngine: MonitoringArmingHost {
         // owner's choice, asked again after each wait, wants them (codex-21), and never removes them.
         // Cloud is a Pro feature — the free tier keeps evidence on-device, so skip it entirely.
         if armedPro {
-            Task { await cloud.warmUp(alertsWanted: { [weak self] in self?.alertSubscriptionWanted ?? false }) }
+            // As for the refresh on a returning connection: the callback holds the engine weakly, the task only the cloud.
+            let alertsWanted: @MainActor () -> Bool = { [weak self] in self?.alertSubscriptionWanted ?? false }
+            Task { [cloud] in await cloud.warmUp(alertsWanted: alertsWanted) }
         }
         // Note up front if "Both" can't use multi-cam on this device.
         cameraNotice = (effectiveCameraPosition == .both && !camera.supportsMultiCam)

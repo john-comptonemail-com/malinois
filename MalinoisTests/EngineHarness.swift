@@ -50,8 +50,12 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     var warmUpError: Error?
     var onWarmUpForTesting: (@MainActor () -> Void)?
     var shutDownDelay: TimeInterval = 0
-    /// Seconds a warm-up takes before answering — lets a test outlast the pipeline's deadline.
-    var warmUpDelay: TimeInterval = 0
+    /// Seconds a warm-up takes before answering — lets a test outlast the pipeline's deadline. Kept under the lock: a test
+    /// may change it while an earlier warm-up, off the main actor, still reads it (item 190's round 190F, ThreadSanitizer).
+    var warmUpDelay: TimeInterval {
+        get { lock.withLock { _warmUpDelay } }
+        set { lock.withLock { _warmUpDelay = newValue } }
+    }
     /// The bytes every still returns. A JPEG start/end marker pair: enough to be "a still"
     /// for the store, which writes it as-is and tolerates a thumbnail it cannot decode.
     var stillData = Data([0xFF, 0xD8, 0xFF, 0xD9])
@@ -96,6 +100,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     // MARK: Recorded calls
 
     private let lock = NSLock()
+    private var _warmUpDelay: TimeInterval = 0
     private var _warmUps: [WarmUp] = []
     private var _multiCamWarmUps = 0
     private var _stills: [Bool] = []          // hardwareFlash per still
@@ -221,7 +226,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool {
         await onWarmUpForTesting?()
-        if warmUpDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(warmUpDelay * 1_000_000_000)) }
+        let delay = warmUpDelay
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
         if let warmUpError { throw warmUpError }
         lock.withLock { _warmUps.append(WarmUp(forClips: forClips, camera: camera)) }
         return true   // "reconfigured" — a cold camera pointed at a lens, like the real one
@@ -229,7 +235,8 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
 
     func warmUpMultiCam(forClips: Bool) async throws -> Bool {
         if let multiCamWarmUpError { throw multiCamWarmUpError }
-        if warmUpDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(warmUpDelay * 1_000_000_000)) }
+        let delay = warmUpDelay
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
         if let warmUpError { throw warmUpError }
         lock.withLock { _multiCamWarmUps += 1 }
         return true
@@ -403,6 +410,8 @@ enum TestIsolation {
         // No PIN recovery pending for this test's engines (item 152's lead 18): the Keychain and the test host's own
         // log are shared by every test in the process, so the real answer depends on what ran before.
         MonitoringEngine.recoveryPendingForTesting = false
+        // The evidence signer's list of certified keys, the test's own: the Keychain's is shared by every test (item 190).
+        EvidenceSigning.keyListForTesting = TestKeyList()
     }
 
     /// What the test's engines queued landed, the engines disarmed, then the test's flags cleared
@@ -434,6 +443,8 @@ enum TestIsolation {
         MonitoringEngine.recoveryPendingForTesting = nil
         if let dir = EventStore.rootOverrideForTesting { try? FileManager.default.removeItem(at: dir) }
         EventStore.rootOverrideForTesting = nil
+        EventStore.limitRemovalsKeyForTesting = nil   // item 182's codex-1: the keychain's key again
+        EvidenceSigning.keyListForTesting = nil   // item 190: the Keychain's list again
         MainActor.assumeIsolated {
             EventStore.checkpointObserverForTesting = nil   // item 155's S1: no test's observer outlives it
             CloudEnrollment.sharedForTesting = nil

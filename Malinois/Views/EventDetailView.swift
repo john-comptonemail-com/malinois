@@ -14,13 +14,22 @@ struct EventDetailView: View {
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var engine: MonitoringEngine
     @EnvironmentObject private var entitlements: ProEntitlements
+    @Environment(\.evidenceExporter) private var exporter
     @ObservedObject private var enrollment = CloudEnrollment.shared
 
     private var holdReason: CloudEnrollment.UploadHoldReason? {
         entitlements.proActive ? enrollment.uploadHoldReason(for: current) : nil
     }
 
-    @State private var showShare = false
+    /// The sheet Share opened, with what it sends, fixed when it opens (item 90, phase 4). The sheet is handed these, not
+    /// what the screen held when SwiftUI last drew it: the first sheet a screen opened was handed the screen's first
+    /// drawing, without the bundle (the device check of 2026-10-31).
+    @State private var sharing: ShareRequest?
+    /// While Share asks whether this phone signed the record, before its sheet opens.
+    @State private var openingShare = false
+    /// The evidence bundle the open sheet offers (item 90, phase 4), made only when the owner picks where to send it,
+    /// and removed once the sheet is gone.
+    @State private var bundleItem: EvidenceBundleItem?
     @State private var downloading = false
     @State private var downloadFoundNothing = false
     /// A download ran but some iCloud slots went unchecked (R3-3) — keeps the download
@@ -55,34 +64,64 @@ struct EventDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showShare = true } label: {
+                Button(action: startShare) {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .accessibilityLabel("Share evidence")
+                .reportedAction("Share evidence", startShare)
             }
         }
-        .sheet(isPresented: $showShare) { ShareSheet(items: shareItems) }
+        .sheet(item: $sharing, onDismiss: finishShare) { ShareSheet(items: $0.items) }
         .task(id: current.id) {   // item 52
             guard Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive) else { return }
             lastHeard = await engine.lastHeard(session: current.id)
         }
     }
 
-    /// Text summary + the media file (if present) to hand to the system share sheet
-    /// — for sending evidence to building security, police, or a group chat.
-    private var shareItems: [Any] {
-        // The formatted value already carries its own "at" ("Aug 3, 2026 at 2:15 PM"), so the
-        // sentence takes "on" — otherwise it reads "tampering at … at …".
-        let timestamp = current.startDate.formatted(date: .abbreviated, time: .shortened)
-        var items: [Any] = [current.shareSentence(timestamp: timestamp)]
+    /// What Share hands the system sheet: the sentence, each photo or clip still on the phone, then the evidence bundle
+    /// of a record this phone signed (item 90, phase 4), made only when the owner picks where to send it.
+    static func shareItems(sentence: String, media: [URL?], bundle: EvidenceBundleItem?) -> [Any] {
+        var items: [Any] = [sentence]
         // Share BOTH captures for a "Both" event — the secondary is often the face shot
         // you'd most want to hand to security, and dropping it silently is a footgun (V-08).
-        for url in [eventStore.mediaURL(for: current), eventStore.secondaryMediaURL(for: current)] {
+        for url in media {
             if let url, FileManager.default.fileExists(atPath: url.path) {
                 items.append(url)
             }
         }
+        if let bundle { items.append(bundle) }
         return items
+    }
+
+    /// Text summary + the media file (if present) to hand to the system share sheet
+    /// — for sending evidence to building security, police, or a group chat — then `bundle`.
+    private func shareItems(bundle: EvidenceBundleItem?) -> [Any] {
+        // The formatted value already carries its own "at" ("Aug 3, 2026 at 2:15 PM"), so the
+        // sentence takes "on" — otherwise it reads "tampering at … at …".
+        let timestamp = current.startDate.formatted(date: .abbreviated, time: .shortened)
+        return Self.shareItems(sentence: current.shareSentence(timestamp: timestamp),
+                               media: [eventStore.mediaURL(for: current), eventStore.secondaryMediaURL(for: current)],
+                               bundle: bundle)
+    }
+
+    private func startShare() { Task { await openShare() } }
+
+    /// Opens the share sheet: for a record this phone signed, with its evidence bundle as one more item, made only when
+    /// the owner picks where to send it (item 90, phase 4). A second tap meanwhile opens nothing more.
+    private func openShare() async {
+        guard sharing == nil, !openingShare else { return }
+        openingShare = true
+        defer { openingShare = false }
+        let bundle = await EvidenceBundleItem.forShare(of: current, log: eventStore.events, exporter: exporter)
+        bundleItem = bundle
+        sharing = ShareRequest(items: shareItems(bundle: bundle))
+    }
+
+    /// Once the sheet is gone: its bundle removed off the main thread, which never waits on one still being made.
+    private func finishShare() {
+        guard let item = bundleItem else { return }
+        bundleItem = nil
+        Task.detached { item.finish() }
     }
 
     @ViewBuilder
@@ -346,12 +385,21 @@ struct EvidenceMediaView: View {
     }
 }
 
+/// What one share sheet sends, fixed when Share opens it (item 90, phase 4).
+struct ShareRequest: Identifiable {
+    let id = UUID()
+    let items: [Any]
+}
+
 /// Thin wrapper around `UIActivityViewController` for exporting an event's
 /// evidence (text summary + media file) via the system share sheet.
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        #if DEBUG
+        context.environment.onScreenRecorder?.handed(items)   // what a test that lays out the screen reads
+        #endif
+        return UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

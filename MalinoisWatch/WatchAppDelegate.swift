@@ -195,23 +195,30 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     }
 
     /// The iCloud account the alerts come through, then the account's subscriptions: the watch's one
-    /// server call, which reads no event records and says whether the tamper alert is set up.
+    /// server call, which reads no event records and says whether the tamper alert is set up. Each read
+    /// has a deadline (item 180's codex-5), so a stalled one leaves the screen saying it could not check.
     private func refreshCloud() async {
-        let container = CKContainer(identifier: "iCloud.com.johncompton.Malinois")
-        switch try? await container.accountStatus() {
-        case .available: state.account = .available
-        case .noAccount, .restricted: state.account = .unavailable
-        default: state.account = .unknown
+        state.account = await WatchCloudCheck.account {
+            switch try? await Self.container().accountStatus() {
+            case .available: return .available
+            case .noAccount, .restricted: return .unavailable
+            default: return .unknown
+            }
         }
-        do {
-            let subscriptions = try await container.privateCloudDatabase.allSubscriptions()
-            let found = subscriptions.contains { $0.subscriptionID == WatchAlertStatus.tamperSubscriptionID }
-            state.subscriptions = found ? .found : .missing
-        } catch {
-            log.error("Subscription check failed: \(Self.reference(error), privacy: .public) \(error, privacy: .private)")
-            state.subscriptions = .unreadable(error.localizedDescription)
+        state.subscriptions = await WatchCloudCheck.subscriptions { [log] in
+            do {
+                let subscriptions = try await Self.container().privateCloudDatabase.allSubscriptions()
+                let found = subscriptions.contains { $0.subscriptionID == WatchAlertStatus.tamperSubscriptionID }
+                return found ? .found : .missing
+            } catch {
+                log.error("Subscription check failed: \(Self.reference(error), privacy: .public) \(error, privacy: .private)")
+                return .unreadable(error.localizedDescription)
+            }
         }
     }
+
+    /// The container the alerts' records and subscription live in.
+    private static func container() -> CKContainer { CKContainer(identifier: "iCloud.com.johncompton.Malinois") }
 
     /// An alert arriving while the app is open still shows, and is recorded; the summary's quiet
     /// updates are listed only (ADR 0051).

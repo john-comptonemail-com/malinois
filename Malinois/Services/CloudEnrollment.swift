@@ -282,10 +282,17 @@ final class CloudEnrollment: ObservableObject {
         !event.isMirrored && isCurrent(lease) && state?.owners[event.id.uuidString] == lease.account
     }
 
+    /// Whether the verified account may read the record `id` from its own iCloud. This phone's records are read only
+    /// by the account each is bound to; a record the restore held makes no claim of its own (item 180's A6; the owner's
+    /// ruling (a), 2026-10-30), so, as for a record another device made, the account that supplied a copy under its ID
+    /// reads it. Its upload stays held (`authorizeUpload`), and a record held because nothing could upload when it was
+    /// made still refuses a copy under its ID (ADR 0039).
     func authorizeRecord(_ id: UUID, lease: Lease) -> Bool {
         guard isCurrent(lease) else { return false }
-        if let owner = state?.owners[id.uuidString] { return owner == lease.account }
-        return state?.remoteOwners[id.uuidString] == lease.account
+        let key = id.uuidString
+        // A restored hold's binding is always the empty one `holdRestoredEvents` wrote with it.
+        if let owner = state?.owners[key], state?.restoredHolds?.contains(key) != true { return owner == lease.account }
+        return state?.remoteOwners[key] == lease.account
     }
 
     func authorizeSession(session: UUID, startedAt: Date? = nil, lease: Lease) -> Bool {

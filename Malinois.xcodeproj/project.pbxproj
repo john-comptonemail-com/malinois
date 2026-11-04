@@ -93,6 +93,9 @@
 		B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000013 /* ArmedView.swift */; };
 		B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000014 /* EventLogView.swift */; };
 		B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000015 /* EventDetailView.swift */; };
+		C1900000000000000000010E /* EvidenceBundleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000E /* EvidenceBundleItem.swift */; };
+		C1900000000000000000030B /* Item90ShareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000020B /* Item90ShareTests.swift */; };
+		C1900000000000000000030C /* Item90VerifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000020C /* Item90VerifierTests.swift */; };
 		B1B2C3D4E5F6000000000016 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000016 /* SettingsView.swift */; };
 		B1B2C3D4E5F6000000000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000017 /* Assets.xcassets */; };
 		B1B2C3D4E5F6000000000018 /* SirenPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */; };
@@ -256,6 +259,39 @@
 		C17500000000000000000011 /* WatchAlertPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17500000000000000000001 /* WatchAlertPairing.swift */; };
 		C16E00000000000000000026 /* WatchAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16E00000000000000000006 /* WatchAppDelegate.swift */; };
 		C16E00000000000000000027 /* WatchAlertMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000009 /* WatchAlertMessage.swift */; };
+		C19000000000000000000101 /* EvidenceAuthenticatorData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000001 /* EvidenceAuthenticatorData.swift */; };
+		C19000000000000000000102 /* EvidenceCBOR.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000002 /* EvidenceCBOR.swift */; };
+		C19000000000000000000103 /* EvidenceDER.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000003 /* EvidenceDER.swift */; };
+		C19000000000000000000104 /* EvidenceForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000004 /* EvidenceForm.swift */; };
+		C19000000000000000000105 /* EvidenceHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000005 /* EvidenceHash.swift */; };
+		C19000000000000000000106 /* EvidenceJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000006 /* EvidenceJSON.swift */; };
+		C19000000000000000000107 /* EvidenceVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000007 /* EvidenceVerifier.swift */; };
+		C19000000000000000000108 /* Event+Evidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000008 /* Event+Evidence.swift */; };
+		C19000000000000000000301 /* EvidenceTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000201 /* EvidenceTestSupport.swift */; };
+		C19000000000000000000302 /* Item90EventEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000202 /* Item90EventEvidenceTests.swift */; };
+		C19000000000000000000303 /* Item90EvidenceAirTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000203 /* Item90EvidenceAirTests.swift */; };
+		C19000000000000000000304 /* Item90EvidenceDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000204 /* Item90EvidenceDecodingTests.swift */; };
+		C19000000000000000000305 /* Item90EvidenceFormTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000205 /* Item90EvidenceFormTests.swift */; };
+		C19000000000000000000306 /* Item90EvidenceVerifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000206 /* Item90EvidenceVerifierTests.swift */; };
+		C19000000000000000000109 /* EvidenceKeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000009 /* EvidenceKeyService.swift */; };
+		C1900000000000000000010A /* EvidenceSignatureFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000A /* EvidenceSignatureFile.swift */; };
+		C1900000000000000000010B /* EvidenceSigner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000B /* EvidenceSigner.swift */; };
+		C1900000000000000000010D /* EvidenceExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000D /* EvidenceExporter.swift */; };
+		C1900000000000000000030A /* Item90ExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000020A /* Item90ExportTests.swift */; };
+		C19000000000000000000307 /* Item90SignatureFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000207 /* Item90SignatureFileTests.swift */; };
+		C19000000000000000000308 /* Item90SignerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000208 /* Item90SignerTests.swift */; };
+		C1900000000000000000010C /* EvidenceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000C /* EvidenceBundle.swift */; };
+		C19000000000000000000309 /* Item90EvidenceBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000209 /* Item90EvidenceBundleTests.swift */; };
+		C19000000000000000000521 /* EvidenceAuthenticatorData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000001 /* EvidenceAuthenticatorData.swift */; };
+		C19000000000000000000522 /* EvidenceBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000C /* EvidenceBundle.swift */; };
+		C19000000000000000000523 /* EvidenceCBOR.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000002 /* EvidenceCBOR.swift */; };
+		C19000000000000000000524 /* EvidenceDER.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000003 /* EvidenceDER.swift */; };
+		C19000000000000000000525 /* EvidenceForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000004 /* EvidenceForm.swift */; };
+		C19000000000000000000526 /* EvidenceHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000005 /* EvidenceHash.swift */; };
+		C19000000000000000000527 /* EvidenceJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000006 /* EvidenceJSON.swift */; };
+		C19000000000000000000528 /* EvidenceVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000007 /* EvidenceVerifier.swift */; };
+		C19000000000000000000511 /* MalinoisVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000501 /* MalinoisVerifier.swift */; };
+		C19000000000000000000512 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000502 /* main.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -406,6 +442,9 @@
 		A1B2C3D4E5F6000000000013 /* ArmedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000014 /* EventLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventLogView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000015 /* EventDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
+		C1900000000000000000000E /* EvidenceBundleItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceBundleItem.swift; sourceTree = "<group>"; };
+		C1900000000000000000020B /* Item90ShareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90ShareTests.swift; sourceTree = "<group>"; };
+		C1900000000000000000020C /* Item90VerifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90VerifierTests.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000018 /* SirenPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SirenPlayer.swift; sourceTree = "<group>"; };
@@ -576,6 +615,32 @@
 		C16E00000000000000000006 /* WatchAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAppDelegate.swift; sourceTree = "<group>"; };
 		C16E00000000000000000007 /* MalinoisWatch-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "MalinoisWatch-Release.entitlements"; sourceTree = "<group>"; };
 		C16E00000000000000000010 /* MalinoisWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MalinoisWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C19000000000000000000001 /* EvidenceAuthenticatorData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceAuthenticatorData.swift; sourceTree = "<group>"; };
+		C19000000000000000000002 /* EvidenceCBOR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceCBOR.swift; sourceTree = "<group>"; };
+		C19000000000000000000003 /* EvidenceDER.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceDER.swift; sourceTree = "<group>"; };
+		C19000000000000000000004 /* EvidenceForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceForm.swift; sourceTree = "<group>"; };
+		C19000000000000000000005 /* EvidenceHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceHash.swift; sourceTree = "<group>"; };
+		C19000000000000000000006 /* EvidenceJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceJSON.swift; sourceTree = "<group>"; };
+		C19000000000000000000007 /* EvidenceVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceVerifier.swift; sourceTree = "<group>"; };
+		C19000000000000000000008 /* Event+Evidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Event+Evidence.swift"; sourceTree = "<group>"; };
+		C19000000000000000000201 /* EvidenceTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceTestSupport.swift; sourceTree = "<group>"; };
+		C19000000000000000000202 /* Item90EventEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EventEvidenceTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000203 /* Item90EvidenceAirTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EvidenceAirTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000204 /* Item90EvidenceDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EvidenceDecodingTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000205 /* Item90EvidenceFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EvidenceFormTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000206 /* Item90EvidenceVerifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EvidenceVerifierTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000009 /* EvidenceKeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceKeyService.swift; sourceTree = "<group>"; };
+		C1900000000000000000000A /* EvidenceSignatureFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceSignatureFile.swift; sourceTree = "<group>"; };
+		C1900000000000000000000B /* EvidenceSigner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceSigner.swift; sourceTree = "<group>"; };
+		C1900000000000000000000D /* EvidenceExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceExporter.swift; sourceTree = "<group>"; };
+		C1900000000000000000020A /* Item90ExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90ExportTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000207 /* Item90SignatureFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90SignatureFileTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000208 /* Item90SignerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90SignerTests.swift; sourceTree = "<group>"; };
+		C1900000000000000000000C /* EvidenceBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceBundle.swift; sourceTree = "<group>"; };
+		C19000000000000000000209 /* Item90EvidenceBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90EvidenceBundleTests.swift; sourceTree = "<group>"; };
+		C19000000000000000000501 /* MalinoisVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MalinoisVerifier.swift; sourceTree = "<group>"; };
+		C19000000000000000000502 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		C19000000000000000000503 /* malinois-verify */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "malinois-verify"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -614,6 +679,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C19000000000000000000532 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -621,6 +693,8 @@
 			isa = PBXGroup;
 			children = (
 				C1C2C3D4E5F6000000000002 /* Malinois */,
+				C19000000000000000000400 /* MalinoisEvidence */,
+				C19000000000000000000504 /* MalinoisVerifier */,
 				C1C2C3D4E5F6000000000009 /* MalinoisTests */,
 				71B2C3D4E5F6000000000030 /* MalinoisNotificationService */,
 				C16E00000000000000000030 /* MalinoisWatch */,
@@ -643,12 +717,28 @@
 			path = Malinois;
 			sourceTree = "<group>";
 		};
+		C19000000000000000000400 /* MalinoisEvidence */ = {
+			isa = PBXGroup;
+			children = (
+				C19000000000000000000001 /* EvidenceAuthenticatorData.swift */,
+				C1900000000000000000000C /* EvidenceBundle.swift */,
+				C19000000000000000000002 /* EvidenceCBOR.swift */,
+				C19000000000000000000003 /* EvidenceDER.swift */,
+				C19000000000000000000004 /* EvidenceForm.swift */,
+				C19000000000000000000005 /* EvidenceHash.swift */,
+				C19000000000000000000006 /* EvidenceJSON.swift */,
+				C19000000000000000000007 /* EvidenceVerifier.swift */,
+			);
+			path = MalinoisEvidence;
+			sourceTree = "<group>";
+		};
 		C1C2C3D4E5F6000000000003 /* Models */ = {
 			isa = PBXGroup;
 			children = (
 				A1B2C3D4E5F6000000000002 /* CoreTypes.swift */,
 				C17900000000000000000001 /* StoredJSON.swift */,
 				A1B2C3D4E5F6000000000003 /* Event.swift */,
+				C19000000000000000000008 /* Event+Evidence.swift */,
 				A1B2C3D4E5F6000000000311 /* CaptureFailureReason.swift */,
 				A1B2C3D4E5F6000000000312 /* AlertRewrite.swift */,
 				A1B2C3D4E5F6000000000004 /* AppSettings.swift */,
@@ -668,6 +758,10 @@
 			children = (
 				A1B2C3D4E5F6000000000005 /* KeychainService.swift */,
 				A1B2C3D4E5F6000000000006 /* EventStore.swift */,
+				C19000000000000000000009 /* EvidenceKeyService.swift */,
+				C1900000000000000000000A /* EvidenceSignatureFile.swift */,
+				C1900000000000000000000B /* EvidenceSigner.swift */,
+				C1900000000000000000000D /* EvidenceExporter.swift */,
 				A1B2C3D4E5F6000000000007 /* CameraController.swift */,
 				A1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift */,
 				A1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift */,
@@ -749,6 +843,7 @@
 				A1B2C3D4E5F6000000000013 /* ArmedView.swift */,
 				A1B2C3D4E5F6000000000014 /* EventLogView.swift */,
 				A1B2C3D4E5F6000000000015 /* EventDetailView.swift */,
+				C1900000000000000000000E /* EvidenceBundleItem.swift */,
 				A1B2C3D4E5F6000000000021 /* DryRunView.swift */,
 				C13100000000000000000003 /* FirstArmBriefingView.swift */,
 				A1B2C3D4E5F6000000000016 /* SettingsView.swift */,
@@ -782,6 +877,7 @@
 				71B2C3D4E5F6000000000010 /* MalinoisNotificationService.appex */,
 				C16E00000000000000000010 /* MalinoisWatch.app */,
 				C17500000000000000000010 /* MalinoisWatchNotificationService.appex */,
+				C19000000000000000000503 /* malinois-verify */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -867,6 +963,18 @@
 				C16000000000000000000003 /* Item105ImageDecodingTests.swift */,
 				C16000000000000000000002 /* Item104FaceIDTextTests.swift */,
 				C18200000000000000000002 /* Item82FoldableTests.swift */,
+				C19000000000000000000201 /* EvidenceTestSupport.swift */,
+				C19000000000000000000202 /* Item90EventEvidenceTests.swift */,
+				C19000000000000000000203 /* Item90EvidenceAirTests.swift */,
+				C19000000000000000000209 /* Item90EvidenceBundleTests.swift */,
+				C19000000000000000000204 /* Item90EvidenceDecodingTests.swift */,
+				C19000000000000000000205 /* Item90EvidenceFormTests.swift */,
+				C19000000000000000000206 /* Item90EvidenceVerifierTests.swift */,
+				C19000000000000000000207 /* Item90SignatureFileTests.swift */,
+				C19000000000000000000208 /* Item90SignerTests.swift */,
+				C1900000000000000000020A /* Item90ExportTests.swift */,
+				C1900000000000000000020B /* Item90ShareTests.swift */,
+				C1900000000000000000020C /* Item90VerifierTests.swift */,
 				C12000000000000000000002 /* Item120ScreensTests.swift */,
 				C12800000000000000000001 /* Item119And126LargeTextTests.swift */,
 				C12800000000000000000004 /* Item124ReviewTests.swift */,
@@ -959,6 +1067,15 @@
 				C17500000000000000000004 /* MalinoisWatchNotificationService.entitlements */,
 			);
 			path = MalinoisWatchNotificationService;
+			sourceTree = "<group>";
+		};
+		C19000000000000000000504 /* MalinoisVerifier */ = {
+			isa = PBXGroup;
+			children = (
+				C19000000000000000000502 /* main.swift */,
+				C19000000000000000000501 /* MalinoisVerifier.swift */,
+			);
+			path = MalinoisVerifier;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -1056,6 +1173,22 @@
 			productReference = C17500000000000000000010 /* MalinoisWatchNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		C19000000000000000000540 /* MalinoisVerifier */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C19000000000000000000550 /* Build configuration list for PBXNativeTarget "MalinoisVerifier" */;
+			buildPhases = (
+				C19000000000000000000531 /* Sources */,
+				C19000000000000000000532 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MalinoisVerifier;
+			productName = "malinois-verify";
+			productReference = C19000000000000000000503 /* malinois-verify */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -1082,6 +1215,9 @@
 					C17500000000000000000040 = {
 						CreatedOnToolsVersion = 27.1;
 					};
+					C19000000000000000000540 = {
+						CreatedOnToolsVersion = 27.2;
+					};
 				};
 			};
 			buildConfigurationList = C1C2C3D4E5F6000000000105 /* Build configuration list for PBXProject "Malinois" */;
@@ -1102,6 +1238,7 @@
 				71B2C3D4E5F6000000000040 /* MalinoisNotificationService */,
 				C16E00000000000000000040 /* MalinoisWatch */,
 				C17500000000000000000040 /* MalinoisWatchNotificationService */,
+				C19000000000000000000540 /* MalinoisVerifier */,
 			);
 		};
 /* End PBXProject section */
@@ -1156,6 +1293,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				B1B2C3D4E5F6000000000001 /* MalinoisApp.swift in Sources */,
+				C19000000000000000000101 /* EvidenceAuthenticatorData.swift in Sources */,
+				C1900000000000000000010C /* EvidenceBundle.swift in Sources */,
+				C19000000000000000000102 /* EvidenceCBOR.swift in Sources */,
+				C19000000000000000000103 /* EvidenceDER.swift in Sources */,
+				C19000000000000000000104 /* EvidenceForm.swift in Sources */,
+				C19000000000000000000105 /* EvidenceHash.swift in Sources */,
+				C19000000000000000000106 /* EvidenceJSON.swift in Sources */,
+				C19000000000000000000107 /* EvidenceVerifier.swift in Sources */,
+				C19000000000000000000108 /* Event+Evidence.swift in Sources */,
 				B1B2C3D4E5F6000000000002 /* CoreTypes.swift in Sources */,
 				C17900000000000000000011 /* StoredJSON.swift in Sources */,
 				B1B2C3D4E5F6000000000003 /* Event.swift in Sources */,
@@ -1165,6 +1311,10 @@
 				C16000000000000000000063 /* BiometricBinding.swift in Sources */,
 				B1B2C3D4E5F6000000000005 /* KeychainService.swift in Sources */,
 				B1B2C3D4E5F6000000000006 /* EventStore.swift in Sources */,
+				C19000000000000000000109 /* EvidenceKeyService.swift in Sources */,
+				C1900000000000000000010A /* EvidenceSignatureFile.swift in Sources */,
+				C1900000000000000000010B /* EvidenceSigner.swift in Sources */,
+				C1900000000000000000010D /* EvidenceExporter.swift in Sources */,
 				B1B2C3D4E5F6000000000007 /* CameraController.swift in Sources */,
 				B1B2C3D4E5F6000000000303 /* EvidenceCapturePipeline.swift in Sources */,
 				B1B2C3D4E5F6000000000304 /* DisarmEntryCoordinator.swift in Sources */,
@@ -1243,6 +1393,7 @@
 				B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */,
 				B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */,
 				B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */,
+				C1900000000000000000010E /* EvidenceBundleItem.swift in Sources */,
 				B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */,
 				C13100000000000000000013 /* FirstArmBriefingView.swift in Sources */,
 				B1B2C3D4E5F6000000000016 /* SettingsView.swift in Sources */,
@@ -1255,6 +1406,18 @@
 			buildActionMask = 2147483647;
 			files = (
 				E1D2C3D4E5F6000000000001 /* KeychainServiceTests.swift in Sources */,
+				C19000000000000000000301 /* EvidenceTestSupport.swift in Sources */,
+				C19000000000000000000302 /* Item90EventEvidenceTests.swift in Sources */,
+				C19000000000000000000303 /* Item90EvidenceAirTests.swift in Sources */,
+				C19000000000000000000309 /* Item90EvidenceBundleTests.swift in Sources */,
+				C19000000000000000000304 /* Item90EvidenceDecodingTests.swift in Sources */,
+				C19000000000000000000305 /* Item90EvidenceFormTests.swift in Sources */,
+				C19000000000000000000306 /* Item90EvidenceVerifierTests.swift in Sources */,
+				C19000000000000000000307 /* Item90SignatureFileTests.swift in Sources */,
+				C19000000000000000000308 /* Item90SignerTests.swift in Sources */,
+				C1900000000000000000030A /* Item90ExportTests.swift in Sources */,
+				C1900000000000000000030B /* Item90ShareTests.swift in Sources */,
+				C1900000000000000000030C /* Item90VerifierTests.swift in Sources */,
 				C10D00000000000000000014 /* NotificationService.swift in Sources */,
 				C10D00000000000000000013 /* NotificationEnrollmentTests.swift in Sources */,
 				C10D00000000000000000012 /* CloudEnrollmentTests.swift in Sources */,
@@ -1426,6 +1589,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C19000000000000000000531 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C19000000000000000000521 /* EvidenceAuthenticatorData.swift in Sources */,
+				C19000000000000000000522 /* EvidenceBundle.swift in Sources */,
+				C19000000000000000000523 /* EvidenceCBOR.swift in Sources */,
+				C19000000000000000000524 /* EvidenceDER.swift in Sources */,
+				C19000000000000000000525 /* EvidenceForm.swift in Sources */,
+				C19000000000000000000526 /* EvidenceHash.swift in Sources */,
+				C19000000000000000000527 /* EvidenceJSON.swift in Sources */,
+				C19000000000000000000528 /* EvidenceVerifier.swift in Sources */,
+				C19000000000000000000511 /* MalinoisVerifier.swift in Sources */,
+				C19000000000000000000512 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -1569,7 +1749,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1579,7 +1759,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1597,7 +1777,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1607,7 +1787,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1626,7 +1806,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1643,7 +1823,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1658,7 +1838,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1667,7 +1847,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1683,7 +1863,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1692,7 +1872,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1709,7 +1889,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatch/MalinoisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1721,7 +1901,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1740,7 +1920,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "MalinoisWatch/MalinoisWatch-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1752,7 +1932,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1770,7 +1950,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1779,7 +1959,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1796,7 +1976,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 82;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1805,7 +1985,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 1.10;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1813,6 +1993,32 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		C19000000000000000000551 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_NAME = "malinois-verify";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C19000000000000000000552 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_NAME = "malinois-verify";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -1869,6 +2075,15 @@
 			buildConfigurations = (
 				C17500000000000000000051 /* Debug */,
 				C17500000000000000000052 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C19000000000000000000550 /* Build configuration list for PBXNativeTarget "MalinoisVerifier" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C19000000000000000000551 /* Debug */,
+				C19000000000000000000552 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

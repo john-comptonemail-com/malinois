@@ -1426,6 +1426,8 @@ final class CloudExfiltrator: ObservableObject {
                 || Event.clockChangeSeconds(kind: kind) != nil   // item 113
                 || Event.resumedSeconds(kind: kind) != nil   // item 153's MAL-06
                 || Event.sirenElsewhereDevice(kind: kind) != nil   // 1.8.2's step 26 (ADR 0062)
+                || Event.signedRecordsGone(kind: kind) != nil   // item 182
+                || kind == Event.signaturesMissingKind   // item 190's A3
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,
@@ -2152,6 +2154,10 @@ final class CloudExfiltrator: ObservableObject {
             eventIDs += page.ids
             anyQueryFailed = anyQueryFailed || !page.ok
         }
+        // An event whose meta record exists in both types (a v1 record and its v2 successor) is purged once (item
+        // 180's A13): its photo records are asked for once each, and it counts as one event.
+        var seen = Set<UUID>()
+        eventIDs = eventIDs.filter { seen.insert($0).inserted }
         guard !eventIDs.isEmpty else {
             return CloudPurgeResult(eventsExamined: 0, recordsDeleted: 0, failed: anyQueryFailed)
         }

@@ -45,6 +45,10 @@ protocol CapturePipelineHost: AnyObject {
     func clearCaptureNotice(matching notice: String)
     /// The prior operation and its required shutdown have drained; deferred work may retry.
     func captureCameraBecameAvailable()
+    /// A capture's deadline (its attempt's or its warm-up's) quarantined the camera, which shuts it down: a stand-down
+    /// for the host, from the timeout on, though the stalled worker holds the camera until it drains (item 190's
+    /// codex-1 and deepseek-1 on f476178).
+    func captureCameraQuarantined()
     /// Camera evidence finished after the capture deadline was stored on its event, and the
     /// event reopened for upload (item 108, CE-01): the response's own upload ran before the
     /// evidence existed, so the host starts another.
@@ -295,6 +299,7 @@ final class EvidenceCapturePipeline {
         token.quarantined = true
         token.stopped = true
         camera.quarantineCapture()
+        host?.captureCameraQuarantined()   // the engine counts it a stand-down, Vision with it (item 190's codex-1)
         cleanUp(token)
         Task { @MainActor in
             let front = token.both ? token.finalized["front"] : token.finalized.values.first
