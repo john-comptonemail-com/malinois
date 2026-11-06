@@ -4,14 +4,15 @@
 //
 //  The statements evidence signing signs (BACKLOG item 90), in format "malinois-evidence/1": a revision of a record, a
 //  retention statement (the log's limit retired these signatures with their records), the statement Apple's
-//  certification of a key covers, an export statement, and an absence statement (signed records that left the log
-//  other than by its limit, item 182). Each is a JSON object in the fixed form (`EvidenceJSON`) whose members come in a fixed
+//  certification of a key covers, an export statement, an absence statement (signed records that left the log other
+//  than by its limit, item 182), and an unkept statement (signatures App Attest made that the phone's file did not keep,
+//  item 188). Each is a JSON object in the fixed form (`EvidenceJSON`) whose members come in a fixed
 //  order, every member always present (null when it has no value); hashes and key IDs in lowercase hex; times in
 //  milliseconds since 1970 by the phone's clock, which the statement states as the phone's. The phone signs a
 //  statement's SHA-256; a verifier checks the bytes against it, then reads them here. Shared by the app and the Mac
 //  verifier.
 //
-//  The five layouts, member by member:
+//  The six layouts, member by member:
 //    record:    format, type "record", id (the record's UUID), revision (1, 2, ...: the phone's count of this record's
 //               signed revisions), signedAt, app ("1.10 (81)"), facts (the record's own fields, in the order the app
 //               writes them), attachments ([{name, sha256, bytes}]: each photo or clip, the thumbnail, each trace)
@@ -26,6 +27,9 @@
 //    absence:   format, type "absence", signedAt, app, records ([{id, revision, startDate}]: each signed record that left
 //               the log other than by its limit, the revision last signed and its start, or null; IDs in ascending
 //               order, each once. Item 182, the owner's ruling of 2026-10-31, "a": its signatures stay in the file)
+//    unkept:    format, type "unkept", signedAt, app, counters ([[first, last], ...], as a retention statement's: counters
+//               of the key that signs it, each below its own, that App Attest made and the phone's file did not keep.
+//               Item 188, ADR 0073: a verifier counts them as accounted for, and says so)
 //
 
 import Foundation
@@ -120,13 +124,24 @@ enum EvidenceForm {
         let startDate: Int64?
     }
 
-    /// Any of the five.
+    /// Signatures App Attest made under the key that signs this statement and the phone's file did not keep (item 188;
+    /// ADR 0073): the app stopped between a signature and its line, or before it could write a line the file had refused.
+    /// Their counters, as ranges, each below the statement's own: a verifier counts them as accounted for only when the
+    /// key itself signed it, and reports them as made by App Attest and not kept by the phone, not as missing.
+    struct Unkept: Equatable, Sendable {
+        let signedAt: Int64
+        let app: String
+        let counters: [ClosedRange<UInt32>]
+    }
+
+    /// Any of the six.
     enum Statement: Equatable, Sendable {
         case record(Record)
         case retention(Retention)
         case key(KeyStatement)
         case export(Export)
         case absence(Absence)
+        case unkept(Unkept)
     }
 
     /// The statement's fixed-form bytes, which the phone signs.
@@ -149,6 +164,7 @@ enum EvidenceForm {
         case "key": statement = .key(try keyStatement(members))
         case "export": statement = .export(try export(members))
         case "absence": statement = .absence(try absence(members))
+        case "unkept": statement = .unkept(try unkept(members))
         default: throw EvidenceProblem.formNotFixed
         }
         // The one spelling: a lowercase UUID or uppercase hex reads, but is not what the phone writes.
@@ -233,17 +249,24 @@ enum EvidenceForm {
                              .init("startDate", record.startDate.map(EvidenceJSON.int) ?? .null)])
                 })),
             ])
+        case .unkept(let unkept):
+            return .object([
+                .init("format", .string(format)), .init("type", .string("unkept")), .init("signedAt", .int(unkept.signedAt)),
+                .init("app", .string(unkept.app)), .init("counters", rangesJSON(unkept.counters)),
+            ])
         }
     }
 
     /// Keys' counters as ranges, as a retention statement and an export statement write them.
     private static func countersJSON(_ list: [KeyCounters]) -> EvidenceJSON {
         .array(list.map { item -> EvidenceJSON in
-            .object([.init("key", .string(EvidenceHash.hex(item.keyID))),
-                     .init("counters", .array(item.counters.map { range -> EvidenceJSON in
-                         .array([.int(Int64(range.lowerBound)), .int(Int64(range.upperBound))])
-                     }))])
+            .object([.init("key", .string(EvidenceHash.hex(item.keyID))), .init("counters", rangesJSON(item.counters))])
         })
+    }
+
+    /// Counters as ranges, each its first and last: `[[first, last], ...]`.
+    private static func rangesJSON(_ ranges: [ClosedRange<UInt32>]) -> EvidenceJSON {
+        .array(ranges.map { range -> EvidenceJSON in .array([.int(Int64(range.lowerBound)), .int(Int64(range.upperBound))]) })
     }
 
     // MARK: - Reading
@@ -308,18 +331,29 @@ enum EvidenceForm {
             let keyID = try hash(parts[0])
             // Keys in ascending order, each once.
             if let previous = retired.last, !previous.keyID.lexicographicallyPrecedes(keyID) { throw EvidenceProblem.formNotFixed }
-            guard case .array(let ranges) = parts[1], !ranges.isEmpty else { throw EvidenceProblem.formNotFixed }
-            var counters: [ClosedRange<UInt32>] = []
-            for range in ranges {
-                guard case .array(let ends) = range, ends.count == 2, case .int(let low) = ends[0], case .int(let high) = ends[1],
-                      low >= 1, low <= high, high <= Int64(UInt32.max) else { throw EvidenceProblem.formNotFixed }
-                // Each range after the one before, with at least one counter between them: one spelling per set.
-                if let previous = counters.last, Int64(previous.upperBound) + 1 >= low { throw EvidenceProblem.formNotFixed }
-                counters.append(UInt32(low)...UInt32(high))
-            }
-            retired.append(KeyCounters(keyID: keyID, counters: counters))
+            retired.append(KeyCounters(keyID: keyID, counters: try ranges(parts[1])))
         }
         return retired
+    }
+
+    /// Counters as ranges, in their one spelling: at least one, each from 1 to a counter's highest, each after the one
+    /// before with at least one counter between them.
+    private static func ranges(_ value: EvidenceJSON) throws -> [ClosedRange<UInt32>] {
+        guard case .array(let ranges) = value, !ranges.isEmpty else { throw EvidenceProblem.formNotFixed }
+        var counters: [ClosedRange<UInt32>] = []
+        for range in ranges {
+            guard case .array(let ends) = range, ends.count == 2, case .int(let low) = ends[0], case .int(let high) = ends[1],
+                  low >= 1, low <= high, high <= Int64(UInt32.max) else { throw EvidenceProblem.formNotFixed }
+            // Each range after the one before, with at least one counter between them: one spelling per set.
+            if let previous = counters.last, Int64(previous.upperBound) + 1 >= low { throw EvidenceProblem.formNotFixed }
+            counters.append(UInt32(low)...UInt32(high))
+        }
+        return counters
+    }
+
+    private static func unkept(_ members: [EvidenceJSON.Member]) throws -> Unkept {
+        let top = try values(members, named: ["format", "type", "signedAt", "app", "counters"])
+        return Unkept(signedAt: try time(top[2]), app: try app(top[3]), counters: try ranges(top[4]))
     }
 
     private static func export(_ members: [EvidenceJSON.Member]) throws -> Export {

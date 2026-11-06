@@ -1,6 +1,7 @@
 # ADR 0002: Full-media retrieval by deterministic record ID
 
-- **Status:** accepted
+- **Status:** superseded by ADR 0074 (2026-11-04, 1.11: restated with its three amendments and the check of
+  a downloaded capture against what the phone signed)
 - **Date:** 2026-08-26
 
 ## Context

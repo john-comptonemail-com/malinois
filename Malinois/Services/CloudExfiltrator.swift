@@ -1076,36 +1076,52 @@ final class CloudExfiltrator: ObservableObject {
     /// copy survives that. Silent by construction — see `stateRecordType`.
     @discardableResult
     func pushStateChange(_ event: Event, disarmSignal: Bool = true) async -> Bool {
+        await pushStateChangeReportingAlert(event, disarmSignal: disarmSignal).landed
+    }
+
+    /// What a state change's push did (item 187's deepseek-5): whether its audit record landed, and whether the
+    /// "disarmed" alert it was to carry went out behind it. The pending sweep's stand-in rule reads the second: an
+    /// alert that failed behind a landed record used to look, to the sweep, like an alert sent.
+    struct StatePush: Equatable, Sendable {
+        let landed: Bool
+        let alerted: Bool
+        static let failed = StatePush(landed: false, alerted: false)
+    }
+
+    /// `pushStateChange`, answering also whether the "disarmed" alert went out behind the record (item 187's
+    /// deepseek-5).
+    func pushStateChangeReportingAlert(_ event: Event, disarmSignal: Bool = true) async -> StatePush {
         let assertion = BackgroundAssertion.begin("malinois-state")   // from the lookup on (item 153's MAL-01)
         defer { assertion.end() }
         guard let kind = event.stateChange, let lease = await acquireCloudLease(),
-              mayUpload(event, lease: lease) else { return false }
-        return await enqueueAuthorized(event.id, lease: lease, declined: false) { [self] in
+              mayUpload(event, lease: lease) else { return .failed }
+        return await enqueueAuthorized(event.id, lease: lease, declined: StatePush.failed) { [self] in
             // A queued state change must retain the account that owned it at creation.
-            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return false }
+            guard enrollment.isCurrent(lease), mayUpload(event, lease: lease) else { return .failed }
             let record = Self.makeStateRecord(event, kind: kind, deviceName: DeviceInfo.name)
             do {
                 try await save([record], lease: lease, permitted: { backupPermits(event) })
             } catch {
                 Log.cloud.error("State push failed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
                 if Self.indicatesEncryptedDataReset(error) { encryptedDataResetDetected = true }
-                return false
+                return .failed
             }
             // The disarm signal rides BEHIND the audit record, never in front of it (BACKLOG
             // 59): the record that proves WHEN protection stopped is the one that must land;
             // the push is a courtesy on top. Its failure — most likely the type not yet
-            // deployed to Production — is logged and otherwise ignored, so the audit record's
-            // sync state stays truthful.
+            // deployed to Production — is logged and reported (`alerted`), never counted against the
+            // audit record, whose sync state stays truthful; the pending sweep stands in for it
+            // (item 187's deepseek-5).
             // `disarmSignal` false: a late disarm the pending sweep does not alert for (item 74 line 9).
-            if disarmSignal, Self.disarmSignalWanted(kind: kind) {
-                let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
-                do {
-                    try await save([signal], lease: lease, permitted: { backupPermits(event) })
-                } catch {
-                    Log.cloud.error("Disarm signal push failed (the audit record landed): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
-                }
+            guard disarmSignal, Self.disarmSignalWanted(kind: kind) else { return StatePush(landed: true, alerted: false) }
+            let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
+            do {
+                try await save([signal], lease: lease, permitted: { backupPermits(event) })
+                return StatePush(landed: true, alerted: true)
+            } catch {
+                Log.cloud.error("Disarm signal push failed (the audit record landed): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
+                return StatePush(landed: true, alerted: false)
             }
-            return true
         }
     }
 

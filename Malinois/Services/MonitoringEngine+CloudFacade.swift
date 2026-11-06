@@ -400,11 +400,10 @@ extension MonitoringEngine {
         MonitoringCloudCoordinator.lateDisarms(in: pending, now: now, lateAfter: lateAfter)
     }
 
-    /// Pure (unit-tested; item 162's ds4f1-1017-6): the late disarm that carries a pass's one "disarmed" alert when the
-    /// newest, which was to carry it, did not land: the newest of the pass's late disarms that did. Nil when the newest
-    /// landed, or none did. Before, that pass sent no alert, and none came at all if the newest never landed.
-    nonisolated static func lateDisarmAlertStandIn(late: [Event], landed: Set<UUID>) -> Event? {
-        MonitoringCloudCoordinator.lateDisarmAlertStandIn(late: late, landed: landed)
+    /// The sweep's stand-in rule for a pass's one "disarmed" alert (`MonitoringCloudCoordinator`'s, item 162's
+    /// ds4f1-1017-6, item 187's deepseek-5).
+    nonisolated static func lateDisarmAlertStandIn(late: [Event], uploaded: Set<UUID>, alerted: Set<UUID>) -> Event? {
+        MonitoringCloudCoordinator.lateDisarmAlertStandIn(late: late, uploaded: uploaded, alerted: alerted)
     }
 
     /// One record's upload inside the sweep.
@@ -614,7 +613,7 @@ extension MonitoringEngine {
         )
     }
 
-    nonisolated static func stageDownloadedAsset(at url: URL) async -> (media: EventStore.MediaSource, ext: String)? {
+    nonisolated static func stageDownloadedAsset(at url: URL) async -> (media: EventStore.MediaSource, ext: String, digest: EvidenceForm.Digest)? {
         await MonitoringCloudCoordinator.stageDownloadedAsset(at: url)
     }
 
@@ -658,9 +657,22 @@ extension MonitoringEngine {
     /// first, which can be the download itself; the iCloud copy stays, so it can be downloaded again.
     /// A capture iCloud gave that cannot be kept here (it fails to stage or to store) leaves the download incomplete,
     /// as an unchecked slot does: the rest is still to get (item 167's A2).
+    /// A capture of a record this phone signed joins it only as signed (item 190's A4, its download half; item 192's
+    /// step 2, the owner's "a"): one whose bytes are not those the latest revision naming its slot signed is not added
+    /// (`refused`), and iCloud's copy is left as it is; while the signer cannot tell, the capture waits for another
+    /// try, as an unchecked slot does. The comparison and the attachment fall in one turn of the signer's; a file the
+    /// download stored that does not join its record is removed at once, as is the private copy a clip was staged
+    /// into (item 194, the owner's "1 a 2 a" and "a").
     func downloadFullEvidence(for id: UUID) async -> EvidenceDownload {
         await withCloudLifetime { coordinator in
             await coordinator.downloadFullEvidence(for: id)
         }
+    }
+
+    /// The signer of the log, whose signatures each capture a download brings is compared with before it joins its record
+    /// (item 190's A4, its download half; item 192's step 2, the owner's "a"); the launch hands it the log's signer.
+    var downloadSigner: EvidenceSigner? {
+        get { cloudCoordinator.downloadSigner }
+        set { cloudCoordinator.downloadSigner = newValue }
     }
 }

@@ -1894,8 +1894,14 @@ extension MonitoringEngine: CapturePipelineHost {
         captureFlash = on
         refreshBrightness()
     }
+    /// Each look of an until-clear clip: every tripwire ready to fire again, the motion and camera tripwires measuring from
+    /// where things are now and not from where they were at arming, and Sound from the level it has adapted to. A phone left
+    /// in a new pose, a scene that changed and stayed changed, or a room at a level Sound has taken in is quiet (item 204,
+    /// TestFlight 83: it tripped at every look, and the clip ran to its ceiling with nothing moving). A sound above the bar
+    /// still holds the clip open, up to that ceiling: something is audibly going on. The trigger has fired by now, and the
+    /// response's end moves the same baselines (`reArm`), so a slow mover hides nothing: the armed watch trips on it afresh.
     func rearmTripwiresDuringCapture() {
-        for (_, m) in monitors where m.isEnabled { m.rearm() }
+        for (_, m) in monitors where m.isEnabled { m.rearmAndRebaseline() }
     }
     func suppressVision(for seconds: TimeInterval) { visionMonitor?.suppress(for: seconds) }
     func captureCameraBecameAvailable() { scheduleInterruptedCaptureRetry() }

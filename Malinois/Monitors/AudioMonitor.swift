@@ -61,7 +61,6 @@ final class AudioMonitor: SensorMonitor {
     var deactivateAudioSessionForTesting: (() -> Void)?
     var currentLevelForTesting: (() -> Double)?
     var recordingForTesting: (() -> Bool)?
-    var nowForTesting: (() -> Date)?
     /// The uptime clock a test drives (item 180's A11).
     var uptimeForTesting: (() -> TimeInterval)?
     /// Stands in for the recorder's rebuild, so a test counts restarts without audio (item 180's A11).
@@ -201,6 +200,7 @@ final class AudioMonitor: SensorMonitor {
         // Item 108, SE-01: a microphone that is down reads the -160 dBFS floor. That is missing
         // data, not a quiet room: learning it would set a baseline the room itself then trips.
         guard recorderIsRecording else { return }
+        healthTracker.noteCalibrationSample()
         calibrationSamples.append(level)
     }
 
@@ -267,6 +267,15 @@ final class AudioMonitor: SensorMonitor {
         rollingDB = baselineDB   // reset the rolling baseline so it re-adapts
     }
 
+    /// After a real trigger, at each look of an until-clear recording and at the response's end: the latch cleared, the level
+    /// the room has adapted to kept (item 204's codex-1). Resetting it here made an unchanged room that had grown louder slowly
+    /// trip at every look, holding a still phone's clip open to its ceiling, and raise another event once the watch was back. The
+    /// calibrated baseline and `maxBaselineDrift` stand, so the bar moves no further than SECURITY.md says, and a sound above it
+    /// still trips and holds a clip open.
+    func rearmAndRebaseline() {
+        hasTripped = false
+    }
+
     private func evaluate() {
         // Invalidating a timer cannot cancel a main-actor tick already queued by it.
         // Reject that tick before currentLevel can restart the recorder during capture.
@@ -317,12 +326,9 @@ final class AudioMonitor: SensorMonitor {
     /// Returns whether it is recording, that is, whether this tick's level is a real sample.
     private func observeRecorderHealth() -> Bool {
         let recording = recorderIsRecording
-        #if DEBUG
-        let now = nowForTesting?() ?? Date()
-        #else
-        let now = Date()
-        #endif
-        if let report = healthTracker.observe(recording: recording, at: now) { onHealthReport?(report) }
+        // On the uptime clock, as the restart backoff (item 187's qwen-12 (b)): on the calendar clock, a clock set back
+        // delayed the outage report and one set forward brought it early.
+        if let report = healthTracker.observe(recording: recording, at: uptime()) { onHealthReport?(report) }
         return recording
     }
 
@@ -371,9 +377,9 @@ final class AudioMonitor: SensorMonitor {
 
 /// Pure (unit-tested; item 105, F-09): turns the Sound recorder's liveness, sampled on each tick of
 /// a live watch, into one `unavailable` report per outage and a `restored` report when the recorder
-/// works again. An outage is a recorder that worked earlier this watch and has then been down for
-/// `threshold` seconds in a row; one that never worked (no microphone permission) is shown as "Mic
-/// unavailable" before go-live and is not reported. Planned pauses (a clip recording audio, the
+/// works again. An outage is a recorder that worked earlier this watch, in calibration or live, and
+/// has then been down for `threshold` seconds in a row; one that never worked (no microphone
+/// permission) is shown as "Mic unavailable" before go-live and is not reported. Planned pauses (a clip recording audio, the
 /// siren) restart the clock. At most `maxOutagesPerWatch` outages are reported, so a flapping
 /// microphone cannot fill the status history, and the last one's recovery is not reported: the log
 /// errs toward "unavailable".
@@ -384,11 +390,12 @@ struct SoundHealthTracker: Equatable, Sendable {
     static let maxOutagesPerWatch = 3
 
     private(set) var hasRecorded = false
-    private(set) var downSince: Date?
+    private(set) var downSince: TimeInterval?
     private(set) var reportedDown = false
     private(set) var outagesReported = 0
 
-    mutating func observe(recording: Bool, at now: Date) -> Report? {
+    /// `now` is an uptime reading, in seconds (item 187's qwen-12 (b)).
+    mutating func observe(recording: Bool, at now: TimeInterval) -> Report? {
         if recording {
             hasRecorded = true
             downSince = nil
@@ -398,11 +405,15 @@ struct SoundHealthTracker: Equatable, Sendable {
         }
         guard hasRecorded, !reportedDown, outagesReported < Self.maxOutagesPerWatch else { return nil }
         guard let since = downSince else { downSince = now; return nil }
-        guard now.timeIntervalSince(since) >= Self.threshold else { return nil }
+        guard now - since >= Self.threshold else { return nil }
         reportedDown = true
         outagesReported += 1
         return .unavailable
     }
+
+    /// The microphone gave calibration a sample: the review shows it working, so a failure from here is an outage,
+    /// even before the watch's first live sample (item 197's codex-3).
+    mutating func noteCalibrationSample() { hasRecorded = true }
 
     /// A planned pause: the outage clock restarts when metering resumes.
     mutating func pause() { downSince = nil }

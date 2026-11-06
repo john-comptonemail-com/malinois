@@ -129,32 +129,40 @@ extension MonitoringCloudCoordinator {
     /// upload's record reached iCloud, whether or not its copy could mark the row (item 170's codex-3).
     @discardableResult
     func exfiltrate(_ event: Event, cloudAllowedOverride: Bool? = nil, disarmSignal: Bool = true) async -> Bool {
+        await exfiltrateReportingAlert(event, cloudAllowedOverride: cloudAllowedOverride, disarmSignal: disarmSignal).uploaded
+    }
+
+    /// `exfiltrate`, answering also whether a state change's "disarmed" alert went out behind its record (item 187's
+    /// deepseek-5), which the pending sweep's stand-in rule reads: false for evidence, and for a state change that sent
+    /// none.
+    func exfiltrateReportingAlert(_ event: Event, cloudAllowedOverride: Bool? = nil,
+                                  disarmSignal: Bool = true) async -> (uploaded: Bool, alerted: Bool) {
         let allowed = cloudAllowedOverride ?? cloudAllowed
         guard backupAllows(event) else {   // item 115: backup is off, or was when this was recorded
             eventStore.setSyncState(.localOnly, for: event.id)
-            return false
+            return (false, false)
         }
         // State changes use their own record type: a routine arm must not raise a tamper alert.
         if event.isStateChange {
             guard allowed else {
                 eventStore.setSyncState(.localOnly, for: event.id)
-                return false
+                return (false, false)
             }
             eventStore.beginUpload(event.id)   // the log limit leaves an uploading status entry alone too (item 116, R5)
             defer { eventStore.endUpload(event.id) }
-            let pushed = await cloud.pushStateChange(event, disarmSignal: disarmSignal)
-            applyUploadCompletion(Self.stateChangeSyncState(pushed: pushed), snapshot: event)
+            let push = await cloud.pushStateChangeReportingAlert(event, disarmSignal: disarmSignal)
+            applyUploadCompletion(Self.stateChangeSyncState(pushed: push.landed), snapshot: event)
             // R3-2: a reset first seen on a STATE push must be acted on, not just detected —
             // this branch used to return before the handler, so an arm/disarm-only session
             // detected the reset and then ignored it: no requeue, cloud silently empty.
             handleEncryptedDataResetIfNeeded()
-            return pushed
+            return (push.landed, push.alerted)
         }
         // Free-tier evidence stays local. Creation-time permission preserves an armed Pro
         // session's upload after disarm; retries use current entitlement rather than armedPro.
         guard allowed else {
             eventStore.setSyncState(.localOnly, for: event.id)
-            return false
+            return (false, false)
         }
         // Retention leaves this event and its media alone until the upload ends (item 114, F5).
         eventStore.beginUpload(event.id)
@@ -179,7 +187,7 @@ extension MonitoringCloudCoordinator {
         let current = applyUploadCompletion(outcome.syncState, snapshot: event)
         handleEncryptedDataResetIfNeeded()
         let uploaded = outcome.syncState == .synced
-        guard current else { return uploaded } // A stale verdict must not alter the newer response's failure UI.
+        guard current else { return (uploaded, false) } // A stale verdict must not alter the newer response's failure UI.
         if outcome.syncState == .synced { cloudPushRefused = false }
         // Only a network-class failure can suggest interference. Server refusals (quota,
         // authentication, schema or key reset) surface on Home without a siren. See ADR 0001.
@@ -204,7 +212,7 @@ extension MonitoringCloudCoordinator {
         case .stayQuiet:
             break
         }
-        return uploaded
+        return (uploaded, false)
     }
 
     /// What an observed push failure means (pure, unit-tested; 32.R1 / ADR 0001).
@@ -346,6 +354,15 @@ extension MonitoringCloudCoordinator {
         return .skip
     }
 
+    /// Whether a downloaded capture whose bytes are `digest` may fill `slot` ("primary", "secondary") of a record whose
+    /// photos and clips this phone signed as `signed` (`EvidenceSigner.whileSigningHeld`): when no revision of this
+    /// phone's names that slot (a copy from another device, a record from before 1.10, or one signed without it), or when
+    /// they are the bytes the latest revision naming it signed (item 190's A4, its download half; item 192's step 2, the
+    /// owner's "a"). Pure.
+    nonisolated static func mayFill(_ slot: String, with digest: EvidenceForm.Digest, signed: [String: EvidenceForm.Digest]) -> Bool {
+        signed[slot].map { $0 == digest } ?? true
+    }
+
     /// How a full-evidence download went: whether anything landed, and whether every
     /// candidate slot in iCloud was actually checked. `complete == false` means captures
     /// may exist beyond what came back (a per-ID fetch failure, or the fetch not running
@@ -354,6 +371,9 @@ extension MonitoringCloudCoordinator {
     struct EvidenceDownload: Equatable {
         let landed: Bool
         let complete: Bool
+        /// A capture came back that is not the one this phone signed for its record, and was not added (item 190's A4,
+        /// its download half; item 192's step 2, the owner's "a"): the event's screen says so.
+        var refused = false
     }
 
     /// iCloud's full-media fetch for one event, or the test's stand-in.
@@ -364,10 +384,11 @@ extension MonitoringCloudCoordinator {
         return await cloud.fetchFullMedia(for: id, manifest: manifest)
     }
 
-    /// Stage a downloaded asset off the main actor, preserving the existing size caps and file validation.
+    /// Stage a downloaded asset off the main actor, preserving the existing size caps and file validation, with the
+    /// digest of what was staged, which the download compares with what this phone signed (item 190's A4).
     /// The returned source is consumed by EventStore; failed staging leaves the event unchanged.
-    nonisolated static func stageDownloadedAsset(at url: URL) async -> (media: EventStore.MediaSource, ext: String)? {
-        await Task.detached(priority: .userInitiated) { () -> (EventStore.MediaSource, String)? in
+    nonisolated static func stageDownloadedAsset(at url: URL) async -> (media: EventStore.MediaSource, ext: String, digest: EvidenceForm.Digest)? {
+        await Task.detached(priority: .userInitiated) { () -> (EventStore.MediaSource, String, EvidenceForm.Digest)? in
             guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
             let prefix = (try? handle.read(upToCount: 16)).flatMap { $0 } ?? Data()
             try? handle.close()
@@ -376,13 +397,14 @@ extension MonitoringCloudCoordinator {
                 // Size judged by metadata BEFORE the whole-file read (F6).
                 guard CloudExfiltrator.fileSizeAcceptable(url, limit: Self.maxDownloadedStillBytes),
                       let data = try? Data(contentsOf: url) else { return nil }
-                return (.still(data), "jpg")
+                return (.still(data), "jpg", EvidenceHash.digest(of: data))
             case .movie:
                 guard CloudExfiltrator.fileSizeAcceptable(url, limit: Self.maxDownloadedMovieBytes) else { return nil }
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString + ".mov")
-                guard (try? FileManager.default.copyItem(at: url, to: tmp)) != nil else { return nil }
-                return (.clip(tmp), "mov")
+                guard (try? FileManager.default.copyItem(at: url, to: tmp)) != nil,
+                      let digest = try? EvidenceHash.digest(ofFileAt: tmp) else { return nil }
+                return (.clip(tmp), "mov", digest)
             case nil:
                 return nil
             }
@@ -463,6 +485,12 @@ extension MonitoringCloudCoordinator {
     /// first, which can be the download itself; the iCloud copy stays, so it can be downloaded again.
     /// A capture iCloud gave that cannot be kept here (it fails to stage or to store) leaves the download incomplete,
     /// as an unchecked slot does: the rest is still to get (item 167's A2).
+    /// A capture of a record this phone signed joins it only as signed (item 190's A4, its download half; item 192's
+    /// step 2, the owner's "a"): one whose bytes are not those the latest revision naming its slot signed is not added
+    /// (`refused`), and iCloud's copy is left as it is; while the signer cannot tell, the capture waits for another
+    /// try, as an unchecked slot does. The comparison and the attachment fall in one turn of the signer's; a file the
+    /// download stored that does not join its record is removed at once, as is the private copy a clip was staged
+    /// into (item 194, the owner's "1 a 2 a" and "a").
     func downloadFullEvidence(for id: UUID) async -> EvidenceDownload {
         guard entitlements.proActive else { return EvidenceDownload(landed: false, complete: true) }
         guard let event = eventStore.events.first(where: { $0.id == id }) else {
@@ -488,40 +516,118 @@ extension MonitoringCloudCoordinator {
         }
         var landed = false
         var keptAll = true   // every capture that came back is on the record, or one in its place was already (A2)
-        for item in fetch.media {
+        var refused = false   // a capture came back that is not the one this phone signed (item 190's A4)
+        captures: for item in fetch.media {
             // Skip known duplicates before copying bytes, but decide again after every await:
             // a cloud merge or another download may fill or name a slot while storage runs.
-            func placement(in record: Event) -> MediaPlacement {
-                Self.mediaPlacement(itemCamera: item.camera, itemSlot: item.slot,
-                                    primaryFilled: record.mediaFilename != nil,
-                                    secondaryFilled: record.secondaryMediaFilename != nil,
-                                    primaryCamera: record.primaryCamera, secondaryCamera: record.secondaryCamera)
-            }
             guard let before = eventStore.events.first(where: { $0.id == id }) else { break }
-            guard placement(in: before) != .skip else { continue }
+            guard Self.placement(camera: item.camera, slot: item.slot, in: before) != .skip else { continue }
             guard let staged = await Self.stageDownloadedAsset(at: item.fileURL) else { keptAll = false; continue }
-            if let lease, !cloud.enrollment.isCurrent(lease) { return EvidenceDownload(landed: landed, complete: false) }
-            guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { keptAll = false; continue }
-            if let lease, !cloud.enrollment.isCurrent(lease) { return EvidenceDownload(landed: landed, complete: false) }
-            guard var current = eventStore.events.first(where: { $0.id == id }) else { break }
-            // Placement and attachment use one current snapshot with no suspension between
-            // them. A newly learned rear label must not be overwritten by a stale front-slot
-            // decision (item 96 integration). If a competing download won, the unused file
-            // remains unreferenced and the store's existing orphan sweep reclaims it.
-            switch placement(in: current) {
-            case .primary(let setLabel):
-                current.mediaFilename = stored.filename
-                if setLabel { current.primaryCamera = item.camera }
-                if current.thumbnailData == nil { current.thumbnailData = stored.thumbnail }
-            case .secondary(let setLabel):
-                current.secondaryMediaFilename = stored.filename
-                if setLabel { current.secondaryCamera = item.camera }
-            case .skip:
-                continue
+            // The private copy a clip was staged into goes with this capture's every way out: the store takes it when it
+            // keeps the capture, and otherwise it is removed (item 194's codex-1 on bdf51301, the owner's "a").
+            defer { Self.discardStaged(staged.media) }
+            if let lease, !cloud.enrollment.isCurrent(lease) {
+                return EvidenceDownload(landed: landed, complete: false, refused: refused)
             }
-            eventStore.update(current)
-            landed = true
+            switch await join(staged, camera: item.camera, slot: item.slot, to: id, lease: lease) {
+            case .landed: landed = true
+            case .refused: refused = true
+            case .notKept: keptAll = false
+            case .skipped: continue
+            case .gone: break captures
+            case .stale: return EvidenceDownload(landed: landed, complete: false, refused: refused)
+            }
         }
-        return EvidenceDownload(landed: landed, complete: fetch.complete && keptAll)
+        return EvidenceDownload(landed: landed, complete: fetch.complete && keptAll, refused: refused)
+    }
+
+    /// Removes the private copy a clip was staged into (`stageDownloadedAsset`) when the store did not take it: a photo is
+    /// staged in memory, and a clip the store kept has already left that copy (item 194's codex-1 on bdf51301).
+    nonisolated static func discardStaged(_ media: EventStore.MediaSource) {
+        if case .clip(let copy) = media { try? FileManager.default.removeItem(at: copy) }
+    }
+
+    /// A capture a download staged: its source, its extension and its digest (`stageDownloadedAsset`).
+    typealias StagedDownload = (media: EventStore.MediaSource, ext: String, digest: EvidenceForm.Digest)
+
+    /// What became of one capture a download brought (item 194).
+    enum DownloadJoin: Sendable {
+        /// Added to its slot.
+        case landed
+        /// Not the capture this phone signed for its slot: not added (item 190's A4).
+        case refused
+        /// Not kept here: the signer could not tell what it signed, or the store failed; the rest is still to get.
+        case notKept
+        /// Not needed: its slot was filled meanwhile.
+        case skipped
+        /// The record is gone.
+        case gone
+        /// The cloud account changed: the download stops.
+        case stale
+    }
+
+    /// Where a capture saved under `camera`'s name (or the legacy `slot`) goes in `record` (`mediaPlacement`).
+    nonisolated static func placement(camera: String?, slot: String, in record: Event) -> MediaPlacement {
+        mediaPlacement(itemCamera: camera, itemSlot: slot, primaryFilled: record.mediaFilename != nil,
+                       secondaryFilled: record.secondaryMediaFilename != nil, primaryCamera: record.primaryCamera,
+                       secondaryCamera: record.secondaryCamera)
+    }
+
+    /// Stores `staged` and adds it to its slot of record `id` in one turn of the log's signer (`whileSigningHeld`): the
+    /// capture compared with what this phone signed there, a signature in progress finished first and one the file holds
+    /// counted, and no signature made between the comparison and the attachment (item 194's codex-1, the owner's "a").
+    /// Without a signer (a test's engine), nothing is compared.
+    private func join(_ staged: StagedDownload, camera: String?, slot: String, to id: UUID,
+                      lease: CloudEnrollment.Lease?) async -> DownloadJoin {
+        guard let downloadSigner else {
+            return await place(staged, camera: camera, slot: slot, to: id, lease: lease, signed: [:])
+        }
+        return await downloadSigner.whileSigningHeld(mediaOf: id) { [weak self] signed in
+            // The signer cannot tell now (its file unreadable): the capture waits, never added unchecked.
+            guard let self, let signed else { return .notKept }
+            return await self.place(staged, camera: camera, slot: slot, to: id, lease: lease, signed: signed)
+        }
+    }
+
+    /// The store, then the placement and the attachment from one current snapshot with no suspension between them, so a
+    /// newly learned rear label is never overwritten by a stale front-slot decision (item 96 integration). A file this
+    /// stored that does not join its record (refused, its slot filled meanwhile, the record gone or the account
+    /// changed) is removed at once, as no record names it (item 194's codex-2, the owner's "a").
+    private func place(_ staged: StagedDownload, camera: String?, slot: String, to id: UUID, lease: CloudEnrollment.Lease?,
+                       signed: [String: EvidenceForm.Digest]) async -> DownloadJoin {
+        guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { return .notKept }
+        var joined = DownloadJoin.skipped
+        defer { if joined != .landed { eventStore.discardUnattached(stored.filename) } }
+        if let lease, !cloud.enrollment.isCurrent(lease) {
+            joined = .stale
+            return joined
+        }
+        guard var current = eventStore.events.first(where: { $0.id == id }) else {
+            joined = .gone
+            return joined
+        }
+        switch Self.placement(camera: camera, slot: slot, in: current) {
+        case .primary(let setLabel):
+            // Not the capture this phone signed for the slot: not added (item 190's A4).
+            guard Self.mayFill("primary", with: staged.digest, signed: signed) else {
+                joined = .refused
+                return joined
+            }
+            current.mediaFilename = stored.filename
+            if setLabel { current.primaryCamera = camera }
+            if current.thumbnailData == nil { current.thumbnailData = stored.thumbnail }
+        case .secondary(let setLabel):
+            guard Self.mayFill("secondary", with: staged.digest, signed: signed) else {
+                joined = .refused
+                return joined
+            }
+            current.secondaryMediaFilename = stored.filename
+            if setLabel { current.secondaryCamera = camera }
+        case .skip:
+            return joined
+        }
+        eventStore.update(current)
+        joined = .landed
+        return joined
     }
 }

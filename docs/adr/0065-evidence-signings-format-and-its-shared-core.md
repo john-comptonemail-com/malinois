@@ -6,8 +6,11 @@
   and a retention statement retires a key's counters only when signed by the key itself or a key that follows it.
   Amended by ADR 0068 (2026-10-31, phase 5): the verifier's rules take the App ID's SHA-256, as every attestation
   carries it. Amended 2026-10-31 (item 182; below): a fifth statement, the absence statement, and the export statement
-  names the statements its bundle shows
+  names the statements its bundle shows. A sixth statement, the unkept statement (1.11), is ADR 0073's, which states it
+  rather than amending this record again; this record's statements are as it says.
 - **Date:** 2026-10-30
+- **Summary:** The fixed form the phone signs, its statements and the verifier's rules live in one folder of shared
+  code, `MalinoisEvidence/`, which the app and the Mac verifier both build from.
 
 ## Context
 

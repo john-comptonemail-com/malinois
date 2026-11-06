@@ -45,14 +45,14 @@ protocol SensorMonitor: AnyObject {
     func pauseForCapture()
 
     /// Clear the one-shot trip latch ONLY, keeping the learned baseline. Used by the
-    /// refractory sweep (and during an until-clear recording) where a trip aged out
+    /// refractory sweep, where a trip aged out
     /// without firing — re-baselining there would let an attacker "ratchet" the device
     /// past the threshold in small sub-threshold steps.
     func rearm()
 
-    /// Clear the latch AND adopt the current pose/level as the new baseline. Called
-    /// only after a real trigger, so a device moved and left in a new spot doesn't
-    /// trip forever. Defaults to `rearm()` for monitors with no baseline to move.
+    /// Clear the latch AND adopt the current pose/level as the new baseline (Sound: keep the level it has adapted to). Called
+    /// only after a real trigger, at each look of an until-clear recording and at the response's end, so a device
+    /// moved and left in a new spot doesn't trip forever. Defaults to `rearm()` for monitors with no baseline to move.
     func rearmAndRebaseline()
 
     /// The app is back in the foreground after a suspension it could not watch through — a

@@ -5,12 +5,14 @@
 //  The Mac verifier of a Malinois evidence bundle (BACKLOG item 90, phase 5; ADR 0068). It checks the ZIP that Share
 //  sent, or the folder it unzips to, with the evidence core the phone signs with (`MalinoisEvidence/`), against Apple's
 //  App Attestation root, and reports what it checked: each key Apple certified, every signature in the phone's order,
-//  each key's counters, the export, the shared record's revisions and its attachments, and any other file, in the bundle
-//  or beside its folder, which is a problem (item 187); then PASS, or the problems.
+//  each key's counters (those a key's own unkept statement names said to be made by App Attest and not kept by the
+//  phone, as information: item 188), the export, the shared record's revisions and its attachments, and any other file,
+//  in the bundle or beside its folder, which is a problem (item 187); then PASS, or the problems.
 //  It knows a key is Malinois's by the SHA-256 of Malinois's App ID, as every Malinois attestation carries it, so the
 //  team ID is never in this source; Apple's root is built in, and a reader may give a copy of their own (the owner's
 //  rulings of 2026-10-31). A ZIP's listing is read before it is unpacked, and a link, a path outside it or more bytes
-//  than a phone keeps of media is refused. Needs macOS's trust service: run it as an ordinary program.
+//  than a phone keeps of media is refused. What a bundle, a ZIP or a path says reaches the report only as text (`shown`,
+//  `displayed`; item 197's codex-2). Needs macOS's trust service: run it as an ordinary program.
 //
 
 import Foundation
@@ -58,29 +60,37 @@ enum MalinoisVerifier {
     }
 
     /// Checks the bundle the command line names (`arguments`, without the program's name) for the app whose App ID has
-    /// the SHA-256 `appIDHash` (Malinois's; a test's own in the tests).
-    static func run(_ arguments: [String], appIDHash: Data = appIDHash) -> Outcome {
+    /// the SHA-256 `appIDHash` (Malinois's; a test's own in the tests). The text it returns holds no control character but
+    /// its own line breaks (`displayed`), and each value a sender supplies is `shown`, so no line in it is the sender's.
+    /// `check` does the checking, which a test may stand in for.
+    static func run(_ arguments: [String], appIDHash: Data = appIDHash,
+                    check: ([String], Data) -> Outcome = checked) -> Outcome {
+        let outcome = check(arguments, appIDHash)
+        return Outcome(text: displayed(outcome.text), status: outcome.status)
+    }
+
+    static func checked(_ arguments: [String], appIDHash: Data) -> Outcome {
         guard let (path, rootPath) = parse(arguments) else { return Outcome(text: usage, status: 2) }
         var root = (der: appleRoot, name: "Apple's App Attestation Root CA, built in")
         if let rootPath {
             guard let der = rootCertificate(at: URL(fileURLWithPath: rootPath)) else {
-                return Outcome(text: "No root certificate could be read from \(rootPath): nothing was checked.\n", status: 2)
+                return Outcome(text: "No root certificate could be read from \(shown(rootPath)): nothing was checked.\n", status: 2)
             }
-            root = (der, "the root certificate in \(rootPath)")
+            root = (der, "the root certificate in \(shown(rootPath))")
         }
         let target = URL(fileURLWithPath: path)
         var isFolder: ObjCBool = false
         guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isFolder) else {
-            return Outcome(text: "There is no file or folder at \(path): nothing was checked.\n", status: 2)
+            return Outcome(text: "There is no file or folder at \(shown(path)): nothing was checked.\n", status: 2)
         }
-        if isFolder.boolValue { return check(target, root: root, appIDHash: appIDHash) }
+        if isFolder.boolValue { return check(target, given: target, root: root, appIDHash: appIDHash) }
         let unpacked = FileManager.default.temporaryDirectory.appendingPathComponent("malinois-verify-\(UUID().uuidString)",
                                                                                      isDirectory: true)
         defer { try? FileManager.default.removeItem(at: unpacked) }
         if let reason = unpack(target, into: unpacked) {
-            return Outcome(text: "\(path) was not unpacked: \(reason). Nothing was checked.\n", status: 2)
+            return Outcome(text: "\(shown(path)) was not unpacked: \(shown(reason)). Nothing was checked.\n", status: 2)
         }
-        return check(unpacked, root: root, appIDHash: appIDHash)
+        return check(unpacked, given: target, root: root, appIDHash: appIDHash)
     }
 
     /// Why a ZIP must not be unpacked, from its listing by `zipinfo -l`: an entry that is a link, that names a path from
@@ -330,27 +340,45 @@ enum MalinoisVerifier {
 
     // MARK: - The check and its report
 
-    private static func check(_ folder: URL, root: (der: Data, name: String), appIDHash: Data) -> Outcome {
+    /// What a pass shows and what it cannot, printed under PASS and only there (item 192's step 3, the owner's words of
+    /// 2026-11-04: "approved"; item 198, 2026-11-05, and item 206, 2026-11-06: "wording approved"): SECURITY.md's "Evidence
+    /// someone else can check", in short.
+    static let passWords =
+        "A pass shows: each signature was made by a key Apple certified for Malinois; the record, and each photo, clip "
+        + "and trace in this ZIP, is byte for byte what was signed; and the ZIP accounts for every counter of the export's "
+        + "key up to the export.\n"
+        + "It cannot show: which iPhone made the ZIP or whose (any Malinois on any iPhone signs the same way), that the "
+        + "phone's clock was right, what the event means, that the phone was not compromised, that the app that signed "
+        + "was the App Store's (the KEYS line names each key's Apple environment, and from iOS 27 its kind of build), or "
+        + "that every signature at a counter the phone's count went back over is here: a check sees the counters, not how "
+        + "many times each was given out.\n"
+        + "Both lists in full: SECURITY.md in Malinois's repository, \"Evidence someone else can check\".\n"
+
+    /// Checks the bundle in `folder`, the folder given or the one a ZIP unpacked to, naming what was given (`given`)
+    /// wherever the report names it: the bundle by its folder's name or, when its index lies at the root of a ZIP, by
+    /// the ZIP's own name, never by the folder the ZIP unpacked to (item 187's deepseek-9).
+    private static func check(_ folder: URL, given: URL, root: (der: Data, name: String), appIDHash: Data) -> Outcome {
         guard let bundle = bundleFolder(in: folder) else {
-            return Outcome(text: "\(folder.path) holds no Malinois evidence bundle (no \(EvidenceBundle.indexName)): nothing was checked.\n",
+            return Outcome(text: "\(shown(given.path)) holds no Malinois evidence bundle (no \(EvidenceBundle.indexName)): nothing was checked.\n",
                            status: 2)
         }
+        let name = shown(bundle.standardizedFileURL == folder.standardizedFileURL ? given.lastPathComponent : bundle.lastPathComponent)
         let report: EvidenceBundle.Report
         do {
             report = try EvidenceBundle.check(bundle, appIDHash: appIDHash, roots: [root.der])
         } catch {
-            return Outcome(text: "\(bundle.lastPathComponent) is not a bundle this verifier reads (\(describe(error))): nothing was checked.\n",
+            return Outcome(text: "\(name) is not a bundle this verifier reads (\(describe(error))): nothing was checked.\n",
                            status: 2)
         }
         // What lies beside the bundle's folder in what was given: a bundle accounts for every file (item 187, codex-1).
         guard let beside = beside(bundle, in: folder) else {
-            return Outcome(text: "\(folder.path) could not be listed: nothing was checked.\n", status: 2)
+            return Outcome(text: "\(shown(given.path)) could not be listed: nothing was checked.\n", status: 2)
         }
-        var text = "Malinois evidence check of \(bundle.lastPathComponent)\n"
+        var text = "Malinois evidence check of \(name)\n"
         text += "Checked against \(root.name). Times are this Mac's, with their offset from UTC.\n"
         let problems = describe(report, beside: beside, into: &text)
         if problems.isEmpty {
-            text += "\nPASS\n"
+            text += "\nPASS\n\n" + passWords   // what a pass shows and what it cannot (item 192's step 3)
             return Outcome(text: text, status: 0)
         }
         text += "\nPROBLEMS (\(problems.count)):\n" + problems.map { "  - \($0)\n" }.joined()
@@ -390,7 +418,7 @@ enum MalinoisVerifier {
             }
             text += "  key \(short(key.keyID)): certified by Apple for Malinois, as of \(time(key.judgedAt)); "
                 + "\(key.environment.rawValue) environment\(channel(key.category, key.bundleVersion)); "
-                + "its statement made \(time(ms: key.statement.signedAt)) by Malinois \(key.statement.app)"
+                + "its statement made \(time(ms: key.statement.signedAt)) by Malinois \(shown(key.statement.app))"
                 + (key.statement.follows.map { ", following key \(short($0))" } ?? "") + "\n"
         }
 
@@ -410,18 +438,27 @@ enum MalinoisVerifier {
         text += "\nCOUNTERS\n"
         for sequence in report.sequences {
             let missing = sequence.missing.isEmpty ? "none missing" : "missing: \(ranges(sequence.missing))"
+            // Named by the key's own unkept statement: information, not a problem (item 188, ADR 0073).
+            let unkept = sequence.unkept.isEmpty ? "" : "made by App Attest and not kept by the phone: \(ranges(sequence.unkept)); "
             text += "  key \(short(sequence.keyID)): \(ranges(EvidenceForm.counterRanges(sequence.counters))); retired: "
-                + "\(sequence.retired.isEmpty ? "none" : ranges(sequence.retired)); \(missing)\n"
+                + "\(sequence.retired.isEmpty ? "none" : ranges(sequence.retired)); \(unkept)\(missing)\n"
             if !sequence.missing.isEmpty { problems.append("key \(short(sequence.keyID)): counters missing: \(ranges(sequence.missing))") }
-            if !sequence.repeated.isEmpty { problems.append("key \(short(sequence.keyID)): counters repeated: \(sequence.repeated)") }
+            // Two genuine signatures on one counter: App Attest's count went back (TestFlight 84: a forced restart; item 205, ADR
+            // 0077). Only the key can make either, so neither is forged, which says nothing of what else the bundle held at that
+            // counter: information, with what it costs a check (item 206).
+            if !sequence.repeated.isEmpty {
+                text += "  key \(short(sequence.keyID)): two signatures each at \(ranges(EvidenceForm.counterRanges(sequence.repeated))): the "
+                    + "phone's count went back, as after a forced restart. At these counters a statement taken out, or cut down to its "
+                    + "fingerprint, leaves no gap, even one the export names or one saying a record left the phone's log\n"
+            }
             if !sequence.signedAgain.isEmpty { problems.append("key \(short(sequence.keyID)): signed again: \(sequence.signedAgain)") }
         }
         text += followedNotes(report)
 
         text += "\nTHE EXPORT\n"
         if let export = report.export {
-            text += "  the record at revision \(export.revision), exported \(time(ms: export.signedAt)) by Malinois \(export.app)\n"
-            text += "  the statements it names as shown: " + (report.unshown.isEmpty ? "all in the bundle\n" : "NOT all in the bundle\n")
+            text += "  the record at revision \(export.revision), exported \(time(ms: export.signedAt)) by Malinois \(shown(export.app))\n"
+            text += "  the statements it names as shown: \(namedAsShown(report))\n"
             text += "  the statements shown in full: " + (report.unnamed.isEmpty ? "all named by it\n" : "NOT all named by it\n")
         } else {
             text += "  none\n"
@@ -443,8 +480,8 @@ enum MalinoisVerifier {
 
         text += "\nATTACHMENTS, against the last revision\n"
         for attachment in report.attachments {
-            text += "  \(attachment.name): \(describe(attachment.outcome))\n"
-            if attachment.outcome != .matches { problems.append("attachment \(attachment.name): \(describe(attachment.outcome))") }
+            text += "  \(shown(attachment.name)): \(describe(attachment.outcome))\n"
+            if attachment.outcome != .matches { problems.append("attachment \(shown(attachment.name)): \(describe(attachment.outcome))") }
         }
         text += earlierAttachments(report)
 
@@ -459,6 +496,18 @@ enum MalinoisVerifier {
         problems += otherFiles(report, beside: beside, into: &text)
         problems += report.problems.map(describe)
         return problems
+    }
+
+    /// What the report says under THE EXPORT of the statements the export names: whether the bundle holds them all, and, at a
+    /// counter where a fingerprint lies beside a statement shown in full, that the export names by counter and so does not
+    /// say which of the two it means (item 206, Codex-1). Each key is named when more than one holds such a counter.
+    private static func namedAsShown(_ report: EvidenceBundle.Report) -> String {
+        let whole = report.unshown.isEmpty ? "all in the bundle" : "NOT all in the bundle"
+        guard let first = report.ambiguous.first else { return whole }
+        let places = report.ambiguous.count == 1 ? ranges(first.counters)
+            : report.ambiguous.map { "\(ranges($0.counters)) of key \(short($0.keyID))" }.joined(separator: " and ")
+        return whole + (report.unshown.isEmpty ? " by counter" : "") + "; at \(places) a second signature is only a fingerprint, "
+            + "and the export does not say which of the two it names"
     }
 
     /// What the report says under SIGNATURES, and the problems it finds there: the signatures in the order the keys and
@@ -489,22 +538,27 @@ enum MalinoisVerifier {
             switch entry.statement {
             case .record(let revision)?:
                 var kind = "a record"
-                if case .string(let change)? = revision.facts.first(where: { $0.key == "stateChange" })?.value { kind = "status \(change)" }
+                if case .string(let change)? = revision.facts.first(where: { $0.key == "stateChange" })?.value { kind = "status \(shown(change))" }
                 text += "  \(counter): \(revision.id == report.record ? "THE RECORD SHARED" : kind), revision "
-                    + "\(revision.revision), signed \(time(ms: revision.signedAt)) by Malinois \(revision.app); attachments "
-                    + (revision.attachments.isEmpty ? "none" : revision.attachments.map(\.name).joined(separator: ", ")) + "\n"
+                    + "\(revision.revision), signed \(time(ms: revision.signedAt)) by Malinois \(shown(revision.app)); attachments "
+                    + (revision.attachments.isEmpty ? "none" : revision.attachments.map { shown($0.name) }.joined(separator: ", ")) + "\n"
             case .retention(let retention)?:
                 let retired = retention.retired.map { "key \(short($0.keyID)) \(ranges($0.counters))" }.joined(separator: "; ")
                 text += "  \(counter): retention statement, signed \(time(ms: retention.signedAt)), retiring \(retired)\n"
             case .export(let export)?:
                 text += "  \(counter): EXPORT of the record at revision \(export.revision), signed "
-                    + "\(time(ms: export.signedAt)) by Malinois \(export.app)\n"
+                    + "\(time(ms: export.signedAt)) by Malinois \(shown(export.app))\n"
             case .absence(let absence)?:
                 let named = absence.records.map { gone in
                     "\(gone.id.uuidString) (revision \(gone.revision)" + (gone.startDate.map { ", recorded \(time(ms: $0))" } ?? "") + ")"
                 }
                 text += "  \(counter): SIGNED RECORDS NO LONGER IN THE PHONE'S LOG, signed \(time(ms: absence.signedAt)) "
-                    + "by Malinois \(absence.app): \(named.joined(separator: "; "))\n"
+                    + "by Malinois \(shown(absence.app)): \(named.joined(separator: "; "))\n"
+            case .unkept(let unkept)?:
+                let count = unkept.counters.reduce(UInt64(0)) { $0 + UInt64($1.upperBound - $1.lowerBound) + 1 }
+                text += "  \(counter): unkept statement, signed \(time(ms: unkept.signedAt)) by Malinois \(shown(unkept.app)): "
+                    + (count == 1 ? "counter \(ranges(unkept.counters)) was" : "counters \(ranges(unkept.counters)) were")
+                    + " made by App Attest and not kept by the phone\n"
             case .key?:
                 problems.append("\(counter): a key's statement among the signatures")
             case nil:
@@ -521,8 +575,8 @@ enum MalinoisVerifier {
     private static func otherFiles(_ report: EvidenceBundle.Report, beside: (unlisted: [String], ignored: [String]),
                                    into text: inout String) -> [String] {
         text += "\nOTHER FILES\n"
-        let other = report.unlisted + beside.unlisted.map { "\($0), beside its folder" }
-        let finders = report.ignored + beside.ignored.map { "\($0), beside its folder" }
+        let other = report.unlisted.map(shown) + beside.unlisted.map { "\(shown($0)), beside its folder" }
+        let finders = report.ignored.map(shown) + beside.ignored.map { "\(shown($0)), beside its folder" }
         if other.isEmpty, finders.isEmpty { text += "  none\n" }
         text += other.map { "  \($0): NOT part of the bundle\n" }.joined()
         text += finders.map { "  \($0): a file macOS's Finder keeps, not checked\n" }.joined()
@@ -553,37 +607,67 @@ enum MalinoisVerifier {
         // An attachment changed under its name is one the last revision signed, so among `report.attachments`.
         if report.attachments.isEmpty, signedIn.isEmpty { return "  none\n" }
         return signedIn.sorted { $0.key < $1.key }.map { name, revision in
-            "  \(name): signed in revision \(revision) but not in the last revision, so not in the bundle\n"
+            "  \(shown(name)): signed in revision \(revision) but not in the last revision, so not in the bundle\n"
         }.joined() + changedIn.sorted { $0.key < $1.key }.map { name, revision in
-            "  \(name): signed with other bytes in revision \(revision); the bundle holds the last revision's\n"
+            "  \(shown(name)): signed with other bytes in revision \(revision); the bundle holds the last revision's\n"
         }.joined()
     }
 
-    /// What the report says under COUNTERS of each key a later certified key follows (a restore from a backup): it may
-    /// have signed after its last signature here, and nothing in a bundle can show it did not, so it is said, as a limit
-    /// of the check rather than a problem (codex-2 on 73441cbe); for a key the bundle's index leaves out too, since a
-    /// certified key names it (codex-2 on 417158fe).
+    /// What the report says under COUNTERS of each key a later certified key says it follows (as after a restore from a
+    /// backup): it may have signed after its last signature here, and nothing in a bundle can show it did not, so it is
+    /// said, as a limit of the check rather than a problem (codex-2 on 73441cbe); for a key the bundle's index leaves out
+    /// too, since a certified key names it (codex-2 on 417158fe). It says only what the later key says: another iPhone can
+    /// make a key that follows this one, so nothing here shows both were on one iPhone (item 198's Fable-1).
     private static func followedNotes(_ report: EvidenceBundle.Report) -> String {
         let followed = Set(report.keys.compactMap { $0.key?.statement.follows })
         let last = Dictionary(report.sequences.map { ($0.keyID, $0.counters.max()) }, uniquingKeysWith: { first, _ in first })
         return followed.sorted { $0.lexicographicallyPrecedes($1) }.map { keyID in
             let made = last[keyID].flatMap { $0 }.map { "any signatures it made after counter \($0), its last here," }
                 ?? "any signatures it made"
-            return "  key \(short(keyID)): a later key follows it (the phone's key changed, as after a restore from a "
-                + "backup), so \(made) cannot be accounted for\n"
+            return "  key \(short(keyID)): a later key says it follows it (as after a restore from a backup, though nothing "
+                + "here shows both were on one iPhone), so \(made) cannot be accounted for\n"
         }.joined()
+    }
+
+    // MARK: - A sender's text
+
+    /// A value from a bundle, a ZIP or a path as the report shows it: what it says, and nothing it could do. A sender
+    /// chooses these, so a control character, a line break or a character that reorders a line shows as its escape
+    /// (`\u{1B}`): it cannot act on the reader's terminal, or start a line of the report such as a PASS of its own
+    /// (item 197's codex-2).
+    static func shown(_ value: String) -> String { escaped(value) { _ in false } }
+
+    /// The whole report as it leaves: the same, but for its own line breaks, so whatever a value's escaping missed can
+    /// only be text.
+    static func displayed(_ report: String) -> String { escaped(report) { $0 == "\n" } }
+
+    private static func escaped(_ text: String, keeping kept: (Unicode.Scalar) -> Bool) -> String {
+        var result = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                if kept(scalar) {
+                    result.append(scalar)
+                } else {
+                    result.append(contentsOf: "\\u{\(String(scalar.value, radix: 16, uppercase: true))}".unicodeScalars)
+                }
+            default:
+                result.append(scalar)
+            }
+        }
+        return String(result)
     }
 
     // MARK: - Words
 
-    private static func describe(_ error: Error) -> String {
-        (error as? EvidenceProblem).map(describe) ?? "\(error)"
+    static func describe(_ error: Error) -> String {
+        (error as? EvidenceProblem).map(describe) ?? shown("\(error)")
     }
 
-    private static func describe(_ problem: EvidenceProblem) -> String {
+    static func describe(_ problem: EvidenceProblem) -> String {
         switch problem {
-        case .unreadable(let why): "cannot be read: \(why)"
-        case .unknownFormat(let format): "is in another format (\(format))"
+        case .unreadable(let why): "cannot be read: \(shown(why))"
+        case .unknownFormat(let format): "is in another format (\(shown(format)))"
         case .formNotFixed: "is not in its fixed form"
         case .notAppAttest: "is not an Apple App Attest certification"
         case .chainNotTrusted: "Apple's certificate chain does not check out to the root"
@@ -595,7 +679,11 @@ enum MalinoisVerifier {
         case .formHashMismatch: "is not the one signed"
         case .signatureMismatch: "the signature is not the key's"
         case .notCertified: "signed by a key the bundle does not certify"
-        case .fileMissing(let path): "\(path) is not in the bundle"
+        case .fileMissing(let path): "\(shown(path)) is not in the bundle"
+        case .formatNotAsHeld(let named):
+            "the bundle names the format \(shown(named)), but what it holds is in "
+                + (named == EvidenceBundle.format ? "\(EvidenceBundle.formatWithUnkept) (it holds an unkept statement)"
+                   : "\(EvidenceBundle.format) (it holds no unkept statement)")
         }
     }
 
@@ -617,10 +705,10 @@ enum MalinoisVerifier {
     }
 
     /// Apple's launch category for how the build was signed (iOS 27 and later), and its build number.
-    private static func channel(_ category: UInt32?, _ build: String?) -> String {
+    static func channel(_ category: UInt32?, _ build: String?) -> String {
         let names: [UInt32: String] = [2: "TestFlight", 3: "development", 4: "App Store"]
         guard let category else { return "" }
-        return "; a \(names[category] ?? "category \(category)") build" + (build.map { ", build \($0)" } ?? "")
+        return "; a \(names[category] ?? "category \(category)") build" + (build.map { ", build \(shown($0))" } ?? "")
     }
 
     private static func time(_ date: Date) -> String {

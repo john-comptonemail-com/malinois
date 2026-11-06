@@ -2448,6 +2448,14 @@ final class EventStore: ObservableObject {
         }
     }
 
+    /// Removes the media file `filename` that a download stored and did not attach (item 194's codex-2, the owner's "a"):
+    /// only a plain name in the media folder that no record names, so another capture's evidence is never touched.
+    func discardUnattached(_ filename: String) {
+        guard !events.contains(where: { $0.mediaFilename == filename || $0.secondaryMediaFilename == filename }),
+              let file = Self.mediaFile(named: filename, in: mediaDirectory) else { return }
+        try? FileManager.default.removeItem(at: file)
+    }
+
     /// Writes `data` to `url` under the store's protection ("complete unless open"), flushing it through the descriptor
     /// that wrote it, then renames it into place, replacing any file there (1.8.2's step 63, the audit's lead 7): a phone
     /// locked past its grace period lets such a file be created and written, but refuses to reopen one by its path, and

@@ -3,8 +3,9 @@
 //  Malinois
 //
 //  The one-time screen before the first arm (BACKLOG 131): how to disarm, when Guided Access is on for the arm how
-//  to end it, and turning Voice Control off (item 144 (e), once for every install). Shown over the Guided Access step once Start countdown has asked for it; its one button
-//  acknowledges what it showed and starts the countdown.
+//  to end it, turning Voice Control off (item 144 (e), once for every install), and under Guided Access turning its
+//  Side Button off (item 153, once for every install). Shown over the Guided Access step once Start countdown has
+//  asked for it; its one button acknowledges what it showed and starts the countdown.
 //
 
 import Combine
@@ -35,6 +36,9 @@ struct FirstArmBriefingView: View {
                 if parts.guidedAccess {
                     section(FirstArmBriefing.guidedAccessHeading,
                             [FirstArmBriefing.guidedAccessText, FirstArmBriefing.forgotPasscodeText])
+                }
+                if parts.sideButton {
+                    section(FirstArmBriefing.sideButtonHeading, [FirstArmBriefing.sideButtonText])
                 }
                 if parts.voiceControl {
                     section(FirstArmBriefing.voiceControlHeading, [FirstArmBriefing.voiceControlText])

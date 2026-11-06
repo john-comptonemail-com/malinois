@@ -6,8 +6,9 @@ import LocalAuthentication
 extension MonitoringArmingFlow {
 
     /// The Guided Access step's Start countdown (item 131). Before a new install's first arm, before its first arm
-    /// under Guided Access, and before any install's first arm on 1.8.1 or later (the Voice Control part, item 144
-    /// (e)), the one-time screen comes first (`firstArmBriefing`) and its button starts the countdown; otherwise the
+    /// under Guided Access, before any install's first arm on 1.8.1 or later (the Voice Control part, item 144 (e)),
+    /// and before any install's first arm under Guided Access on 1.11 or later (the Side Button part, item 153), the
+    /// one-time screen comes first (`firstArmBriefing`) and its button starts the countdown; otherwise the
     /// countdown starts at once, as before. The automatic re-arm after a crash calls the
     /// countdown directly and never comes here, so it never waits for a tap.
     func startCountdownTapped() {
@@ -16,7 +17,8 @@ extension MonitoringArmingFlow {
         let parts = FirstArmBriefing.partsDue(ownerStarted: !armWasAutoRecovered, guidedAccessOn: guidedAccessEnabled,
                                               disarmAcknowledged: OnboardingState.acknowledgedDisarmBriefing,
                                               guidedAccessAcknowledged: OnboardingState.acknowledgedGuidedAccessBriefing,
-                                              voiceControlAcknowledged: OnboardingState.acknowledgedVoiceControlBriefing)
+                                              voiceControlAcknowledged: OnboardingState.acknowledgedVoiceControlBriefing,
+                                              sideButtonAcknowledged: OnboardingState.acknowledgedSideButtonBriefing)
         guard !parts.isEmpty else { confirmGuidedAccessAndStartGrace(); return }
         firstArmBriefing = parts
     }
@@ -28,6 +30,7 @@ extension MonitoringArmingFlow {
         if parts.disarm { OnboardingState.acknowledgedDisarmBriefing = true }
         if parts.guidedAccess { OnboardingState.acknowledgedGuidedAccessBriefing = true }
         if parts.voiceControl { OnboardingState.acknowledgedVoiceControlBriefing = true }
+        if parts.sideButton { OnboardingState.acknowledgedSideButtonBriefing = true }
         firstArmBriefing = nil
         guard state == .guidedAccessCheck else { return }
         confirmGuidedAccessAndStartGrace()

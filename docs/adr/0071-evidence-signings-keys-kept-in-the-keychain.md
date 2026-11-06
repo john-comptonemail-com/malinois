@@ -1,4 +1,4 @@
-# ADR 0071: Evidence signing: the keys this install certified, kept where a backup cannot change them
+# ADR 0071: Evidence signing: the keys this install certified, kept where an edited backup cannot change them
 
 - **Status:** accepted: the owner's ruling of 2026-11-02, "go on the fixes, A3 a, A4 a, A5 a, A6 a" (BACKLOG item 190,
   A3, on DeepSeek's deepseek-1 in the full review of `aa71756`). It adds to ADR 0069, the signer as it stands, whose
@@ -52,7 +52,7 @@ so that an edited backup cannot add to it; the signature file had no such anchor
    missing.
 3. **A new key follows the list's last certified key.** A new key's statement follows the last key the list names as
    certified, or none while it names none, where it used to follow the file's: when the file has lost a key, the new key
-   still names it, and every later bundle says so (the verifier's existing "a later key follows it" line, for a key the
+   still names it, and every later bundle says so (the verifier's existing "a later key says it follows it" line, for a key the
    bundle's index leaves out too). A key Apple certified that the Keychain did not take (its write failed) is still the
    last this install certified: the next key follows it, and the list is written again at the next pass.
 4. **The event log says so, once.** The store keeps this phone's own records in the log as it first read it, at launch
@@ -72,14 +72,15 @@ so that an edited backup cannot add to it; the signature file had no such anchor
 
 ## Consequences
 
-- An edited backup restored to the same iPhone can no longer take the signing history away unseen: the phone says so
+- An edited backup restored to the same iPhone can no longer take a key the list names away unseen: the phone says so
   in its log, and every later bundle names the earlier key it follows. What the earlier key signed is still gone from
-  the phone; the bundles already shared keep it.
+  the phone; the bundles already shared keep it. A backup older than a key brings back a list that does not name it, so
+  restoring it can take that key away unseen.
 - Where the edit keeps the earlier keys' lines and takes out only the last key's, the bundle's chain stops at the key
   taken out, which it does not hold: the check says so (`Report.chainBreak`), and the verifier reports each earlier key
   as cut off from the export's key by it, a problem, the history having been cut (DeepSeek's deepseek-1, the owner's
   "b"). With the whole file taken out the bundle holds no earlier key, and only the note on the key it follows remains.
-- On another iPhone the list is not there (it never leaves the phone), nor after a backup made before 1.10 is restored:
+- On another iPhone the list is not there (it does not move to another iPhone), nor after a backup made before 1.10 is restored:
   a backup edited and restored there leaves no trace, as a restore that takes the newest records off the phone does,
   and a key of another install put in its file can be the one the next key follows (SECURITY.md's limits).
 - A reinstall keeps the list, so its first key follows the reinstalled app's last: bundles made after a reinstall say an

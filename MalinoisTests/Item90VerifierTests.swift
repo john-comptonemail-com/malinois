@@ -73,7 +73,7 @@ final class Item90VerifierTests: XCTestCase {
         for target in [folder, try zipped(folder)] {
             let outcome = MalinoisVerifier.run([target.path, "--root", root.path], appIDHash: testAppHash)
             XCTAssertEqual(outcome.status, 0, outcome.text)
-            XCTAssertTrue(outcome.text.hasSuffix("PASS\n"), outcome.text)
+            XCTAssertTrue(outcome.text.contains("\nPASS\n"), outcome.text)
             XCTAssertTrue(outcome.text.contains("certified by Apple"), outcome.text)
             XCTAssertTrue(outcome.text.contains("primary: as signed"), outcome.text)
             XCTAssertTrue(outcome.text.contains("none missing"), outcome.text)
@@ -138,8 +138,6 @@ final class Item90VerifierTests: XCTestCase {
                     .map { String(lines[0][$0]) })
                 try Data("{}".utf8).write(to: folder.appendingPathComponent("statements/\(field.dropFirst(8).dropLast()).json"))
             }),
-            // Another statement under counter 1 (a line listed twice is one signature, not this).
-            ("counters repeated", try outcome([revision(1), export(1)], alsoSigned: [(revision(2), 1)])),
             ("signed again", try outcome([revision(1), revision(1), export(1)])),
             ("after it", try outcome([revision(1), export(1), revision(2)]) { lines, _ in lines.swapAt(1, 2) }),
             ("revisions missing", try outcome([revision(2), export(2)])),
@@ -150,6 +148,152 @@ final class Item90VerifierTests: XCTestCase {
             XCTAssertTrue(result.text.contains("PROBLEMS"), "\(finding): \(result.text)")
             XCTAssertTrue(result.text.contains(finding), "\(finding): \(result.text)")
         }
+    }
+
+    /// Item 205 (TestFlight 84): a forced restart took App Attest's count back, so two genuine signatures share a counter. Only the
+    /// key can make either, so neither is forged: information under COUNTERS, with what it costs a check (item 206), and the bundle
+    /// passes, on a phone that kept a repeat before it stopped keeping them. No statement shown in full is among them, so the line
+    /// under THE EXPORT stays as it is.
+    func testACounterGivenOutTwiceIsInformationNotAProblem() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey()
+        try phone.sign(revision(1), shown: true)
+        try phone.sign(otherRecord(1))
+        try phone.sign(otherRecord(2))
+        phone.rollBackCount(by: 2)
+        try phone.sign(otherRecord(3))
+        try phone.sign(otherRecord(4))
+        try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...1])]), shown: true)
+        let outcome = try checked(phone)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        XCTAssertTrue(outcome.text.contains(repeatNote(key.keyID, at: "2…3") + "\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("  the statements it names as shown: all in the bundle\n"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("counters repeated"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("\nPASS"), outcome.text)
+    }
+
+    /// Item 206 (Codex-1): an export names what a bundle shows by counter, and whether a statement is shown is not signed. So at a
+    /// counter two statements share, either one satisfies it, and a sender can cut the other down to its fingerprint with nothing
+    /// to catch. The bundle passes, and the report says so under THE EXPORT (the owner's "a", the words approved).
+    func testAStatementCutDownToItsFingerprintAtANamedCounterIsSaidUnderTheExport() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey()
+        try phone.sign(revision(1), shown: true)
+        try phone.sign(otherRecord(1), shown: true)
+        phone.rollBackCount(by: 1)
+        try phone.sign(otherRecord(2))
+        try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...2])]), shown: true)
+        let outcome = try checked(phone)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        XCTAssertTrue(outcome.text.contains(repeatNote(key.keyID, at: "2") + "\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("  the statements it names as shown: all in the bundle by counter; \(secondSignature(at: "2"))\n"),
+                      outcome.text)
+        XCTAssertTrue(outcome.text.contains("  the statements shown in full: all named by it\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("\nPASS"), outcome.text)
+    }
+
+    /// Item 206 (Codex-1), the limit SECURITY.md states: a statement saying a record left the phone's log can share a counter too.
+    /// Shown, it ends the bundle in problems. Cut down to its fingerprint it is no longer read, and what is left is the two lines
+    /// saying what such a counter costs. Nothing a check can see tells that bundle from a phone's own.
+    func testAnAbsenceCutDownToItsFingerprintAtARepeatedCounterIsNoLongerRead() throws {
+        let gone = UUID(uuidString: "0C0FFEE0-0000-4000-8000-000000000002") ?? UUID()
+        func outcome(shown: Bool) throws -> MalinoisVerifier.Outcome {
+            let phone = try TestPhone()
+            let key = try phone.certifyKey()
+            try phone.sign(revision(1), shown: true)
+            try phone.sign(otherRecord(1), shown: true)
+            phone.rollBackCount(by: 1)
+            try phone.sign(.absence(EvidenceForm.Absence(signedAt: 1_793_000_008_000, app: "1.10 (81)",
+                                                         records: [EvidenceForm.Absent(id: gone, revision: 2, startDate: 1_793_000_000_000)])),
+                           shown: shown)
+            try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...2])]), shown: true)
+            return try checked(phone)
+        }
+        let whole = try outcome(shown: true)
+        XCTAssertEqual(whole.status, 1, whole.text)
+        XCTAssertTrue(whole.text.contains("left its log other than by its limit: \(gone.uuidString)"), whole.text)
+        XCTAssertTrue(whole.text.contains("  the statements it names as shown: all in the bundle\n"), whole.text)
+        let cut = try outcome(shown: false)
+        XCTAssertEqual(cut.status, 0, cut.text)
+        XCTAssertFalse(cut.text.contains(gone.uuidString), cut.text)
+        XCTAssertTrue(cut.text.contains(secondSignature(at: "2")), cut.text)
+        XCTAssertTrue(cut.text.contains("\nPASS"), cut.text)
+    }
+
+    /// Guard: the line speaks only of a counter where a statement is shown in full. Beside a repeat, a statement the export names and
+    /// the bundle hides stays a problem, and "all in the bundle" gives way to what the bundle lacks.
+    func testAStatementHiddenAtACounterOfItsOwnStaysAProblemBesideARepeat() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey()
+        try phone.sign(revision(1), shown: true)
+        try phone.sign(otherRecord(1), shown: true)
+        phone.rollBackCount(by: 1)
+        try phone.sign(otherRecord(2))
+        try phone.sign(otherRecord(3))
+        phone.rollBackCount(by: 1)
+        try phone.sign(otherRecord(4))
+        try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...3])]), shown: true)
+        let outcome = try checked(phone)
+        XCTAssertEqual(outcome.status, 1, outcome.text)
+        XCTAssertTrue(outcome.text.contains("  the statements it names as shown: NOT all in the bundle; \(secondSignature(at: "2"))\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("the export names statements the bundle does not show: key \(short(key.keyID)) 3"), outcome.text)
+    }
+
+    /// Guard: the line speaks only of a counter the export names. A statement shown in full that it does not name is a problem of
+    /// its own, whatever shares its counter.
+    func testAFingerprintBesideAStatementTheExportDoesNotNameIsNotSaidUnderTheExport() throws {
+        // Past the last counter it names, and between two it names.
+        for named: [ClosedRange<UInt32>] in [[1...1], [1...1, 3...3]] {
+            let phone = try TestPhone()
+            let key = try phone.certifyKey()
+            try phone.sign(revision(1), shown: true)
+            try phone.sign(otherRecord(1), shown: true)
+            phone.rollBackCount(by: 1)
+            try phone.sign(otherRecord(2))
+            try phone.sign(otherRecord(3), shown: true)
+            try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: named)]), shown: true)
+            let outcome = try checked(phone)
+            XCTAssertEqual(outcome.status, 1, outcome.text)
+            XCTAssertTrue(outcome.text.contains("statements shown in full that the export does not name: key \(short(key.keyID)) 2"), outcome.text)
+            XCTAssertTrue(outcome.text.contains("  the statements it names as shown: all in the bundle\n"), outcome.text)
+        }
+    }
+
+    /// Guard: one signature listed twice is one signature, so its fingerprint beside its own statement is no second signature.
+    func testASignatureListedAgainAsItsFingerprintIsNoSecondSignature() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey()
+        try phone.sign(revision(1), shown: true)
+        try phone.sign(otherRecord(1), shown: true)
+        let listed = try XCTUnwrap(phone.signatures.last)
+        phone.signatures.append(EvidenceBundle.Signature(key: listed.key, assertion: listed.assertion, statement: listed.statement, shown: false))
+        try phone.sign(export(1, shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...2])]), shown: true)
+        let outcome = try checked(phone)
+        XCTAssertTrue(outcome.text.contains("  the statements it names as shown: all in the bundle\n"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("two signatures each"), outcome.text)
+    }
+
+    /// Where more than one key holds such a counter, the line says which, and a key's counter is named by its own key's ranges alone.
+    func testTheLineNamesEachKeyWhenTwoHoldSuchACounter() throws {
+        let phone = try TestPhone()
+        let older = try phone.certifyKey()
+        try phone.sign(revision(1), shown: true)
+        try phone.sign(otherRecord(1), shown: true)
+        phone.rollBackCount(by: 1)
+        try phone.sign(otherRecord(2))
+        let newer = try phone.certifyKey(follows: older.keyID)
+        try phone.sign(otherRecord(3), shown: true)
+        phone.rollBackCount(by: 1)
+        try phone.sign(otherRecord(4))
+        // An export lists its keys in ascending order, whichever the phone made first.
+        let named = [EvidenceForm.KeyCounters(keyID: older.keyID, counters: [1...2]), EvidenceForm.KeyCounters(keyID: newer.keyID, counters: [1...1])]
+            .sorted { $0.keyID.lexicographicallyPrecedes($1.keyID) }
+        try phone.sign(export(1, shown: named), shown: true)
+        let outcome = try checked(phone)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        let places = named.map { "\($0.keyID == older.keyID ? "2" : "1") of key \(short($0.keyID))" }.joined(separator: " and ")
+        XCTAssertTrue(outcome.text.contains("  the statements it names as shown: all in the bundle by counter; \(secondSignature(at: places))\n"),
+                      outcome.text)
     }
 
     /// A bundle whose phone signed that records left its log other than by its limit (item 182): the verifier names each
@@ -193,7 +337,8 @@ final class Item90VerifierTests: XCTestCase {
 
     /// codex-2 on 73441cbe (the owner's "2 - a"): a key a later key follows (a restore from a backup) may have signed after
     /// its last signature in the bundle, and nothing in the bundle can show it did not: the verifier says so, as a limit
-    /// of what it can check, not a problem.
+    /// of what it can check, not a problem. Item 198's Fable-1: it says only what the later key says, since another iPhone
+    /// can make a key that follows this one: nothing in a bundle shows both were on one iPhone.
     func testAKeyALaterKeyFollowsIsSaidToEndUnaccountedFor() throws {
         let phone = try TestPhone()
         let first = try phone.certifyKey()
@@ -210,9 +355,10 @@ final class Item90VerifierTests: XCTestCase {
         let outcome = MalinoisVerifier.run([folder.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
         XCTAssertEqual(outcome.status, 0, outcome.text)
         let short = String(EvidenceHash.hex(first.keyID).prefix(8)) + "…"
-        XCTAssertTrue(outcome.text.contains("key \(short): a later key follows it"), outcome.text)
-        XCTAssertTrue(outcome.text.contains("signatures it made after counter 1, its last here, cannot be accounted for"),
-                      outcome.text)
+        XCTAssertTrue(outcome.text.contains("key \(short): a later key says it follows it (as after a restore from a backup, "
+                                            + "though nothing here shows both were on one iPhone), so any signatures it "
+                                            + "made after counter 1, its last here, cannot be accounted for"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("the phone's key changed"), outcome.text)
         XCTAssertTrue(outcome.text.contains("\nPASS"), outcome.text)
     }
 
@@ -237,8 +383,9 @@ final class Item90VerifierTests: XCTestCase {
         try EvidenceBundle.write(contents, to: folder)
         let outcome = MalinoisVerifier.run([folder.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
         let short = String(EvidenceHash.hex(first.keyID).prefix(8)) + "…"
-        XCTAssertTrue(outcome.text.contains("key \(short): a later key follows it"), outcome.text)
-        XCTAssertTrue(outcome.text.contains("so any signatures it made cannot be accounted for"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("key \(short): a later key says it follows it (as after a restore from a backup, "
+                                            + "though nothing here shows both were on one iPhone), so any signatures it "
+                                            + "made cannot be accounted for"), outcome.text)
     }
 
     /// Item 185's ds4agent-3: an attachment an earlier revision signed and the last does not (the phone's storage limit
@@ -800,7 +947,7 @@ final class Item90VerifierTests: XCTestCase {
         let root = try rootFile(phone)
         var (status, text) = try launch(program, [try zipped(folder).path, "--root", root.path])
         XCTAssertEqual(status, 0, text)
-        XCTAssertTrue(text.hasSuffix("PASS\n"), text)
+        XCTAssertTrue(text.contains("\nPASS\n"), text)
         try Data("another photo".utf8).write(to: folder.appendingPathComponent("attachments/added.jpg"))
         (status, text) = try launch(program, [folder.path, "--root", root.path])
         XCTAssertEqual(status, 1, text)
@@ -892,6 +1039,310 @@ final class Item90VerifierTests: XCTestCase {
             of: "number of entries: 1", with: "number of entries: 2")), "fewer entries than its header says")
     }
 
+    // MARK: - What a pass says (item 192's step 3), and a ZIP named by its own name (item 187's deepseek-9)
+
+    /// The words the owner approved (2026-11-04: "approved"; item 198, 2026-11-05, and item 206, 2026-11-06: "wording approved"),
+    /// printed under PASS and only there.
+    private static let passWords =
+        "A pass shows: each signature was made by a key Apple certified for Malinois; the record, and each photo, clip "
+        + "and trace in this ZIP, is byte for byte what was signed; and the ZIP accounts for every counter of the export's "
+        + "key up to the export.\n"
+        + "It cannot show: which iPhone made the ZIP or whose (any Malinois on any iPhone signs the same way), that the "
+        + "phone's clock was right, what the event means, that the phone was not compromised, that the app that signed "
+        + "was the App Store's (the KEYS line names each key's Apple environment, and from iOS 27 its kind of build), or "
+        + "that every signature at a counter the phone's count went back over is here: a check sees the counters, not how "
+        + "many times each was given out.\n"
+        + "Both lists in full: SECURITY.md in Malinois's repository, \"Evidence someone else can check\".\n"
+
+    /// A pass ends in PASS, a blank line, and the approved words: what a check shows and what it cannot.
+    func testAPassEndsWithWhatItShowsAndWhatItCannot() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let root = try rootFile(phone)
+        for target in [folder, try zipped(folder)] {
+            let outcome = MalinoisVerifier.run([target.path, "--root", root.path], appIDHash: testAppHash)
+            XCTAssertEqual(outcome.status, 0, outcome.text)
+            XCTAssertTrue(outcome.text.hasSuffix("\nPASS\n\n" + Self.passWords), outcome.text)
+        }
+    }
+
+    /// Guard: a check that ends in problems says nothing of what a pass shows.
+    func testProblemsSayNothingOfWhatAPassShows() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone, exported: false)
+        let outcome = MalinoisVerifier.run([folder.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 1, outcome.text)
+        XCTAssertFalse(outcome.text.contains("A pass shows:"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("It cannot show:"), outcome.text)
+    }
+
+    /// Guard: the words follow SECURITY.md's "Evidence someone else can check", which they point to: the section is
+    /// there, and its two lists hold what the words name.
+    func testThePassWordsFollowTheSectionOfSecurityMDTheyPointTo() throws {
+        let source = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["MALINOIS_SOURCE"],
+                                                        "the source the macOS lane names"))
+        let text = try String(contentsOf: source.appendingPathComponent("SECURITY.md"), encoding: .utf8)
+        let section = try XCTUnwrap(text.components(separatedBy: "\n## Evidence someone else can check\n").dropFirst().first,
+                                    "the section the words name")
+        let body = section.components(separatedBy: "\n## ").first ?? section
+        func flat(_ part: String) -> String { part.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let shows = flat(try XCTUnwrap(body.components(separatedBy: "A check that passes shows:").dropFirst().first?
+            .components(separatedBy: "It cannot show:").first, "what a pass shows"))
+        let cannot = flat(try XCTUnwrap(body.components(separatedBy: "It cannot show:").dropFirst().first, "what it cannot"))
+        for claim in ["made by a key Apple certified for Malinois", "is byte for byte what was signed",
+                      "accounts for every counter of the export's key up to the export"] {
+            XCTAssertTrue(shows.contains(claim), claim)
+        }
+        for limit in ["which iPhone made the ZIP, or whose", "that the phone's clock was right", "what an event means",
+                      "that the phone was not compromised", "that the app that signed was the one on the App Store",
+                      "that a key which follows an earlier one was made on the same iPhone",
+                      "that every signature at a counter the count went back over is in the ZIP"] {
+            XCTAssertTrue(cannot.contains(limit), limit)
+        }
+    }
+
+    /// Item 187's deepseek-9: a ZIP whose index lies at its root (its files zipped without their folder) is named by its
+    /// own name in the report's first line, never by the verifier's temporary folder; one that holds the bundle's folder,
+    /// as the phone writes it, still by that folder.
+    func testAZIPWhoseIndexLiesAtItsRootIsNamedByItsOwnName() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let root = try rootFile(phone)
+        let zip = base.appendingPathComponent("Malinois evidence at its root.zip")
+        try runTool("/usr/bin/ditto", ["-c", "-k", "--norsrc", folder.path, zip.path])
+        var outcome = MalinoisVerifier.run([zip.path, "--root", root.path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        XCTAssertTrue(outcome.text.hasPrefix("Malinois evidence check of Malinois evidence at its root.zip\n"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("malinois-verify-"), outcome.text)
+        outcome = MalinoisVerifier.run([try zipped(folder).path, "--root", root.path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        XCTAssertTrue(outcome.text.hasPrefix("Malinois evidence check of \(folder.lastPathComponent)\n"), outcome.text)
+    }
+
+    /// Item 187's deepseek-9: a refusal names the ZIP, never the verifier's temporary folder: one whose index, at its root,
+    /// names a format this verifier does not read, and one that holds no bundle.
+    func testARefusedZIPIsNamedByItsOwnName() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let root = try rootFile(phone)
+        let index = folder.appendingPathComponent(EvidenceBundle.indexName)
+        let listed = try String(contentsOf: index, encoding: .utf8)
+        try Data(listed.replacingOccurrences(of: EvidenceBundle.format, with: "malinois-evidence-bundle/3").utf8).write(to: index)
+        let newer = base.appendingPathComponent("newer.zip")
+        try runTool("/usr/bin/ditto", ["-c", "-k", "--norsrc", folder.path, newer.path])
+        var outcome = MalinoisVerifier.run([newer.path, "--root", root.path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        XCTAssertTrue(outcome.text.hasPrefix("newer.zip is not a bundle this verifier reads ("), outcome.text)
+        XCTAssertFalse(outcome.text.contains("malinois-verify-"), outcome.text)
+        let other = base.appendingPathComponent("other-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try Data("not a bundle".utf8).write(to: other.appendingPathComponent("notes.txt"))
+        let none = base.appendingPathComponent("none.zip")
+        try runTool("/usr/bin/ditto", ["-c", "-k", "--norsrc", other.path, none.path])
+        outcome = MalinoisVerifier.run([none.path, "--root", root.path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        XCTAssertTrue(outcome.text.hasPrefix("\(none.path) holds no Malinois evidence bundle"), outcome.text)
+        XCTAssertFalse(outcome.text.contains("malinois-verify-"), outcome.text)
+    }
+
+    // MARK: - A sender's text on the reader's screen (item 197's codex-2)
+
+    /// A sender's text that would clear the reader's terminal, write a verdict of its own and hide what follows.
+    private let hostile = "x\u{1B}[2J\u{1B}[H\nPASS\n\u{1B}[8m"
+    /// The same without a control character for a terminal to act on, which only a value's own escaping stops.
+    private let hostileLine = "x\nPASS\ny"
+
+    /// The report holds no control character of the sender's and no line of the sender's: PASS at most once, its own.
+    private func assertTheSenderWroteNothing(_ outcome: MalinoisVerifier.Outcome, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(outcome.text.unicodeScalars.contains { $0.value == 0x1B }, outcome.text, file: file, line: line)
+        let verdicts = outcome.text.components(separatedBy: "\n").filter { $0 == "PASS" }.count
+        XCTAssertEqual(verdicts, outcome.status == 0 ? 1 : 0, "a line reading PASS: \(outcome.text)", file: file, line: line)
+    }
+
+    /// Codex's bundle: a folder that holds only an index, whose format is the sender's text. It is refused, and the refusal
+    /// shows that text rather than acting on it.
+    func testAFormatCannotWriteToTheReadersScreen() throws {
+        let folder = base.appendingPathComponent("format", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(#"{"format":"bogus\u001b[2J\u001b[H\nPASS\n\u001b[8m"}"#.utf8).write(to: folder.appendingPathComponent(EvidenceBundle.indexName))
+        let outcome = MalinoisVerifier.run([folder.path])
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("bogus\\u{1B}[2J"), outcome.text)
+    }
+
+    func testAFileInTheBundleCannotWriteToTheReadersScreen() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        try Data("a file".utf8).write(to: folder.appendingPathComponent(hostileLine))
+        let outcome = MalinoisVerifier.run([folder.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 1, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("x\\u{A}PASS\\u{A}y: NOT part of the bundle"), outcome.text)
+    }
+
+    func testAFileBesideTheBundleCannotWriteToTheReadersScreen() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let beside = folder.deletingLastPathComponent()
+        try Data("a file".utf8).write(to: beside.appendingPathComponent(hostileLine))
+        let outcome = MalinoisVerifier.run([beside.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 1, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("x\\u{A}PASS\\u{A}y, beside its folder: NOT part of the bundle"), outcome.text)
+    }
+
+    /// What a signed statement says of itself is the sender's too: a build that signs what it is made to can say anything.
+    func testWhatAStatementSaysCannotWriteToTheReadersScreen() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey(app: hostileLine)
+        let status = EvidenceForm.Record(id: UUID(), revision: 1, signedAt: 1_793_000_000_002, app: hostileLine,
+                                         facts: [EvidenceJSON.Member("startDate", .int(1_793_000_000_001)),
+                                                 EvidenceJSON.Member("stateChange", .string(hostileLine))], attachments: [])
+        let digest = EvidenceHash.digest(of: photo)
+        let shared = EvidenceForm.Record(id: self.shared, revision: 1, signedAt: 1_793_000_000_003, app: hostileLine,
+                                         facts: [EvidenceJSON.Member("startDate", .int(1_793_000_000_000))],
+                                         attachments: [EvidenceForm.Attachment(name: "primary", digest: digest),
+                                                       EvidenceForm.Attachment(name: hostileLine, digest: digest)])
+        let gone = EvidenceForm.Absent(id: UUID(), revision: 1, startDate: 1_793_000_000_001)
+        try phone.sign(.record(status), shown: true)                                                               // 1
+        try phone.sign(.record(shared), shown: true)                                                               // 2
+        try phone.sign(.record(status), kept: false)                                                               // 3: made, not kept
+        try phone.sign(.unkept(EvidenceForm.Unkept(signedAt: 1_793_000_000_005, app: hostileLine, counters: [3...3])), shown: true)   // 4
+        try phone.sign(.absence(EvidenceForm.Absence(signedAt: 1_793_000_000_006, app: hostileLine, records: [gone])), shown: true)   // 5
+        try phone.sign(.export(EvidenceForm.Export(record: self.shared, revision: 1, signedAt: 1_793_000_009_000, app: hostileLine,
+                                                   shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...2, 4...5])])), shown: true)
+        let outcome = MalinoisVerifier.run([try written(phone).path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertFalse(outcome.text.contains("Malinois x\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("status x\\u{A}PASS\\u{A}y, revision 1"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("  x\\u{A}PASS\\u{A}y: signed, but not in the bundle"), outcome.text)
+    }
+
+    /// An attachment an earlier revision signed and the last does not, and one the last signed with other bytes, each named
+    /// under ATTACHMENTS.
+    func testAnEarlierRevisionsAttachmentCannotWriteToTheReadersScreen() throws {
+        let phone = try TestPhone()
+        let key = try phone.certifyKey()
+        func revision(_ number: Int64, _ attachments: [EvidenceForm.Attachment]) -> EvidenceForm.Statement {
+            .record(EvidenceForm.Record(id: shared, revision: number, signedAt: 1_793_000_000_000 + number, app: "1.11 (83)",
+                                        facts: [EvidenceJSON.Member("startDate", .int(1_793_000_000_000))], attachments: attachments))
+        }
+        let digest = EvidenceHash.digest(of: photo), other = EvidenceHash.digest(of: Data("other bytes".utf8))
+        try phone.sign(revision(1, [EvidenceForm.Attachment(name: "primary", digest: digest),
+                                    EvidenceForm.Attachment(name: hostileLine, digest: digest)]), shown: true)
+        try phone.sign(revision(2, [EvidenceForm.Attachment(name: "primary", digest: digest)]), shown: true)
+        try phone.sign(.export(EvidenceForm.Export(record: shared, revision: 2, signedAt: 1_793_000_009_000, app: "1.11 (83)",
+                                                   shown: [EvidenceForm.KeyCounters(keyID: key.keyID, counters: [1...2])])), shown: true)
+        var outcome = MalinoisVerifier.run([try written(phone).path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("  x\\u{A}PASS\\u{A}y: signed in revision 1 but not in the last revision"), outcome.text)
+
+        let changed = try TestPhone()
+        let second = try changed.certifyKey()
+        let name = hostileLine
+        func attached(_ number: Int64, _ bytes: EvidenceForm.Digest) -> EvidenceForm.Statement {
+            .record(EvidenceForm.Record(id: shared, revision: number, signedAt: 1_793_000_000_000 + number, app: "1.11 (83)",
+                                        facts: [EvidenceJSON.Member("startDate", .int(1_793_000_000_000))],
+                                        attachments: [EvidenceForm.Attachment(name: name, digest: bytes)]))
+        }
+        try changed.sign(attached(1, other), shown: true)
+        try changed.sign(attached(2, digest), shown: true)
+        try changed.sign(.export(EvidenceForm.Export(record: shared, revision: 2, signedAt: 1_793_000_009_000, app: "1.11 (83)",
+                                                     shown: [EvidenceForm.KeyCounters(keyID: second.keyID, counters: [1...2])])), shown: true)
+        outcome = MalinoisVerifier.run([try written(changed).path, "--root", try rootFile(changed).path], appIDHash: testAppHash)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("  x\\u{A}PASS\\u{A}y: signed with other bytes in revision 1"), outcome.text)
+    }
+
+    /// A name given on the command line is the sender's too when it is the file's own: every way a name reaches the report.
+    func testANameCannotWriteToTheReadersScreen() throws {
+        var outcome = MalinoisVerifier.run([base.appendingPathComponent(hostileLine).path])
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.hasPrefix("There is no file or folder at "), outcome.text)
+
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        outcome = MalinoisVerifier.run([folder.path, "--root", base.appendingPathComponent(hostileLine).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.hasPrefix("No root certificate could be read from "), outcome.text)
+
+        let root = base.appendingPathComponent(hostileLine + ".pem")
+        try FileManager.default.copyItem(at: try rootFile(phone), to: root)
+        outcome = MalinoisVerifier.run([folder.path, "--root", root.path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains("Checked against the root certificate in "), outcome.text)
+
+        let empty = base.appendingPathComponent(hostileLine, isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        outcome = MalinoisVerifier.run([empty.path])
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.contains(" holds no Malinois evidence bundle"), outcome.text)
+
+        let named = folder.deletingLastPathComponent().appendingPathComponent(hostileLine, isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: named)
+        outcome = MalinoisVerifier.run([named.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 0, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.hasPrefix("Malinois evidence check of x\\u{A}PASS\\u{A}y\n"), outcome.text)
+    }
+
+    /// A ZIP that holds no bundle is named by its path, and one the check refuses by its own name.
+    func testAZIPsNameCannotWriteToTheReadersScreen() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let index = folder.appendingPathComponent(EvidenceBundle.indexName)
+        let listed = try String(contentsOf: index, encoding: .utf8)
+        try Data(listed.replacingOccurrences(of: EvidenceBundle.format, with: "malinois-evidence-bundle/3").utf8).write(to: index)
+        let zip = base.appendingPathComponent(hostileLine + ".zip")
+        try runTool("/usr/bin/ditto", ["-c", "-k", "--norsrc", folder.path, zip.path])
+        let outcome = MalinoisVerifier.run([zip.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(outcome.status, 2, outcome.text)
+        assertTheSenderWroteNothing(outcome)
+        XCTAssertTrue(outcome.text.hasPrefix("x\\u{A}PASS\\u{A}y.zip is not a bundle this verifier reads ("), outcome.text)
+    }
+
+    /// What is shown, and what is left as it is. A value keeps no line break of its own, and the whole report keeps its own.
+    func testAValueShowsItsControlsAsTextAndTheReportKeepsItsLines() {
+        XCTAssertEqual(MalinoisVerifier.shown("a\u{1B}[2J\u{7}b\u{7F}c\u{9B}d"), "a\\u{1B}[2J\\u{7}b\\u{7F}c\\u{9B}d", "C0, DEL and C1")
+        XCTAssertEqual(MalinoisVerifier.shown("a\nb\r\tc"), "a\\u{A}b\\u{D}\\u{9}c", "line breaks and tabs")
+        XCTAssertEqual(MalinoisVerifier.shown("a\u{2028}b\u{2029}c"), "a\\u{2028}b\\u{2029}c", "Unicode's line and paragraph separators")
+        XCTAssertEqual(MalinoisVerifier.shown("a\u{202E}b\u{2066}c\u{200F}d"), "a\\u{202E}b\\u{2066}c\\u{200F}d", "text that reorders a line")
+        XCTAssertEqual(MalinoisVerifier.shown("Malinois évidence 1.11 (83) \u{2026} ✓"), "Malinois évidence 1.11 (83) \u{2026} ✓", "ordinary text as it is")
+        XCTAssertEqual(MalinoisVerifier.displayed("a\nb\u{1B}[2J\n"), "a\nb\\u{1B}[2J\n", "the report's own lines stay")
+    }
+
+    /// Each problem's words hold what the bundle said only as text, the build's label too, and so does an error of any
+    /// other kind.
+    func testAProblemsWordsHoldTheSendersTextOnlyAsText() {
+        struct Other: Error, CustomStringConvertible { let description: String }
+        let escaped = "x\\u{A}PASS\\u{A}y"
+        XCTAssertEqual(MalinoisVerifier.describe(EvidenceProblem.unreadable(hostileLine)), "cannot be read: \(escaped)")
+        XCTAssertEqual(MalinoisVerifier.describe(EvidenceProblem.unknownFormat(hostileLine)), "is in another format (\(escaped))")
+        XCTAssertEqual(MalinoisVerifier.describe(EvidenceProblem.fileMissing(hostileLine)), "\(escaped) is not in the bundle")
+        XCTAssertTrue(MalinoisVerifier.describe(EvidenceProblem.formatNotAsHeld(hostileLine)).hasPrefix("the bundle names the format \(escaped), "))
+        XCTAssertEqual(MalinoisVerifier.describe(Other(description: hostileLine) as Error), escaped)
+        XCTAssertEqual(MalinoisVerifier.channel(2, hostileLine), "; a TestFlight build, build \(escaped)")
+    }
+
+    /// Whatever a value's own escaping misses, the report that leaves `run` holds no control character.
+    func testNoControlLeavesInAnyReport() throws {
+        let phone = try TestPhone()
+        let folder = try bundle(phone)
+        let pass = MalinoisVerifier.run([folder.path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+        XCTAssertEqual(pass.status, 0, pass.text)
+        XCTAssertEqual(MalinoisVerifier.displayed(pass.text), pass.text, "a whole bundle's report is as it was")
+        for report in [pass.text, MalinoisVerifier.usage, MalinoisVerifier.passWords] {
+            XCTAssertFalse(report.unicodeScalars.contains { $0.value < 0x20 && $0.value != 0x0A }, report)
+        }
+        let raw = MalinoisVerifier.run([]) { _, _ in MalinoisVerifier.Outcome(text: "a\u{1B}[2J\n", status: 1) }
+        XCTAssertEqual(raw, MalinoisVerifier.Outcome(text: "a\\u{1B}[2J\n", status: 1), "text a value's own escaping missed")
+    }
+
     // MARK: - Helpers
 
     private var testAppHash: Data { TestApp.sha256(Data(TestApp.id.utf8)) }
@@ -964,6 +1415,29 @@ final class Item90VerifierTests: XCTestCase {
     }
 
     private func short(_ keyID: Data) -> String { String(EvidenceHash.hex(keyID).prefix(8)) + "…" }
+
+    /// `phone`'s bundle as it stands, checked against its chain's root.
+    private func checked(_ phone: TestPhone) throws -> MalinoisVerifier.Outcome {
+        MalinoisVerifier.run([try written(phone).path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
+    }
+
+    /// A statement of a record other than the one shared.
+    private func otherRecord(_ number: Int64) -> EvidenceForm.Statement {
+        .record(EvidenceForm.Record(id: UUID(), revision: 1, signedAt: 1_793_000_000_100 + number, app: "1.10 (81)",
+                                    facts: [EvidenceJSON.Member("startDate", .int(1_793_000_000_100 + number))], attachments: []))
+    }
+
+    /// The words under COUNTERS for a key's repeat (item 206, the owner: "wording approved").
+    private func repeatNote(_ keyID: Data, at counters: String) -> String {
+        "key \(short(keyID)): two signatures each at \(counters): the phone's count went back, as after a forced restart. At these "
+            + "counters a statement taken out, or cut down to its fingerprint, leaves no gap, even one the export names or one saying a "
+            + "record left the phone's log"
+    }
+
+    /// The words under THE EXPORT for a fingerprint beside a statement shown in full at a counter it names (item 206).
+    private func secondSignature(at places: String) -> String {
+        "at \(places) a second signature is only a fingerprint, and the export does not say which of the two it names"
+    }
 
     /// The test chain's root, as a reader would pass Apple's: a PEM file.
     private func rootFile(_ phone: TestPhone) throws -> URL {

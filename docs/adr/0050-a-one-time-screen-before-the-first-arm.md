@@ -6,7 +6,8 @@
   (BACKLOG 144 (e), the owner's "approved", 2026-10-21): part 3, Voice Control, shown once to every install
   (decision 7). Amended 2026-10-23 (BACKLOG 162's F9, the owner's approval): the context's "the Guided Access passcode
   the only way out of the app" holds with Face ID and Touch ID off for ending Guided Access, which the setup now
-  advises; with them allowed, an enrolled face or finger ends it too (ADR 0057).
+  advises; with them allowed, an enrolled face or finger ends it too (ADR 0057). Its design, with a fourth part (the
+  Side Button), is stated as it stands by ADR 0072 (2026-11-04, BACKLOG 153); this record keeps its decision.
 - **Date:** 2026-10-18
 
 ## Context

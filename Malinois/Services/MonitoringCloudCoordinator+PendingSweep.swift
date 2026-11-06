@@ -65,6 +65,8 @@ extension MonitoringCloudCoordinator {
         /// The upload's record reached iCloud, whether or not its copy could mark the row (a later cancel of a run
         /// changed it meanwhile): what carries a pass's "disarmed" alert (item 170's codex-3).
         let uploaded: Bool
+        /// Its "disarmed" alert went out behind its record (item 187's deepseek-5): what the stand-in rule reads.
+        let alerted: Bool
         let transient: CloudExfiltrator.TransientFailure?
     }
 
@@ -106,12 +108,14 @@ extension MonitoringCloudCoordinator {
         }
     }
 
-    /// Pure (unit-tested; item 162's ds4f1-1017-6): the late disarm that carries a pass's one "disarmed" alert when the
-    /// newest, which was to carry it, did not land: the newest of the pass's late disarms that did. Nil when the newest
-    /// landed, or none did. Before, that pass sent no alert, and none came at all if the newest never landed.
-    nonisolated static func lateDisarmAlertStandIn(late: [Event], landed: Set<UUID>) -> Event? {
-        guard let carrier = late.max(by: { $0.startDate < $1.startDate }), !landed.contains(carrier.id) else { return nil }
-        return late.filter { landed.contains($0.id) }.max(by: { $0.startDate < $1.startDate })
+    /// Pure (unit-tested; item 162's ds4f1-1017-6, item 187's deepseek-5): the late disarm that carries a pass's one
+    /// "disarmed" alert when the newest, which was to carry it, sent none: the newest of the pass's late disarms whose
+    /// record reached iCloud (`uploaded`), the newest itself when its record landed and only its alert failed. Nil when
+    /// the newest's alert went out (`alerted`), or no late disarm's record landed. Before, that pass sent no alert when
+    /// the newest did not land, and later (until 1.11) none when its record landed and its alert did not.
+    nonisolated static func lateDisarmAlertStandIn(late: [Event], uploaded: Set<UUID>, alerted: Set<UUID>) -> Event? {
+        guard let carrier = late.max(by: { $0.startDate < $1.startDate }), !alerted.contains(carrier.id) else { return nil }
+        return late.filter { uploaded.contains($0.id) }.max(by: { $0.startDate < $1.startDate })
     }
 
     /// The late disarms' one alert, sent for `event`, a late disarm whose record landed in this pass, when the newest
@@ -134,13 +138,16 @@ extension MonitoringCloudCoordinator {
             let current = applyUploadCompletion(outcome.state, snapshot: event)
             if current, let transient = outcome.transient { sweepTransientForTesting = transient }
             let landed = eventStore.events.first { $0.id == event.id }?.cloudSyncState == .synced
+            let wanted = event.stateChange.map { CloudExfiltrator.disarmSignalWanted(kind: $0) } ?? false
             return SweepUploadOutcome(id: event.id, landed: landed, uploaded: outcome.state == .synced,
+                                      alerted: outcome.state == .synced && disarmSignal && wanted,
                                       transient: sweepTransient)
         }
         #endif
-        let uploaded = await exfiltrate(event, disarmSignal: disarmSignal)
+        let (uploaded, alerted) = await exfiltrateReportingAlert(event, disarmSignal: disarmSignal)
         let landed = eventStore.events.first { $0.id == event.id }?.cloudSyncState == .synced
-        return SweepUploadOutcome(id: event.id, landed: landed, uploaded: uploaded, transient: sweepTransient)
+        return SweepUploadOutcome(id: event.id, landed: landed, uploaded: uploaded, alerted: alerted,
+                                  transient: sweepTransient)
     }
 
     /// Uploads whatever has not reached iCloud yet: the pending sweep. Started by the launch,
@@ -215,6 +222,7 @@ extension MonitoringCloudCoordinator {
         let late = Self.lateDisarms(in: pending, now: passStart, lateAfter: Self.lateDisarmSignalAge)
         let maxConcurrent = 3
         var uploadedIDs = Set<UUID>()   // what each upload did, for the late disarms' alert (item 170's codex-3)
+        var alertedIDs = Set<UUID>()    // whose "disarmed" alert went out behind its record (item 187's deepseek-5)
         await withTaskGroup(of: SweepUploadOutcome.self) { group in
             var next = pending.makeIterator()
             for _ in 0..<maxConcurrent {
@@ -229,6 +237,7 @@ extension MonitoringCloudCoordinator {
             var doorClosed = false
             while let outcome = await group.next() {
                 if outcome.uploaded { uploadedIDs.insert(outcome.id) }
+                if outcome.alerted { alertedIDs.insert(outcome.id) }
                 failuresInARow = outcome.landed ? 0 : failuresInARow + 1
                 doorClosed = doorClosed || Self.sweepDoorClosed(transient: outcome.transient,
                                                                 failuresInARow: failuresInARow)
@@ -243,9 +252,12 @@ extension MonitoringCloudCoordinator {
         let handedOut = Set(pending.map(\.id))
         let landedIDs = Set(eventStore.events.filter { handedOut.contains($0.id) && $0.cloudSyncState == .synced }.map(\.id))
         let landed = landedIDs.count
-        // The late disarms' alert, if the newest, which was to carry it, did not land (item 162's ds4f1-1017-6): by what
-        // each upload did, not by the rows, which a later cancel of a run can leave unsynced (item 170's codex-3).
-        if let standIn = Self.lateDisarmAlertStandIn(late: late, landed: uploadedIDs) { await sendLateDisarmAlert(for: standIn) }
+        // The late disarms' alert, if the newest, which was to carry it, sent none (item 162's ds4f1-1017-6): by what
+        // each upload did, not by the rows, which a later cancel of a run can leave unsynced (item 170's codex-3), and by
+        // its alert, not its record, which can land with the alert failing behind it (item 187's deepseek-5).
+        if let standIn = Self.lateDisarmAlertStandIn(late: late, uploaded: uploadedIDs, alerted: alertedIDs) {
+            await sendLateDisarmAlert(for: standIn)
+        }
         let remaining = EventStore.unsyncedCount(in: eventStore.events) + discardChecksOwed   // an owed check comes back too (codex-28)
         let idle = landed > 0 ? 0 : idlePasses + 1
         guard let wait = Self.sweepFollowUpDelay(remaining: remaining, transient: sweepTransient,

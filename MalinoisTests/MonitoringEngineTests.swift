@@ -39,6 +39,20 @@ final class MonitoringEngineTests: XCTestCase {
                                                     entitlements: ProEntitlements(resolvedAs: .trial)))
     }
 
+    /// Runs `body` on an install that has armed before, so no arm in it is the first one and the first-arm Guided
+    /// Access auto-lift (BACKLOG 68) stays out of its way; the flag's earlier value comes back afterwards. BACKLOG 191:
+    /// the two tests that use it passed only when an earlier test in the run had armed, and failed when run alone on a
+    /// wiped simulator, where the first arm lifts the requirement and the grace starts.
+    private func onAnInstallThatHasArmedBefore(_ body: () -> Void) {
+        let key = "com.malinois.onboarding.hasArmedOnce"
+        let saved = UserDefaults.standard.object(forKey: key)
+        OnboardingState.hasArmedOnce = true
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        body()
+    }
+
     /// Run under Thread Sanitizer: arm/warm-up writes may overlap camera-queue reads.
     /// The real controller's property must support both directions without a data race.
     nonisolated func testClipAudioConcurrentAccessIsSynchronized() {
@@ -281,17 +295,19 @@ final class MonitoringEngineTests: XCTestCase {
     /// default since 1.3 (owner ruling 2026-09-02) — the same confirm is refused: the state
     /// stays at the check, where the arming screen offers the steps and the one-arm lift.
     func testConfirmingStartsGraceOnlyWhenGuidedAccessIsNotRequired() {
-        let relaxed = makeEngine { $0.requireGuidedAccess = false }
-        relaxed.beginArming()
-        relaxed.confirmGuidedAccessAndStartGrace()
-        XCTAssertEqual(relaxed.state, .arming, "grace countdown begins")
-        relaxed.disarm()   // cancels the grace timer
+        onAnInstallThatHasArmedBefore {
+            let relaxed = makeEngine { $0.requireGuidedAccess = false }
+            relaxed.beginArming()
+            relaxed.confirmGuidedAccessAndStartGrace()
+            XCTAssertEqual(relaxed.state, .arming, "grace countdown begins")
+            relaxed.disarm()   // cancels the grace timer
 
-        let strict = makeEngine()   // default settings: Guided Access required
-        strict.beginArming()
-        strict.confirmGuidedAccessAndStartGrace()
-        XCTAssertEqual(strict.state, .guidedAccessCheck, "refused without Guided Access — the default holds at the engine")
-        strict.cancelArming()
+            let strict = makeEngine()   // default settings: Guided Access required
+            strict.beginArming()
+            strict.confirmGuidedAccessAndStartGrace()
+            XCTAssertEqual(strict.state, .guidedAccessCheck, "refused without Guided Access — the default holds at the engine")
+            strict.cancelArming()
+        }
     }
 
     func testDisarmReturnsToDisarmed() {
@@ -522,17 +538,19 @@ final class MonitoringEngineTests: XCTestCase {
     /// testAnOwedReArmFiresOnceTheEntitlementCheckResolves runs; this test's old name claimed it.)
     @MainActor
     func testAnOrdinaryArmIsRefusedWhileGuidedAccessIsRequiredAndOff() {
-        let engine = makeEngine { $0.requireGuidedAccess = true }
-        XCTAssertTrue(engine.armingBlockedByGuidedAccess,
-                      "a user-initiated arm would be refused in this state")
+        onAnInstallThatHasArmedBefore {
+            let engine = makeEngine { $0.requireGuidedAccess = true }
+            XCTAssertTrue(engine.armingBlockedByGuidedAccess,
+                          "a user-initiated arm would be refused in this state")
 
-        // The recovery path drives the grace countdown directly rather than through the
-        // gated entry point, so it still reaches the armed flow.
-        engine.beginArming()
-        engine.confirmGuidedAccessAndStartGrace()
-        XCTAssertEqual(engine.state, .guidedAccessCheck,
-                       "the gated path refuses while blocked")
-        engine.disarm()
+            // The recovery path drives the grace countdown directly rather than through the
+            // gated entry point, so it still reaches the armed flow.
+            engine.beginArming()
+            engine.confirmGuidedAccessAndStartGrace()
+            XCTAssertEqual(engine.state, .guidedAccessCheck,
+                           "the gated path refuses while blocked")
+            engine.disarm()
+        }
     }
 
     /// The crash-recovery re-arm is timed against actual attempts: two within the window

@@ -291,14 +291,15 @@ final class MotionMonitor: SensorMonitor {
         hasTripped = false
     }
 
-    /// Latch-only re-arm (refractory sweep / during an until-clear recording). Keeps the
+    /// Latch-only re-arm (the refractory sweep). Keeps the
     /// resting reference where it is — re-baselining here would let an attacker ratchet
     /// the device round in sub-threshold steps, each one aging out and re-anchoring.
     func rearm() {
         hasTripped = false
     }
 
-    /// Post-trigger re-arm: adopt the current position as the new resting reference, so
+    /// Post-trigger re-arm, at each look of an until-clear recording and at the response's end (item 204): adopt the
+    /// current position as the new resting reference, so
     /// a device moved and left in a new spot doesn't trip forever on gravity deviation.
     /// The session anchor advances TOO — a trigger already fired means the tamper was
     /// captured and pushed, so there's nothing left to hide by re-anchoring, and leaving

@@ -6,8 +6,12 @@
   rule for ADRs, a decision that would amend either again is stated here: ADRs 0067 and 0068 keep their decisions,
   each marked as superseded by this record, their amendments with them. Built on `claude/1.10`, 2026-11-01. Amended
   twice (item 187's round B; item 190's round 190A, below), the sections corrected in place to say the design as it
-  stands.
+  stands. Superseded in part by ADR 0073 (1.11): the format `malinois-evidence-bundle/2` of a bundle that holds an
+  unkept statement, the counters such a statement accounts for, and the verifier's words for them; the sections below
+  state the rest, and 1.10's design for those.
 - **Date:** 2026-11-01
+- **Summary:** The bundle's layout, the check that accounts for every counter of every key, and the verifier's report,
+  as ADRs 0067 and 0068 and their amendments built them.
 
 ## Context
 
@@ -213,7 +217,7 @@ statement names every statement the bundle shows" holds of any bundle, not only 
 a bundle only from the bytes the latest revision signed (deepseek-2); section 6's verifier shows the signatures in the
 order their keys and counters prove, each line naming its key when there are more (codex-1), and says, as information,
 when the last revision signed an attachment under a name an earlier revision signed with other bytes (codex-3). The
-keys this install certified, kept where a backup cannot change them, are ADR 0071's.
+keys this install certified, kept where an edited backup cannot change them, are ADR 0071's.
 
 Corrected in place for round 190B (BACKLOG item 190, the change reviews of `29d6501`; the owner's "codex-4 b" and
 "deepseek-1 b"), each meeting a decision this record states: section 4's export checks the copies it wrote against the

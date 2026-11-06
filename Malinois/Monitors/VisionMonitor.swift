@@ -28,8 +28,10 @@ final class VisionMonitor: SensorMonitor {
     private var calibrating = false
     private var watching = false
     private var hasTripped = false
-    private var suppressedUntil: Date?
-    private var lastFrameAt: Date?
+    /// When the pause around a capture ends, and when the last frame was read, on `steadyNow()` (item 190's A7: on
+    /// the calendar clock, a clock set back during a pause kept frames unjudged until that time came round).
+    private var suppressedUntil: TimeInterval?
+    private var lastFrameAt: TimeInterval?
     private var settleFramesRemaining = 0
     private var lastChanged: Double = 0
     /// Whether the engine stood the camera down (Auto unplugged, a watch going live or a capture ending on a cold camera,
@@ -54,6 +56,25 @@ final class VisionMonitor: SensorMonitor {
     /// a tripwire the owner enabled and is not getting.
     var tapActive: Bool?
 
+    #if DEBUG
+    /// The steady clock a test drives in place of `steadyNow()` (item 190's A7).
+    var uptimeForTesting: (() -> TimeInterval)?
+    #endif
+
+    /// The clock the pause around a capture and the gap between frames are timed on, in seconds (item 190's A7):
+    /// `ContinuousClock`, which no setting moves and which, like the calendar clock they were timed on before, keeps
+    /// running while the phone sleeps, so a lock's whole length is still a gap between frames. (The motion and Sound
+    /// tripwires' `systemUptime` stops while the phone sleeps.)
+    private func steadyNow() -> TimeInterval {
+        #if DEBUG
+        if let uptimeForTesting { return uptimeForTesting() }
+        #endif
+        let elapsed = ContinuousClock.now - Self.steadyOrigin
+        return Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+    }
+
+    private static let steadyOrigin = ContinuousClock.now
+
     /// A gap this long between frames means the camera was cold and just came back (Auto
     /// flipped to charging); the scene may have changed meanwhile, so re-anchor quietly.
     static let frameGapForResettle: TimeInterval = 5
@@ -67,8 +88,8 @@ final class VisionMonitor: SensorMonitor {
     /// camera is up after a long cold spell still re-anchors (item 190's deepseek-1 on 1c083ab, the owner's "a").
     func ingest(_ frame: VisionFrame) {
         if stoodDown && !warmedUp { return }
-        let now = Date()
-        let gap = lastFrameAt.map { now.timeIntervalSince($0) }
+        let now = steadyNow()
+        let gap = lastFrameAt.map { now - $0 }
         lastFrameAt = now
 
         if let until = suppressedUntil {
@@ -162,7 +183,7 @@ final class VisionMonitor: SensorMonitor {
     /// the engine's request, so once it resumes its frames are judged, after a stand-down too
     /// (item 190's deepseek-1 on 1c083ab).
     func suppress(for interval: TimeInterval) {
-        suppressedUntil = Date().addingTimeInterval(interval)
+        suppressedUntil = steadyNow() + interval
         warmedUp = true
     }
 

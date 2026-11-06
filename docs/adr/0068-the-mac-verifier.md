@@ -9,6 +9,8 @@
   its check, as they stand; this record keeps its decision and its amendments. Corrected then: App Attest's keys survive
   no restore from a backup, onto the same iPhone or another.
 - **Date:** 2026-10-31
+- **Summary:** A command-line verifier, built on a Mac from the public source, checks a bundle against Apple's
+  certificates and Malinois's App ID and prints what it checked.
 
 ## Context
 

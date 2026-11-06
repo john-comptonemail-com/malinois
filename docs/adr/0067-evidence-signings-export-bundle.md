@@ -12,6 +12,8 @@
   187), which states the export bundle, its check and the Mac verifier as they stand; this record keeps its decision and
   its amendments.
 - **Date:** 2026-10-31
+- **Summary:** Sharing a signed record adds a ZIP of the record with its signatures, its keys' certifications and its
+  attachments, closed by an export statement the phone signs last.
 
 ## Context
 

@@ -10,9 +10,12 @@
 //    signatures.jsonl  every signature by those keys, in the phone's order: its key, its assertion, the hash of what it
 //                      signed, and whether that statement is shown
 //    statements/       the statements shown in full, each under its hash (`<hash>.json`): the shared record's
-//                      revisions, the watch around it, retention and absence statements, and the export statement
+//                      revisions, the watch around it, retention, absence and unkept statements, and the export statement
 //    notes.jsonl       the phone's unsigned notes: a key lost
 //    attachments/      the shared record's photo or clip, thumbnail and traces, as its latest revision signed them
+//  The index names the format "malinois-evidence-bundle/1", or "/2" when the bundle holds an unkept statement (item 188;
+//  ADR 0073, the owner's "A"), which 1.10's verifier refuses as another format rather than reading it as damaged; a check
+//  names a label that is not what the bundle holds, either way (item 193's codex-2, the owner's "a").
 //  The index and each line are in the fixed JSON form (`EvidenceJSON`), as the phone writes them. A check names what it
 //  finds as facts, and every file in the bundle must be one this layout names: any other is named, Finder's `.DS_Store`
 //  files apart (item 187). Only a hash, a key ID or a plain attachment name becomes a file name, and only plain files
@@ -22,8 +25,23 @@
 import Foundation
 
 enum EvidenceBundle {
-    /// The format the index names first. A reader refuses another (a newer app's): `EvidenceProblem.unknownFormat`.
+    /// The format the index names first: this, or `formatWithUnkept`. A reader refuses any other (a newer app's):
+    /// `EvidenceProblem.unknownFormat`.
     static let format = "malinois-evidence-bundle/1"
+    /// The format of a bundle that holds an unkept statement (item 188; ADR 0073, the owner's "A"): 1.10's verifier, which
+    /// cannot read one, refuses the bundle as in another format, saying a newer verifier is needed, rather than reporting
+    /// a statement not in its fixed form, which reads like damage. Every other bundle stays in `format`, which it checks.
+    static let formatWithUnkept = "malinois-evidence-bundle/2"
+
+    /// The format a bundle of `contents` names: `formatWithUnkept` when it shows an unkept statement in full, as a check
+    /// judges what it holds (item 193's codex-2); the phone's export shows every one.
+    static func format(of contents: Contents) -> String {
+        let holdsUnkept = contents.signatures.contains { signature in
+            guard signature.shown, case .unkept? = try? EvidenceForm.read(signature.statement) else { return false }
+            return true
+        }
+        return holdsUnkept ? formatWithUnkept : format
+    }
 
     static let indexName = "bundle.json"
     static let signaturesName = "signatures.jsonl"
@@ -32,7 +50,8 @@ enum EvidenceBundle {
     static let statementsFolder = "statements"
     static let attachmentsFolder = "attachments"
     /// The README beside the index in every bundle: what the archive is and how to check it, in the words the owner
-    /// approved (2026-10-31). Not signed, and no check reads it.
+    /// approved (2026-10-31; its sentence on what the verifier prints, 2026-11-04: "a"). Not signed, and no check reads
+    /// it.
     static let readmeName = "README.txt"
     static let readme = [
         "This folder holds one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
@@ -45,7 +64,7 @@ enum EvidenceBundle {
         "",
         "    malinois-verify \"Malinois evidence 2026-10-31 1302.zip\"",
         "",
-        "It prints what it checked and ends with PASS, or with the problems it found. What a check can and cannot show is "
+        "It prints what it checked, then PASS or the problems it found. What a check can and cannot show is "
             + "in the repository's SECURITY.md (\"Evidence someone else can check\").",
         "",
         "This README is not signed, and the verifier does not read it: get the verifier from the repository, not from a "
@@ -167,7 +186,8 @@ enum EvidenceBundle {
         let attachments: [AttachmentCheck]
         /// The phone's notes, unsigned, in order.
         let notes: [Note]
-        /// What could not be read outside the keys, the lines and the attachments: a file missing, a note.
+        /// What could not be read outside the keys, the lines and the attachments: a file missing, a note; and a format
+        /// label that is not what the bundle holds (item 193's codex-2).
         let problems: [EvidenceProblem]
         /// The absence statements shown: signed records the phone said left its log other than by its limit (item 182),
         /// in the order signed. A verifier reports each.
@@ -180,6 +200,11 @@ enum EvidenceBundle {
         /// of the phone's bundles or another phone (item 190, codex-1 and deepseek-4). Empty without an export statement.
         /// A verifier reports them.
         let unnamed: [EvidenceForm.KeyCounters]
+        /// The counters the export statement names where a statement shown in full shares its counter with another signature
+        /// shown only as its hash, by key as the export names them (item 206, Codex-1). The count went back there, and an
+        /// export names by counter, so it does not say which of the two it means. Not a problem: an honest bundle can hold
+        /// one, and a statement someone cut down to its fingerprint looks the same. A verifier says so.
+        let ambiguous: [EvidenceForm.KeyCounters]
         /// The certified keys the index lists that are neither the export statement's key nor one it follows, by the key
         /// statements' `follows`, in the index's order: another phone's key, or one no restore led from (item 190,
         /// codex-1). Empty without an export statement. A verifier reports each.
@@ -295,6 +320,17 @@ enum EvidenceBundle {
             checkSignature(line, number: offset + 1, in: folder, keys: certified)
         }
         let entries = signatures.compactMap(\.entry)
+        // The format the index names is the phone's word, not signed: "/2" exactly when the bundle holds an unkept
+        // statement (ADR 0073's decision 6), so either label on the other content is named (item 193's codex-2).
+        // What it holds, as the writer judges it: a statement it shows in full that reads as an unkept statement, whether
+        // or not its signature checks out (that is a problem of its own).
+        let holdsUnkept = signatureLines.contains { line in
+            guard let fields = try? signatureFields(line), fields.shown,
+                  let shown = try? read(statementPath(fields.hash), in: folder, limit: statementLimit),
+                  case .unkept? = try? EvidenceForm.read(shown) else { return false }
+            return true
+        }
+        if index.format != (holdsUnkept ? formatWithUnkept : format) { problems.append(.formatNotAsHeld(index.format)) }
         // Each certified key's counters, a retention statement counting only from the key or a key that follows it.
         let statements = index.keys.compactMap { certified[$0]?.statement }
         let sequences = index.keys.compactMap { certified[$0] }.map { key in
@@ -341,6 +377,7 @@ enum EvidenceBundle {
         let keyOrder = exportLine.map { Array(Self.lineage(from: $0.keyID, certified: certified).reversed()) } ?? []
         let unrelatedKeys = exportLine == nil ? [] : index.keys.filter { certified[$0] != nil && !keyOrder.contains($0) }
         let unnamed = exportLine.map { Self.unnamed(in: entries, apart: $0, named: export?.shown ?? [], keyOrder: index.keys) } ?? []
+        let ambiguous = Self.ambiguous(in: entries, named: export?.shown ?? [])
         // Where the chain stops at a key the bundle does not hold, the keys it cannot reach are cut off by that key, not
         // shown to be another phone's (item 190, deepseek-1 on 29d6501, the owner's "b").
         let chainBreak = keyOrder.first.flatMap { certified[$0]?.statement.follows }
@@ -349,7 +386,8 @@ enum EvidenceBundle {
         return Report(record: record, keys: keys, signatures: signatures, sequences: sequences, export: export,
                       afterExport: afterExport, revisions: revisions, missingRevisions: missingRevisions,
                       revisionsInOrder: revisionsInOrder, attachments: attachments, notes: notes, problems: problems,
-                      absences: absences, unshown: unshown, unnamed: unnamed, unrelatedKeys: unrelatedKeys, keyOrder: keyOrder,
+                      absences: absences, unshown: unshown, unnamed: unnamed, ambiguous: ambiguous, unrelatedKeys: unrelatedKeys,
+                      keyOrder: keyOrder,
                       chainBreak: chainBreak, unlisted: files.unlisted, ignored: files.ignored)
     }
 
@@ -390,6 +428,33 @@ enum EvidenceBundle {
         return found
     }
 
+    /// The counters of `named` at which `entries` shows a statement in full beside a different signature shown only as its
+    /// hash (item 206, Codex-1): one pass through each key's such counters and its named ranges, both ascending, however many
+    /// or wide the ranges (as `gaps`). One signature listed twice is one signature, so its hash beside its own statement counts
+    /// for nothing.
+    static func ambiguous(in entries: [EvidenceSignedEntry], named: [EvidenceForm.KeyCounters]) -> [EvidenceForm.KeyCounters] {
+        var shown: [Data: [UInt32: Set<Data>]] = [:]
+        for entry in entries where entry.statement != nil {
+            shown[entry.keyID, default: [:]][entry.counter, default: []].insert(entry.formHash)
+        }
+        var beside: [Data: Set<UInt32>] = [:]
+        for entry in entries where entry.statement == nil {
+            if let full = shown[entry.keyID]?[entry.counter], !full.contains(entry.formHash) {
+                beside[entry.keyID, default: []].insert(entry.counter)
+            }
+        }
+        return named.compactMap { named in
+            let ranges = named.counters.sorted { $0.lowerBound < $1.lowerBound }
+            var inside: [UInt32] = []
+            var index = 0
+            for counter in (beside[named.keyID] ?? []).sorted() {
+                while index < ranges.count, ranges[index].upperBound < counter { index += 1 }
+                if index < ranges.count, ranges[index].contains(counter) { inside.append(counter) }
+            }
+            return inside.isEmpty ? nil : EvidenceForm.KeyCounters(keyID: named.keyID, counters: EvidenceForm.counterRanges(inside))
+        }
+    }
+
     /// The counters of `ranges` (ascending and apart, as the readers take them) not among `present` (ascending, each
     /// once), as ranges: what an export names as shown and the bundle does not show. One pass through both lists, however
     /// many or wide the ranges (codex-6 on 73441cbe).
@@ -426,6 +491,8 @@ enum EvidenceBundle {
 
     /// The index, as read.
     private struct Index {
+        /// The format it names: `format` or `formatWithUnkept`.
+        let format: String
         let record: UUID
         let keys: [Data]
         let attachments: [(name: String, file: String)]
@@ -450,7 +517,7 @@ enum EvidenceBundle {
 
     private static func index(_ contents: Contents) -> EvidenceJSON {
         .object([
-            .init("format", .string(format)), .init("record", .string(contents.record.uuidString)),
+            .init("format", .string(format(of: contents))), .init("record", .string(contents.record.uuidString)),
             .init("keys", .array(contents.keys.map { .string(EvidenceHash.hex($0.id)) })),
             .init("attachments", .array(contents.attachments.map { attachment -> EvidenceJSON in
                 .object([.init("name", .string(attachment.name)), .init("file", .string(attachment.file))])
@@ -471,13 +538,13 @@ enum EvidenceBundle {
         }
     }
 
-    /// The index, when it is the phone's: in the fixed form, this format, each key once in lowercase hex, and each
-    /// attachment once under a plain file name.
+    /// The index, when it is the phone's: in the fixed form, either format (`format`, `formatWithUnkept`), each key once
+    /// in lowercase hex, and each attachment once under a plain file name.
     private static func readIndex(_ folder: URL) throws -> Index {
         let data = try read(indexName, in: folder, limit: statementLimit)
         guard case .object(let members) = try EvidenceJSON(fixedForm: data), let first = members.first, first.key == "format",
               case .string(let named) = first.value else { throw EvidenceProblem.formNotFixed }
-        guard named == format else { throw EvidenceProblem.unknownFormat(named) }
+        guard named == format || named == formatWithUnkept else { throw EvidenceProblem.unknownFormat(named) }
         // The record's UUID as the phone writes it, in uppercase.
         guard members.map(\.key) == ["format", "record", "keys", "attachments"],
               case .string(let recordText) = members[1].value, let record = UUID(uuidString: recordText), record.uuidString == recordText,
@@ -498,7 +565,7 @@ enum EvidenceBundle {
                   !attachments.contains(where: { $0.name.lowercased() == name.lowercased() }) else { throw EvidenceProblem.formNotFixed }
             attachments.append((name, file))
         }
-        return Index(record: record, keys: keys, attachments: attachments)
+        return Index(format: named, record: record, keys: keys, attachments: attachments)
     }
 
     /// A line of the signatures, checked: its key certified, its signature over its hash, then the statement shown.

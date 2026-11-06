@@ -2,6 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-09-29
+- **Summary:** Every target builds in Swift 6 mode with no warning, and the changes keep the app's behavior.
 
 ## Context
 

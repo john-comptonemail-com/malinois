@@ -31,6 +31,7 @@ enum OnboardingState {
     private static let disarmBriefingKey = "com.malinois.onboarding.acknowledgedDisarmBriefing"
     private static let guidedAccessBriefingKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
     private static let voiceControlBriefingKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
+    private static let sideButtonBriefingKey = "com.malinois.onboarding.acknowledgedSideButtonBriefing"
 
     static var hasSeenTrialWelcome: Bool {
         get { UserDefaults.standard.bool(forKey: welcomeKey) }
@@ -84,6 +85,13 @@ enum OnboardingState {
     static var acknowledgedVoiceControlBriefing: Bool {
         get { UserDefaults.standard.bool(forKey: voiceControlBriefingKey) }
         set { UserDefaults.standard.set(newValue, forKey: voiceControlBriefingKey) }
+    }
+
+    /// The same for its part on turning Guided Access's Side Button off (BACKLOG 153), due at every arm the owner
+    /// starts with Guided Access on, until acknowledged. Never seeded, so every install sees it once (ADR 0072).
+    static var acknowledgedSideButtonBriefing: Bool {
+        get { UserDefaults.standard.bool(forKey: sideButtonBriefingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: sideButtonBriefingKey) }
     }
 
     /// Writes both acknowledgments' starting values once, at launch, before anything can arm (item 131; the owner's

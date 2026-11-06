@@ -132,6 +132,14 @@
 		E1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift */; };
 		E1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */; };
 		E1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */; };
+		E1D2C3D4E5F6000000000075 /* Item153SideButtonBriefingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000075 /* Item153SideButtonBriefingTests.swift */; };
+		E1D2C3D4E5F6000000000076 /* Item190ReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000076 /* Item190ReviewTests.swift */; };
+		E1D2C3D4E5F6000000000077 /* Item187ReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000077 /* Item187ReviewTests.swift */; };
+		E1D2C3D4E5F6000000000078 /* Item188UnkeptCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000078 /* Item188UnkeptCoreTests.swift */; };
+		E1D2C3D4E5F6000000000079 /* Item188UnkeptSignerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000079 /* Item188UnkeptSignerTests.swift */; };
+		E1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */; };
+		E1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */; };
+		E1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */; };
 		E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */; };
 		E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */; };
 		E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */; };
@@ -486,6 +494,14 @@
 		D1D2C3D4E5F600000000003E /* Item148ReinstallRecordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item148ReinstallRecordTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item148DecoderFuzzTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144VoiceControlBriefingTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000075 /* Item153SideButtonBriefingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item153SideButtonBriefingTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000076 /* Item190ReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item190ReviewTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000077 /* Item187ReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item187ReviewTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000078 /* Item188UnkeptCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item188UnkeptCoreTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000079 /* Item188UnkeptSignerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item188UnkeptSignerTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item188VerifierReportTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item190DownloadCheckTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item183InvariantTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144ArmPINCheckTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152SettingsGuardTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152BiometricBindingTests.swift; sourceTree = "<group>"; };
@@ -907,6 +923,14 @@
 				D1D2C3D4E5F6000000000067 /* Item173TemporaryThumbnailTests.swift */,
 				D1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift */,
 				D1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift */,
+				D1D2C3D4E5F6000000000075 /* Item153SideButtonBriefingTests.swift */,
+				D1D2C3D4E5F6000000000076 /* Item190ReviewTests.swift */,
+				D1D2C3D4E5F6000000000077 /* Item187ReviewTests.swift */,
+				D1D2C3D4E5F6000000000078 /* Item188UnkeptCoreTests.swift */,
+				D1D2C3D4E5F6000000000079 /* Item188UnkeptSignerTests.swift */,
+				D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */,
+				D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */,
+				D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */,
 				D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */,
 				D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */,
 				D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */,
@@ -1440,6 +1464,14 @@
 				E1D2C3D4E5F6000000000067 /* Item173TemporaryThumbnailTests.swift in Sources */,
 				E1D2C3D4E5F600000000003F /* Item148DecoderFuzzTests.swift in Sources */,
 				E1D2C3D4E5F6000000000040 /* Item144VoiceControlBriefingTests.swift in Sources */,
+				E1D2C3D4E5F6000000000075 /* Item153SideButtonBriefingTests.swift in Sources */,
+				E1D2C3D4E5F6000000000076 /* Item190ReviewTests.swift in Sources */,
+				E1D2C3D4E5F6000000000077 /* Item187ReviewTests.swift in Sources */,
+				E1D2C3D4E5F6000000000078 /* Item188UnkeptCoreTests.swift in Sources */,
+				E1D2C3D4E5F6000000000079 /* Item188UnkeptSignerTests.swift in Sources */,
+				E1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift in Sources */,
+				E1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift in Sources */,
+				E1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift in Sources */,
 				E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */,
 				E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */,
 				E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */,
@@ -1749,7 +1781,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1759,7 +1791,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1777,7 +1809,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1787,7 +1819,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1806,7 +1838,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1823,7 +1855,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1838,7 +1870,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1847,7 +1879,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1863,7 +1895,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1872,7 +1904,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1889,7 +1921,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatch/MalinoisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1901,7 +1933,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1920,7 +1952,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "MalinoisWatch/MalinoisWatch-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1932,7 +1964,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1950,7 +1982,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1959,7 +1991,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1976,7 +2008,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 82;
+				CURRENT_PROJECT_VERSION = 85;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1985,7 +2017,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10;
+				MARKETING_VERSION = 1.11;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;

@@ -5,10 +5,10 @@
 //  The export bundle of a signed record (BACKLOG item 90, phase 4; the owner's rulings of 2026-10-31; ADR 0067), built
 //  when the owner shares it: the signer signs an export statement, then the bundle takes every signature in the file's
 //  order, in full the record's revisions, the status records of its watch (from the arm before it to the disarm after
-//  it, in the log's order), the retention and absence statements and the export statement, every other as its hash; the
-//  phone's notes; and the attachments the record's latest revision signed, from the files on the phone. iOS zips the
-//  folder. A record with no signature of this phone's has no bundle and is shared as before, as is one whose export
-//  statement no key can sign (item 187).
+//  it, in the log's order), the retention, absence and unkept statements (item 188) and the export statement, every
+//  other as its hash; the phone's notes; and the attachments the record's latest revision signed, from the files on the
+//  phone. iOS zips the folder. A record with no signature of this phone's has no bundle and is shared as before, as is
+//  one whose export statement no key can sign (item 187).
 //
 
 import Foundation
@@ -109,8 +109,10 @@ struct EvidenceExporter: Sendable {
                 case .record(let revision)?:
                     shown = revision.id == record.id || watch.contains(revision.id)
                     if revision.id == record.id { latest = revision }
-                case .retention?, .absence?:
-                    shown = true   // what the limit retired, and what left the log otherwise (item 182)
+                case .retention?, .absence?, .unkept?:
+                    // What the limit retired, what left the log otherwise (item 182), and the signatures made and not kept,
+                    // which a verifier counts only when it reads them (item 188).
+                    shown = true
                 case .export?:
                     // This export's only: an earlier share's is shown as its hash, like any other record's.
                     shown = snapshot.signedExport && index == lastSignature

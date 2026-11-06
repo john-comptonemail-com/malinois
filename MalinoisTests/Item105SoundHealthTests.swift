@@ -5,7 +5,7 @@
 //  BACKLOG 105, F-09 (1.6; the owner ruled option a on 2026-10-12). The Sound tripwire's monitor
 //  rebuilds a stopped microphone recorder at most every 2 s, but a microphone that stays
 //  unavailable left no record: a tripwire that reports nothing and cannot fire. Now, when the
-//  recorder, having worked during a live watch, has then been down for 30 s, the log gets a quiet
+//  recorder, having worked in calibration or a live watch (item 197's codex-3), has then been down for 30 s, the log gets a quiet
 //  status entry, and another when it works again, like the heat warnings: no siren, no
 //  cross-device alert. A microphone that never worked this watch (no permission) is already
 //  shown as "Mic unavailable" before go-live and is not an outage. Planned pauses (a clip
@@ -78,74 +78,110 @@ final class Item105SoundHealthTests: XCTestCase {
     /// Down for 30 s in a row is an outage, reported once; the recorder working again is reported.
     func testAnOutageIsReportedAfterThirtySecondsAndOnceUntilItRecovers() {
         var tracker = SoundHealthTracker()
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start = TimeInterval(1_000)
         XCTAssertNil(tracker.observe(recording: true, at: start))
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(1)))
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(30)), "29 s down is not yet an outage")
-        XCTAssertEqual(tracker.observe(recording: false, at: start.addingTimeInterval(31)), .unavailable)
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(90)), "reported once per outage")
-        XCTAssertEqual(tracker.observe(recording: true, at: start.addingTimeInterval(91)), .restored)
-        XCTAssertNil(tracker.observe(recording: true, at: start.addingTimeInterval(92)))
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(93)), "a brief drop is not an outage")
-        XCTAssertNil(tracker.observe(recording: true, at: start.addingTimeInterval(94)), "and its end is not news")
+        XCTAssertNil(tracker.observe(recording: false, at: start + 1))
+        XCTAssertNil(tracker.observe(recording: false, at: start + 30), "29 s down is not yet an outage")
+        XCTAssertEqual(tracker.observe(recording: false, at: start + 31), .unavailable)
+        XCTAssertNil(tracker.observe(recording: false, at: start + 90), "reported once per outage")
+        XCTAssertEqual(tracker.observe(recording: true, at: start + 91), .restored)
+        XCTAssertNil(tracker.observe(recording: true, at: start + 92))
+        XCTAssertNil(tracker.observe(recording: false, at: start + 93), "a brief drop is not an outage")
+        XCTAssertNil(tracker.observe(recording: true, at: start + 94), "and its end is not news")
     }
 
     /// A microphone that never worked this watch is not an outage: before go-live the calibration
     /// review already says "Mic unavailable", and a record every watch would only repeat it.
     func testAMicrophoneThatNeverWorkedThisWatchIsNotAnOutage() {
         var tracker = SoundHealthTracker()
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start = TimeInterval(1_000)
         for seconds in [0.0, 31, 120, 600] {
-            XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(seconds)))
+            XCTAssertNil(tracker.observe(recording: false, at: start + seconds))
         }
     }
 
     /// A planned pause (a clip recording audio, the siren) restarts the 30 s clock.
     func testPlannedPausesRestartTheClock() {
         var tracker = SoundHealthTracker()
-        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let start = TimeInterval(1_000)
         XCTAssertNil(tracker.observe(recording: true, at: start))
         XCTAssertNil(tracker.observe(recording: false, at: start))
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(20)))
+        XCTAssertNil(tracker.observe(recording: false, at: start + 20))
         tracker.pause()
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(25)))
-        XCTAssertNil(tracker.observe(recording: false, at: start.addingTimeInterval(50)), "20 s + 25 s across a pause is not 30 s in a row")
-        XCTAssertEqual(tracker.observe(recording: false, at: start.addingTimeInterval(55)), .unavailable)
+        XCTAssertNil(tracker.observe(recording: false, at: start + 25))
+        XCTAssertNil(tracker.observe(recording: false, at: start + 50), "20 s + 25 s across a pause is not 30 s in a row")
+        XCTAssertEqual(tracker.observe(recording: false, at: start + 55), .unavailable)
     }
 
     /// Three outages a watch at most, so a flapping microphone cannot fill the status history.
     /// The third outage's recovery is not reported either: the log errs toward "unavailable".
     func testAtMostThreeOutagesAreReportedPerWatch() {
         var tracker = SoundHealthTracker()
-        var now = Date(timeIntervalSinceReferenceDate: 1_000)
+        var now = TimeInterval(1_000)
         var reports: [SoundHealthTracker.Report] = []
         XCTAssertNil(tracker.observe(recording: true, at: now))
         for _ in 0..<5 {
             for _ in 0..<2 {
                 if let report = tracker.observe(recording: false, at: now) { reports.append(report) }
-                now = now.addingTimeInterval(31)
+                now += 31
             }
             if let report = tracker.observe(recording: true, at: now) { reports.append(report) }
-            now = now.addingTimeInterval(1)
+            now += 1
         }
         XCTAssertEqual(reports, [.unavailable, .restored, .unavailable, .restored, .unavailable])
         tracker.reset()
         XCTAssertNil(tracker.observe(recording: true, at: now))
         XCTAssertNil(tracker.observe(recording: false, at: now))
-        XCTAssertEqual(tracker.observe(recording: false, at: now.addingTimeInterval(31)), .unavailable, "a new watch reports again")
+        XCTAssertEqual(tracker.observe(recording: false, at: now + 31), .unavailable, "a new watch reports again")
     }
 
     // MARK: - The monitor
 
+    /// Item 197's codex-3: a microphone that worked through calibration and fails before the watch's first live sample is
+    /// an outage: the review showed it working, and nothing else says it stopped.
+    func testAMicrophoneThatWorkedThroughCalibrationAndStopsBeforeTheWatchIsAnOutage() {
+        XCTAssertEqual(reportsAfterACalibration(heardByIt: true), [.unavailable])
+    }
+
+    /// Control: one that gave calibration nothing stays exempt, the review having said so.
+    func testAMicrophoneCalibrationNeverHeardIsNotAnOutage() {
+        XCTAssertEqual(reportsAfterACalibration(heardByIt: false), [])
+    }
+
+    /// What a watch reports with its microphone down from its first tick, after a calibration that heard it or did not.
+    private func reportsAfterACalibration(heardByIt heard: Bool) -> [SoundHealthTracker.Report] {
+        let audio = AudioMonitor()
+        var recording = heard
+        var uptime: TimeInterval = 1_000
+        var reports: [SoundHealthTracker.Report] = []
+        audio.currentLevelForTesting = { -50 }
+        audio.recordingForTesting = { recording }
+        audio.uptimeForTesting = { uptime }
+        audio.deactivateAudioSessionForTesting = {}
+        audio.onHealthReport = { reports.append($0) }
+        defer { audio.stop() }
+        audio.beginCalibration()
+        let calibrate = audio.queuedMeterTickForTesting(calibration: true)
+        for _ in 0..<5 { calibrate() }
+        audio.endCalibration()
+        recording = false
+        audio.start()
+        let tick = audio.queuedMeterTickForTesting(calibration: false)
+        tick()
+        uptime += 31
+        tick()
+        return reports
+    }
+
     /// The monitor reports from its own ticks while watching, and a planned pause restarts the clock.
     func testTheMonitorReportsAnOutageFromItsTicks() {
         let audio = AudioMonitor()
-        var clock = Date(timeIntervalSinceReferenceDate: 5_000)
+        var uptime: TimeInterval = 5_000
         var recording = true
         var reports: [SoundHealthTracker.Report] = []
         audio.currentLevelForTesting = { -50 }
         audio.recordingForTesting = { recording }
-        audio.nowForTesting = { clock }
+        audio.uptimeForTesting = { uptime }
         audio.deactivateAudioSessionForTesting = {}
         audio.onHealthReport = { reports.append($0) }
         audio.start()
@@ -153,7 +189,7 @@ final class Item105SoundHealthTests: XCTestCase {
         tick()
         recording = false
         tick()
-        clock = clock.addingTimeInterval(31)
+        uptime += 31
         tick()
         XCTAssertEqual(reports, [.unavailable])
         recording = true
@@ -165,9 +201,9 @@ final class Item105SoundHealthTests: XCTestCase {
         audio.pauseForCapture()
         audio.start()
         let resumed = audio.queuedMeterTickForTesting(calibration: false)
-        clock = clock.addingTimeInterval(20)
+        uptime += 20
         resumed()
-        clock = clock.addingTimeInterval(20)
+        uptime += 20
         resumed()
         XCTAssertEqual(reports, [.unavailable, .restored], "the pause restarted the 30 s clock")
         audio.stop()

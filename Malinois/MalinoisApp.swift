@@ -113,6 +113,9 @@ struct MalinoisApp: App {
             engine.logSignerLine(kind, id: id, at: at)
             return true
         }
+        // A capture a download brings joins its record only as this signer signed it (item 190's A4, its download half;
+        // item 192's step 2, the owner's "a").
+        engine.downloadSigner = evidenceSigning.signer
         let evidenceExporter = EvidenceExporter(signer: evidenceSigning.signer, mediaDirectory: eventStore.mediaDirectory)
         return Services(settings: settings, eventStore: eventStore, cloud: cloud, camera: camera,
                         entitlements: entitlements, watchRelay: watchRelay, evidenceSigning: evidenceSigning,

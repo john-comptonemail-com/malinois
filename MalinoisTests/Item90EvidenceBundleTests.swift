@@ -98,7 +98,8 @@ final class Item90EvidenceBundleTests: XCTestCase {
         XCTAssertEqual(try check(folder, phone), report, "removed: the same report")
     }
 
-    /// The README's words as the owner approved them (2026-10-31): a change to them is a change for the owner to approve.
+    /// The README's words as the owner approved them (2026-10-31; its sentence on what the verifier prints, 2026-11-04:
+    /// "a"): a change to them is a change for the owner to approve.
     private static let approvedReadme = [
         "This folder holds one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
             + "it was signed, the photos, clips and sensor traces it names, the phone's signatures, and Apple's certification "
@@ -110,7 +111,7 @@ final class Item90EvidenceBundleTests: XCTestCase {
         "",
         "    malinois-verify \"Malinois evidence 2026-10-31 1302.zip\"",
         "",
-        "It prints what it checked and ends with PASS, or with the problems it found. What a check can and cannot show is "
+        "It prints what it checked, then PASS or the problems it found. What a check can and cannot show is "
             + "in the repository's SECURITY.md (\"Evidence someone else can check\").",
         "",
         "This README is not signed, and the verifier does not read it: get the verifier from the repository, not from a "
@@ -593,7 +594,8 @@ final class Item90EvidenceBundleTests: XCTestCase {
         let original = try String(contentsOf: index, encoding: .utf8)
         let hex = TestApp.hex(phone.keys[0].keyID)
         let refused: [(String, EvidenceProblem, String)] = [
-            (original.replacingOccurrences(of: "bundle/1", with: "bundle/2"), .unknownFormat("malinois-evidence-bundle/2"), "a newer format"),
+            // "/2" is a bundle that holds an unkept statement (item 188, ADR 0073): a newer format is "/3".
+            (original.replacingOccurrences(of: "bundle/1", with: "bundle/3"), .unknownFormat("malinois-evidence-bundle/3"), "a newer format"),
             (original.replacingOccurrences(of: #","keys""#, with: #", "keys""#), .formNotFixed, "whitespace"),
             (original.replacingOccurrences(of: "6F1E2D3C", with: "6f1e2d3c"), .formNotFixed, "a UUID not as the phone writes it"),
             (original.replacingOccurrences(of: hex, with: hex.uppercased()), .formNotFixed, "a key in uppercase hex"),
@@ -882,11 +884,11 @@ final class TestPhone {   // also the Mac verifier's tests (Item90VerifierTests)
 
     /// A new key certified by the chain, its statement naming the key it follows after a restore, or none.
     @discardableResult
-    func certifyKey(follows: Data? = nil) throws -> TestCertifiedKey {
+    func certifyKey(follows: Data? = nil, app: String = "1.10 (81)") throws -> TestCertifiedKey {
         var shape = TestAttestationShape()
         shape.appIDHash = appIDHash
         let made = try chain.certify(at: TestApp.date(2026, 10, 31, 1, 0), shape: shape) { keyID in
-            EvidenceForm.bytes(.key(EvidenceForm.KeyStatement(keyID: keyID, signedAt: 1_793_000_000_000, app: "1.10 (81)", follows: follows)))
+            EvidenceForm.bytes(.key(EvidenceForm.KeyStatement(keyID: keyID, signedAt: 1_793_000_000_000, app: app, follows: follows)))
         }
         keys.append(made)
         return made
@@ -902,6 +904,12 @@ final class TestPhone {   // also the Mac verifier's tests (Item90VerifierTests)
         let assertion = try TestAttestation.assertion(by: key.key, formHash: TestApp.sha256(bytes), counter: counter,
                                                       appIDHash: appIDHash)
         if kept { signatures.append(EvidenceBundle.Signature(key: key.keyID, assertion: assertion, statement: bytes, shown: shown)) }
+    }
+
+    /// The newest key's count goes back by `steps`, as a forced restart took App Attest's back on the owner's phone (item 205).
+    func rollBackCount(by steps: UInt32) {
+        guard let key = keys.last else { return }
+        counters[key.keyID] = (counters[key.keyID] ?? 0) - min(steps, counters[key.keyID] ?? 0)
     }
 
     /// The keys, as a bundle lists them.

@@ -23,7 +23,8 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
     nonisolated private static let keys = ["com.malinois.onboarding.acknowledgedDisarmBriefing",
                                            "com.malinois.onboarding.acknowledgedGuidedAccessBriefing",
                                            "com.malinois.onboarding.acknowledgedVoiceControlBriefing",
-                                           "com.malinois.onboarding.hasArmedOnce"]
+                                           "com.malinois.onboarding.hasArmedOnce",
+                                           "com.malinois.onboarding.acknowledgedSideButtonBriefing"]
     nonisolated private static let voiceControlKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
@@ -36,6 +37,9 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem144Voice")
         for key in Self.keys { saved[key] = UserDefaults.standard.object(forKey: key) }
+        // Part 4, the Side Button (BACKLOG 153), has tests of its own: acknowledged here, so these tests see parts
+        // 1 to 3 as before.
+        OnboardingState.acknowledgedSideButtonBriefing = true
     }
 
     override func tearDown() {
@@ -81,12 +85,12 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
                         XCTAssertTrue(FirstArmBriefing.partsDue(ownerStarted: false, guidedAccessOn: guidedAccessOn,
                                                                 disarmAcknowledged: disarmAck,
                                                                 guidedAccessAcknowledged: guidedAccessAck,
-                                                                voiceControlAcknowledged: voiceControlAck).isEmpty,
+                                                                voiceControlAcknowledged: voiceControlAck, sideButtonAcknowledged: true).isEmpty,
                                       "an automatic re-arm never waits for a tap: \(label)")
                         let due = FirstArmBriefing.partsDue(ownerStarted: true, guidedAccessOn: guidedAccessOn,
                                                             disarmAcknowledged: disarmAck,
                                                             guidedAccessAcknowledged: guidedAccessAck,
-                                                            voiceControlAcknowledged: voiceControlAck)
+                                                            voiceControlAcknowledged: voiceControlAck, sideButtonAcknowledged: true)
                         XCTAssertEqual(due, FirstArmBriefing.Parts(disarm: !disarmAck,
                                                                    guidedAccess: guidedAccessOn && !guidedAccessAck,
                                                                    voiceControl: !voiceControlAck), label)
@@ -108,7 +112,8 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
         XCTAssertEqual(FirstArmBriefing.partsDue(ownerStarted: true, guidedAccessOn: true,
                                                  disarmAcknowledged: OnboardingState.acknowledgedDisarmBriefing,
                                                  guidedAccessAcknowledged: OnboardingState.acknowledgedGuidedAccessBriefing,
-                                                 voiceControlAcknowledged: voiceControlAcknowledged),
+                                                 voiceControlAcknowledged: voiceControlAcknowledged,
+                                                 sideButtonAcknowledged: true),
                        FirstArmBriefing.Parts(disarm: false, guidedAccess: false, voiceControl: true))
     }
 

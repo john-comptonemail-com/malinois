@@ -22,7 +22,7 @@ struct EvidenceSignatureFile: Sendable {
         case keyCertified
         /// A key App Attest no longer has (a restore from a backup, a reinstall): a new one follows it.
         case keyLost
-        /// A signed statement: a record's revision, or a retention, export or absence statement.
+        /// A signed statement: a record's revision, or a retention, export, absence or unkept statement.
         case signature
         /// This device cannot sign (App Attest unsupported): said once.
         case unsupported
@@ -123,7 +123,9 @@ struct EvidenceSignatureFile: Sendable {
     }
 
     /// Whether the file can take a line now: it opens for writing, or there is none yet. The log is written as a new file
-    /// each time, which its protection allows while the phone is locked; this one is appended to, which it does not.
+    /// each time, which its protection allows while the phone is locked; this one is appended to, which it does not. It
+    /// checks the lock, not the space: a line a full disk refuses once App Attest has made its signature, the signer holds
+    /// and writes first at its next turn (item 188, ADR 0073).
     func canAppend() -> Bool {
         guard FileManager.default.fileExists(atPath: url.path) else { return true }
         guard let handle = try? FileHandle(forUpdating: url) else { return false }

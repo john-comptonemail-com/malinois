@@ -378,6 +378,8 @@ actor FakeKeyService: EvidenceKeyService {
     private var counters: [String: UInt32] = [:]
     private var certified: Set<String> = []
     private var lost: Set<String> = []
+    private var countHeld = false
+    private var assertionsUnreadable = false
     private var attestFailures: [any Error] = []
     private var assertionFailures: [any Error] = []
     /// Each certification asked for, in order: the key and the hash.
@@ -391,6 +393,9 @@ actor FakeKeyService: EvidenceKeyService {
     private var holdNext = false
     private var held: CheckedContinuation<Void, Never>?
     private var holdNextSignature = false
+    /// Signatures to let through before the hold or the failures set for the next ones (item 193's tests).
+    private var signaturesBeforeHold = 0
+    private var signaturesBeforeFailing = 0
     private var heldSignature: CheckedContinuation<Void, Never>?
 
     init(supported: Bool = true, chain: TestAttestationChain, certifiedAt: Date = TestApp.date(2026, 10, 31, 1, 0),
@@ -404,7 +409,21 @@ actor FakeKeyService: EvidenceKeyService {
     /// The next certifications fail with these, in order.
     func failNextAttestations(_ errors: [any Error]) { attestFailures = errors }
     /// The next signatures fail with these, in order.
-    func failNextAssertions(_ errors: [any Error]) { assertionFailures = errors }
+    /// The next signatures fail with these, in order, once `after` more have been made (item 193: the one right
+    /// after an export's).
+    func failNextAssertions(_ errors: [any Error], after: Int = 0) {
+        assertionFailures = errors
+        signaturesBeforeFailing = after
+    }
+    /// App Attest's count of `keyID` goes back by `steps`, and it gives those counters out again, as a forced restart made it
+    /// do on the owner's phone in TestFlight 84 (item 205).
+    func rollBackCount(of keyID: String, by steps: UInt32) {
+        counters[keyID] = (counters[keyID] ?? 0) - min(steps, counters[keyID] ?? 0)
+    }
+    /// The count stops rising, or starts again (item 205's bound on asking).
+    func holdCount(_ held: Bool) { countHeld = held }
+    /// The signatures from now on hold nothing a counter can be read from (item 205's guard).
+    func giveUnreadableAssertions() { assertionsUnreadable = true }
     /// App Attest no longer has `keyID` (a restore from a backup).
     func lose(_ keyID: String) { lost.insert(keyID) }
     /// The next certification, once asked for (in `attestRequests`), waits for `releaseHeldAttestation()`.
@@ -414,8 +433,16 @@ actor FakeKeyService: EvidenceKeyService {
         held = nil
     }
     /// The next signature, once asked for (in `assertionRequests`), waits for `releaseHeldAssertion()`.
-    func holdNextAssertion() { holdNextSignature = true }
+    /// As `holdNextAssertion()`, once `after` more signatures have been made (item 193).
+    func holdNextAssertion(after: Int = 0) {
+        holdNextSignature = true
+        signaturesBeforeHold = after
+    }
+    /// Lets the held signature go on; a hold no signature has taken yet is dropped, so a later one never waits for a
+    /// release that already came (item 188's tests).
     func releaseHeldAssertion() {
+        holdNextSignature = false
+        signaturesBeforeHold = 0
         heldSignature?.resume()
         heldSignature = nil
     }
@@ -444,14 +471,21 @@ actor FakeKeyService: EvidenceKeyService {
 
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
         assertionRequests += 1
-        if holdNextSignature {
+        if holdNextSignature, signaturesBeforeHold > 0 {
+            signaturesBeforeHold -= 1
+        } else if holdNextSignature {
             holdNextSignature = false
             await withCheckedContinuation { heldSignature = $0 }
         }
-        if !assertionFailures.isEmpty { throw assertionFailures.removeFirst() }
+        if !assertionFailures.isEmpty, signaturesBeforeFailing > 0 {
+            signaturesBeforeFailing -= 1
+        } else if !assertionFailures.isEmpty {
+            throw assertionFailures.removeFirst()
+        }
         guard let key = keys[keyID], certified.contains(keyID), !lost.contains(keyID) else { throw DCError(.invalidKey) }
-        let counter = (counters[keyID] ?? 0) + 1
+        let counter = (counters[keyID] ?? 0) + (countHeld ? 0 : 1)
         counters[keyID] = counter
+        if assertionsUnreadable { return Data([0]) }
         return try TestAttestation.assertion(by: key, formHash: clientDataHash, counter: counter)
     }
 }

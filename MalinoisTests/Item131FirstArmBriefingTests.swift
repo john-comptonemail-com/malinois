@@ -22,6 +22,9 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     /// Part 3, Voice Control (item 144 (e)), has tests of its own (Item144VoiceControlBriefingTests): here it is
     /// acknowledged, so these tests see parts 1 and 2 as before.
     nonisolated private static let voiceControlAckKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
+    /// Part 4, the Side Button (BACKLOG 153), has tests of its own (Item153SideButtonBriefingTests): here it is
+    /// acknowledged too.
+    nonisolated private static let sideButtonAckKey = "com.malinois.onboarding.acknowledgedSideButtonBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
 
@@ -31,14 +34,15 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     override func setUp() {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem131")
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey] {
             savedAcks[key] = UserDefaults.standard.object(forKey: key)
         }
         UserDefaults.standard.set(true, forKey: Self.voiceControlAckKey)
+        UserDefaults.standard.set(true, forKey: Self.sideButtonAckKey)
     }
 
     override func tearDown() {
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey] {
             if let value = savedAcks[key] { UserDefaults.standard.set(value, forKey: key) }
             else { UserDefaults.standard.removeObject(forKey: key) }
         }
@@ -82,12 +86,12 @@ final class Item131FirstArmBriefingTests: XCTestCase {
                     XCTAssertTrue(FirstArmBriefing.partsDue(ownerStarted: false, guidedAccessOn: guidedAccessOn,
                                                             disarmAcknowledged: disarmAck,
                                                             guidedAccessAcknowledged: guidedAccessAck,
-                                                            voiceControlAcknowledged: true).isEmpty,
+                                                            voiceControlAcknowledged: true, sideButtonAcknowledged: true).isEmpty,
                                   "an automatic re-arm never waits for a tap")
                     let due = FirstArmBriefing.partsDue(ownerStarted: true, guidedAccessOn: guidedAccessOn,
                                                         disarmAcknowledged: disarmAck,
                                                         guidedAccessAcknowledged: guidedAccessAck,
-                                                        voiceControlAcknowledged: true)
+                                                        voiceControlAcknowledged: true, sideButtonAcknowledged: true)
                     XCTAssertEqual(due, Parts(disarm: !disarmAck, guidedAccess: guidedAccessOn && !guidedAccessAck),
                                    "Guided Access \(guidedAccessOn), acknowledged \(disarmAck), \(guidedAccessAck)")
                 }
@@ -175,6 +179,11 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     }
 
     // MARK: - The screen
+
+    /// Item 204 (TestFlight 83; the owner, 2026-11-05: "yes"): the footnote in plain words, for any part the screen shows.
+    func testTheFootnoteSaysWhereTheStepsAre() {
+        XCTAssertEqual(FirstArmBriefing.footnote, "You can find these steps on the arming screen too.")
+    }
 
     /// Both parts, in the owner's words, with the forgotten-passcode line and the button.
     private static let everyText = [FirstArmBriefing.title, FirstArmBriefing.disarmHeading, FirstArmBriefing.disarmText,

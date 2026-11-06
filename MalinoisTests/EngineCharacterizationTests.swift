@@ -1121,6 +1121,224 @@ final class EngineCharacterizationTests: XCTestCase {
         rig.engine.disarm()
     }
 
+    // MARK: - Until clear on the real tripwires (item 204)
+
+    /// A gravity vector `degrees` from flat on a table, as CoreMotion reads it.
+    private static func pose(tilted degrees: Double) -> (x: Double, y: Double, z: Double) {
+        let radians = degrees * .pi / 180
+        return (sin(radians), 0, -cos(radians))
+    }
+
+    /// An Until clear clip started by the real motion tripwire on a phone lying flat, with a ceiling no test here reaches, so
+    /// only quiet can end it. The clip has started when this returns.
+    private func clipStartedByTheMotionTripwire(idle: TimeInterval = 0.3) throws -> (rig: Rig, motion: MotionMonitor) {
+        var timing = Self.fastTiming
+        timing.untilClearIdle = idle
+        timing.untilClearMax = 30
+        let rig = makeRig(timing: timing) { $0.captureMode = .untilClear; $0.cameraPosition = .front }
+        arm(rig)
+        let motion = try XCTUnwrap(rig.engine.monitors[.motion] as? MotionMonitor)
+        motion.startWatchingForTesting(at: Date(), restingGravity: Self.pose(tilted: 0))
+        motion.sampleForTesting(gravity: Self.pose(tilted: 60), accel: 1, at: Date())   // picked up
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        return (rig, motion)
+    }
+
+    /// Item 204 (TestFlight 83: "the clip didn't stop for a very long time after I stopped handling the phone"): a phone left
+    /// in a new pose is not being handled. Each look of the clip's loop re-armed the tripwires against the pose learned
+    /// at arming, so a phone left a few degrees off it tripped again at every look, each trip counted as activity, and the
+    /// clip ran to its ceiling with nothing moving. Here, past the tilt threshold and under the session limit.
+    func testAnUntilClearClipEndsWhenThePhoneIsLeftAFewDegreesFromWhereItWasArmed() throws {
+        let (rig, motion) = try clipStartedByTheMotionTripwire()
+        XCTAssertTrue(pump(until: {
+            motion.sampleForTesting(gravity: Self.pose(tilted: 5), at: Date())
+            return rig.camera.clipEnds == 1
+        }, timeout: 5), "left there: quiet for the idle threshold ends the clip")
+        rig.engine.disarm()
+    }
+
+    /// The same past the session limit, the other anchor the tilt is measured from.
+    func testAnUntilClearClipEndsWhenThePhoneIsLeftFarFromWhereItWasArmed() throws {
+        let (rig, motion) = try clipStartedByTheMotionTripwire()
+        XCTAssertTrue(pump(until: {
+            motion.sampleForTesting(gravity: Self.pose(tilted: 40), at: Date())
+            return rig.camera.clipEnds == 1
+        }, timeout: 5), "left there: quiet for the idle threshold ends the clip")
+        rig.engine.disarm()
+    }
+
+    /// Guard: handling still holds the clip open: a phone that keeps turning, then a phone being knocked about in one pose,
+    /// each for longer than the idle threshold; then quiet ends it. Each look measures from the last, not from nothing.
+    func testAnUntilClearClipStaysOpenWhileThePhoneKeepsMoving() throws {
+        let (rig, motion) = try clipStartedByTheMotionTripwire(idle: 0.6)   // room for a slow look on a busy machine
+        var angle = 60.0, started = Date()
+        pump(until: {
+            angle += 6
+            motion.sampleForTesting(gravity: Self.pose(tilted: angle), at: Date())
+            return Date().timeIntervalSince(started) >= 1
+        }, timeout: 2)
+        XCTAssertEqual(rig.camera.clipEnds, 0, "a phone that keeps turning holds the clip open")
+        started = Date()
+        pump(until: {
+            motion.sampleForTesting(gravity: Self.pose(tilted: angle), accel: 1, at: Date())
+            return Date().timeIntervalSince(started) >= 1
+        }, timeout: 2)
+        XCTAssertEqual(rig.camera.clipEnds, 0, "bumps in one pose hold the clip open")
+        XCTAssertTrue(pump(until: {
+            motion.sampleForTesting(gravity: Self.pose(tilted: angle), at: Date())
+            return rig.camera.clipEnds == 1
+        }, timeout: 5), "then quiet ends it")
+        rig.engine.disarm()
+    }
+
+    /// The camera tripwire, the same: at each look of the clip's loop a scene that changed and stayed changed stops counting
+    /// as activity, and the next change counts.
+    func testAChangedSceneStopsCountingAsActivityDuringAClip() throws {
+        let rig = makeRig()
+        let vision = try XCTUnwrap(rig.engine.monitors[.vision] as? VisionMonitor)
+        vision.isEnabled = true
+        var trips = 0
+        vision.onTrip = { _ in trips += 1 }
+        vision.beginCalibration()
+        for _ in 0..<5 { vision.ingest(Self.scene) }
+        vision.endCalibration()
+        vision.start()
+        vision.ingest(Self.scene)
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 1, "the scene changed")
+        rig.engine.rearmTripwiresDuringCapture()
+        vision.ingest(Self.handAcross)
+        XCTAssertEqual(trips, 1, "a scene that stayed changed is no further activity")
+        rig.engine.rearmTripwiresDuringCapture()
+        vision.ingest(Self.scene)
+        XCTAssertEqual(trips, 2, "the next change is")
+    }
+
+    // MARK: - Until clear with Sound on (item 204's codex-1)
+
+    /// The room the real Sound tripwire hears, and the trips it reports.
+    @MainActor private final class Room {
+        var level = -60.0
+        var soundTrips = 0
+    }
+
+    /// A watch with Sound on, in a room that has grown louder slowly: over the bar as measured from the calibrated quiet, reached
+    /// under the bar at every tick, so Sound adapted as far as its limit and never tripped. The room stays at `steady`.
+    private func watchInARoomGrownLouder(mode: CaptureMode, idle: TimeInterval = 0.3) throws
+        -> (rig: Rig, audio: AudioMonitor, room: Room, steady: Double) {
+        var timing = Self.fastTiming
+        timing.untilClearIdle = idle
+        timing.untilClearMax = 30
+        let rig = makeRig(timing: timing) {
+            $0.captureMode = mode
+            $0.cameraPosition = .front
+            $0.enabledSensors.insert(.audio)
+        }
+        let audio = try XCTUnwrap(rig.engine.monitors[.audio] as? AudioMonitor)
+        let room = Room()
+        audio.currentLevelForTesting = { room.level }
+        audio.recordingForTesting = { true }
+        audio.deactivateAudioSessionForTesting = {}
+        let engineHears = audio.onTrip
+        audio.onTrip = {
+            room.soundTrips += 1
+            engineHears?($0)
+        }
+        arm(rig)
+        let quiet = audio.calibratedBaselineDB
+        let steady = quiet + audio.marginDB + 4
+        let tick = audio.queuedMeterTickForTesting(calibration: false)
+        room.level = quiet
+        while room.level < steady {
+            room.level += 0.05
+            tick()
+        }
+        for _ in 0..<500 { tick() }
+        XCTAssertEqual(room.soundTrips, 0, "a slow rise is no trip")
+        return (rig, audio, room, steady)
+    }
+
+    /// The real motion tripwire fires on a phone picked up.
+    private func tripMotion(_ rig: Rig) throws {
+        let motion = try XCTUnwrap(rig.engine.monitors[.motion] as? MotionMonitor)
+        motion.startWatchingForTesting(at: Date(), restingGravity: Self.pose(tilted: 0))
+        motion.sampleForTesting(gravity: Self.pose(tilted: 60), accel: 1, at: Date())
+    }
+
+    /// Codex's codex-1 on 08931e5: Sound's re-arm threw away the level it had adapted to, so each look of the clip's loop made
+    /// an unchanged room that had grown louder slowly trip, and a still phone's clip ran to its ceiling. A room at a level Sound
+    /// has taken in is quiet.
+    func testAnUntilClearClipEndsInARoomThatGrewLouderSlowly() throws {
+        let (rig, _, room, _) = try watchInARoomGrownLouder(mode: .untilClear)
+        try tripMotion(rig)
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 5), "a steady room is quiet: the idle threshold ends the clip")
+        XCTAssertEqual(room.soundTrips, 0, "the unchanged room never tripped")
+        rig.engine.disarm()
+    }
+
+    /// Guard: a sound above the bar still holds the clip open, for as long as it lasts: something is audibly going on. Back at the
+    /// steady level, the idle threshold ends the clip.
+    func testASoundAboveTheBarStillHoldsAClipOpen() throws {
+        let (rig, audio, room, steady) = try watchInARoomGrownLouder(mode: .untilClear, idle: 0.6)
+        try tripMotion(rig)
+        XCTAssertTrue(pump(until: { rig.camera.clips.count == 1 }, timeout: 3), "the clip starts")
+        room.level = audio.calibratedBaselineDB + 12 + audio.marginDB + 6   // over the bar at its adapted limit of 12 dB
+        let started = Date()
+        pump(until: { Date().timeIntervalSince(started) >= 1.5 }, timeout: 3)
+        XCTAssertEqual(rig.camera.clipEnds, 0, "a sound over the bar holds the clip open")
+        XCTAssertGreaterThan(room.soundTrips, 1, "it counts as activity at look after look")
+        room.level = steady
+        XCTAssertTrue(pump(until: { rig.camera.clipEnds == 1 }, timeout: 5), "back at the steady level, the clip ends")
+        rig.engine.disarm()
+    }
+
+    /// The response's end re-armed Sound the same way, so the unchanged room raised another event once the watch was back.
+    func testARoomThatGrewLouderSlowlyRaisesNothingAfterAResponse() throws {
+        let (rig, _, room, _) = try watchInARoomGrownLouder(mode: .photo)
+        try tripMotion(rig)
+        XCTAssertTrue(pump(until: { !rig.camera.stills.isEmpty }, timeout: 3), "the photo")
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3), "the response ends")
+        let back = Date()
+        pump(until: { Date().timeIntervalSince(back) >= 1 }, timeout: 2)
+        XCTAssertEqual(room.soundTrips, 0, "the unchanged room raised nothing")
+        rig.engine.disarm()
+    }
+
+    /// Guard: the refractory sweep's re-arm still resets what Sound adapted to: no trigger has fired there, and a slow ramp
+    /// walked up under the bar must not keep its gain through a trip that aged out.
+    func testTheRefractorySweepsReArmStillResetsWhatSoundAdaptedTo() throws {
+        let (rig, audio, room, _) = try watchInARoomGrownLouder(mode: .photo)
+        audio.rearm()
+        XCTAssertTrue(pump(until: { room.soundTrips >= 1 }, timeout: 2), "the level is over the calibrated bar, and the reset shows it")
+        rig.engine.disarm()
+    }
+
+    /// Codex's note on 08931e5: nothing pinned what the fix's own comment says of a slow mover. Turning too slowly to count as
+    /// activity ends the clip, and the armed watch then measures from where the clip left the phone, and trips on the same drift.
+    func testASlowMoverEndsAClipAndTheArmedWatchTripsOnThemAfresh() throws {
+        let (rig, motion) = try clipStartedByTheMotionTripwire()
+        var angle = 60.0
+        XCTAssertTrue(pump(until: {
+            angle += 0.02
+            motion.sampleForTesting(gravity: Self.pose(tilted: angle), at: Date())
+            return rig.camera.clipEnds == 1
+        }, timeout: 5), "too slow to count as activity, the clip ends")
+        XCTAssertTrue(pump(until: { rig.engine.state == .armed }, timeout: 3), "the response ends")
+        var trips = 0
+        let engineHears = motion.onTrip
+        motion.onTrip = {
+            trips += 1
+            engineHears?($0)
+        }
+        XCTAssertTrue(pump(until: {
+            angle += 0.1
+            motion.sampleForTesting(gravity: Self.pose(tilted: angle), at: Date())
+            return trips > 0
+        }, timeout: 5), "the armed watch trips on the same drift")
+        rig.engine.disarm()
+    }
+
     // MARK: - Capture-failure honesty (item 54)
 
     /// A clip that fails while the session is interrupted leaves a record that says why and

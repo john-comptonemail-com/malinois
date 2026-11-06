@@ -43,6 +43,10 @@ enum EvidenceProblem: Error, Equatable, Sendable {
     case notCertified
     /// A file the bundle names that is not in it: its path in the bundle.
     case fileMissing(String)
+    /// The format the index names, when it is not the format of what the bundle holds: "/2" exactly when the bundle holds
+    /// an unkept statement (ADR 0073's decision 6; item 193's codex-2, the owner's "a"). The label is the phone's word, not
+    /// signed.
+    case formatNotAsHeld(String)
 }
 
 /// Apple's App Attest environment, from the attestation's AAGUID: a Debug build attests in development.
@@ -104,10 +108,16 @@ struct EvidenceSequence: Equatable, Sendable {
     let counters: [UInt32]
     /// Counters before the last one here that are not here, which a retention statement accounts for.
     let retired: [ClosedRange<UInt32>]
+    /// Counters before the last one here that are not here, which no retention statement accounts for and an unkept
+    /// statement of the key's own names below its own counter: made by App Attest and not kept by the phone (item 188,
+    /// ADR 0073). Information, not a problem.
+    let unkept: [ClosedRange<UInt32>]
     /// Counters before the last one here that are not here, which nothing here accounts for: a fact, not an accusation
-    /// (an app killed between signing and saving leaves one too).
+    /// (a signature the phone made and did not keep leaves one until its unkept statement names it, and on an earlier key
+    /// for good).
     let missing: [ClosedRange<UInt32>]
-    /// Counters carried by two different signed statements.
+    /// Counters carried by two different signed statements: App Attest's count went back, as a forced restart can take it, and
+    /// gave them out again (item 205, ADR 0077). Only the key can make either, so neither is forged. Information, not a problem.
     let repeated: [UInt32]
     /// Counters whose statement an earlier counter had already signed.
     let signedAgain: [UInt32]
@@ -198,9 +208,10 @@ enum EvidenceVerifier {
     }
 
     /// What the counters of `keyID`'s signatures among `entries` say: the counters here, the gaps a retention statement
-    /// among `entries` accounts for and those it does not, and each record's revisions. A retention statement counts
-    /// only when signed by the key itself (for the counters before its own) or by one of `followers`, the keys that
-    /// follow it (`followers(of:among:)`).
+    /// among `entries` accounts for, those the key's own unkept statements name, those nothing accounts for, and each
+    /// record's revisions. A retention statement counts only when signed by the key itself (for the counters before its
+    /// own) or by one of `followers`, the keys that follow it (`followers(of:among:)`); an unkept statement only when
+    /// signed by the key itself, for the counters before its own (item 188, ADR 0073).
     static func sequence(of entries: [EvidenceSignedEntry], keyID: Data, followers: Set<Data>) -> EvidenceSequence {
         // One signature listed twice is one signature.
         var listed = Set<Signed>()
@@ -224,15 +235,21 @@ enum EvidenceVerifier {
             next = max(next, UInt64(counter) + 1)
         }
         let coverage = merged(retiredCounters(of: keyID, in: entries, followers: followers))
+        let named = merged(unkeptCounters(of: keyID, in: entries))
         var retired: [ClosedRange<UInt32>] = []
+        var unkept: [ClosedRange<UInt32>] = []
         var missing: [ClosedRange<UInt32>] = []
         for gap in gaps {
             let parts = split(gap, by: coverage)
             retired += parts.inside
-            missing += parts.outside
+            for part in parts.outside {
+                let rest = split(part, by: named)
+                unkept += rest.inside
+                missing += rest.outside
+            }
         }
         let revisions = revisionReport(own)
-        return EvidenceSequence(keyID: keyID, counters: counters, retired: retired, missing: missing, repeated: repeated,
+        return EvidenceSequence(keyID: keyID, counters: counters, retired: retired, unkept: unkept, missing: missing, repeated: repeated,
                                 signedAgain: signedAgain, revisionsOutOfOrder: revisions.outOfOrder,
                                 missingRevisions: revisions.missing)
     }
@@ -317,8 +334,19 @@ enum EvidenceVerifier {
         return ranges
     }
 
-    /// Ranges sorted, with overlapping and touching ones joined.
-    private static func merged(_ ranges: [ClosedRange<UInt32>]) -> [ClosedRange<UInt32>] {
+    /// The counters of `keyID` its own unkept statements among `entries` name, each below the statement's own counter
+    /// (item 188, ADR 0073): no other key's statement names them, a key that follows it included.
+    private static func unkeptCounters(of keyID: Data, in entries: [EvidenceSignedEntry]) -> [ClosedRange<UInt32>] {
+        entries.flatMap { entry -> [ClosedRange<UInt32>] in
+            guard entry.keyID == keyID, case .unkept(let unkept)? = entry.statement else { return [] }
+            return unkept.counters.compactMap { range in
+                entry.counter > range.lowerBound ? range.lowerBound...min(range.upperBound, entry.counter - 1) : nil
+            }
+        }
+    }
+
+    /// Ranges sorted, with overlapping and touching ones joined: the signer keeps its keys' counters so too (item 188).
+    static func merged(_ ranges: [ClosedRange<UInt32>]) -> [ClosedRange<UInt32>] {
         var joined: [ClosedRange<UInt32>] = []
         for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
             if let last = joined.last, UInt64(range.lowerBound) <= UInt64(last.upperBound) + 1 {

@@ -7,6 +7,8 @@
   TestFlight 80, archived from `de9a0045`, passed every step on the owner's devices on 2026-10-30, live iCloud alerts
   included; the device checks it could not walk stay unobserved (`store/DEVICE_TEST_CHECKLIST.md`)
 - **Date:** 2026-10-29
+- **Summary:** 1.9's cloud and recovery fixes, then the engine's split into a cloud coordinator, a trip responder and an
+  arming flow, each stage tested, reviewed and verified before the next, with no change in behavior.
 
 ## Authority and base
 

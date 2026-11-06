@@ -6,8 +6,11 @@
   leaving the log is superseded by ADR 0069, which states the design its thirteen amendments (2026-10-31 to 2026-11-01)
   built, as it stands; the amendments are listed at the end. Corrected 2026-11-01 (BACKLOG item 187): App Attest's keys
   survive no restore from a backup, onto the same iPhone or another (Apple's documentation); a signature made and not
-  kept is missing in every later bundle of its key.
+  kept is missing in every later bundle of its key, until the phone names it in a signed statement, which ADR 0073
+  decides (1.11).
 - **Date:** 2026-10-31
+- **Summary:** One Secure Enclave key per install, which Apple certifies at launch, signs each of this phone's records
+  at each change once its write is on disk, the signatures kept in a file of their own beside the log.
 
 ## Context
 
@@ -54,7 +57,8 @@ verifier reads a counter with no signature in the file as a signature removed, u
 - A signature made and then not kept (the phone stopping in the instant after it is made, a crash, a forced restart or a
   flat battery, or a write failing then, a full disk) still leaves a gap in its key's counters, which a verifier reports
   as missing in every later bundle of that key, for as long as the key lives: rare, and stated in SECURITY.md (item
-  187); BACKLOG item 188 plans a signed statement for it.
+  187). From 1.11 the phone names the key in use's such gaps in a signed unkept statement, which a verifier counts, and
+  holds a line a full disk refuses until the next signing: ADR 0073.
 - Departs from the plan: the plan certified "at setup or the first arm (lazy certification)". At the first arm, a
   record made in the second or so before Apple answers would be in the log at certification and so never signed; at
   launch the key is ready before the first arm. The cost: an install that is never armed still contacts Apple once.

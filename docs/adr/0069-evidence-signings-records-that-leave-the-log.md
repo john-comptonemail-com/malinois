@@ -5,6 +5,8 @@
   2026-11-01: "a, with the next round's documents"); ADR 0066 keeps its decision. Each defect, the review that found it
   and the ruling: BACKLOG item 182 and `docs/verification/1.10-development.md`.
 - **Date:** 2026-11-01
+- **Summary:** A signed record that leaves the log is named in a signed statement, retention for what the size limit
+  removed and absence for any other way, so a vanished record shows in every later bundle.
 
 ## Context
 

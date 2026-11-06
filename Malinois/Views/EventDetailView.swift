@@ -35,6 +35,9 @@ struct EventDetailView: View {
     /// A download ran but some iCloud slots went unchecked (R3-3) — keeps the download
     /// section up for a retry even after a capture landed.
     @State private var downloadIncomplete = false
+    /// A capture iCloud gave is not the one this iPhone signed for the record, and was not added (item 190's A4, its
+    /// download half; the owner's wording, 2026-11-04: "a, approved").
+    @State private var downloadRefused = false
     /// Item 52: when the phone that armed this watch was last heard from (an arm record from
     /// another phone, on Pro); nil until the reader answers.
     @State private var lastHeard: LastHeard?
@@ -181,34 +184,49 @@ struct EventDetailView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    Task {
-                        downloading = true
-                        downloadFoundNothing = false
-                        downloadIncomplete = false
-                        let outcome = await engine.downloadFullEvidence(for: current.id)
-                        downloading = false
-                        downloadFoundNothing = !outcome.landed
-                        downloadIncomplete = !outcome.complete
-                    }
-                } label: {
+                Button(action: startDownload) {
                     Label { Text("Download full evidence from iCloud").reportedOnScreen("Download full evidence from iCloud") }
                           icon: { Image(systemName: "icloud.and.arrow.down") }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .reportedAction("Download full evidence from iCloud", startDownload)
+                if downloadRefused {
+                    Text("A capture in iCloud differs from the one this iPhone recorded, so it wasn't added - iCloud's copy is unchanged.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .reportedOnScreen("A capture in iCloud differs from the one this iPhone recorded, so it wasn't added - iCloud's copy is unchanged.")
+                }
                 if downloadFoundNothing {
                     Text("Nothing came back - the full capture may not be in iCloud, or iCloud isn't reachable.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                        .reportedOnScreen("Nothing came back - the full capture may not be in iCloud, or iCloud isn't reachable.")
                 } else if downloadIncomplete {
                     // Landed something, but a slot went unchecked (R3-3): say so instead
                     // of presenting a partial download as the whole story.
                     Text("A capture downloaded, but not everything could be checked - try again for the rest.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                        .reportedOnScreen("A capture downloaded, but not everything could be checked - try again for the rest.")
                 }
             }
+        }
+    }
+
+    /// Downloads the event's full capture from iCloud and says how it went: a capture that is not the one this iPhone
+    /// signed, not added (item 190's A4); nothing came back; or not everything could be checked.
+    private func startDownload() {
+        Task {
+            downloading = true
+            downloadRefused = false
+            downloadFoundNothing = false
+            downloadIncomplete = false
+            let outcome = await engine.downloadFullEvidence(for: current.id)
+            downloading = false
+            downloadRefused = outcome.refused
+            downloadFoundNothing = !outcome.landed && !outcome.refused   // something came back: not "nothing came back"
+            downloadIncomplete = !outcome.complete
         }
     }
 

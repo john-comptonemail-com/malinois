@@ -26,8 +26,8 @@ protocol CapturePipelineHost: AnyObject {
     var mayFlashScreen: Bool { get }
     /// Raise or drop the screen flash (the host folds it into its brightness priority).
     func setCaptureFlash(_ on: Bool)
-    /// Re-arm the enabled tripwires so continued tampering keeps registering during an
-    /// until-clear recording.
+    /// Re-arm the enabled tripwires, each measuring from where things are now, so continued tampering keeps registering
+    /// during an until-clear recording and a phone left in a new pose does not (item 204).
     func rearmTripwiresDuringCapture()
     /// An until-clear recording has run for `EngineTiming.untilClearWarningAfter`: the host may show the first warning
     /// now rather than when the clip ends (item 152's hardening (c)). Called once per clip.
@@ -686,7 +686,7 @@ final class EvidenceCapturePipeline {
                 break
             }
             if sessionIsOver { break }
-            // Re-arm the tripwires so continued tampering keeps registering.
+            // Re-arm the tripwires, from where things are now: continued tampering keeps registering, a phone left does not.
             host?.rearmTripwiresDuringCapture()
             // Alert mode's first warning need not wait for the clip to end (item 152's hardening (c)).
             if warningDue, Date().timeIntervalSince(start) >= timing.untilClearWarningAfter {

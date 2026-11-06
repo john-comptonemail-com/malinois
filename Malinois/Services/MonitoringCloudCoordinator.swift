@@ -54,6 +54,10 @@ final class MonitoringCloudCoordinator {
     var heartbeatSession: UUID?
     var heartbeatSequence = 0
     var heartbeatTimer: Timer?
+    /// The signer of the log, whose signatures each capture a download brings is compared with before it joins its record
+    /// (item 190's A4, its download half; item 192's step 2, the owner's "a"): the launch hands it the log's signer
+    /// (`MalinoisApp.makeServices`); without one (a test's engine), nothing is compared.
+    var downloadSigner: EvidenceSigner?
 
     // These main-file constants are not function/type bodies, so the move-kit parser does
     // not copy them. Keep both original limits explicitly with stageDownloadedAsset.

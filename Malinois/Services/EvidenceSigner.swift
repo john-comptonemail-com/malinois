@@ -9,7 +9,10 @@
 //  signed, and the records written meanwhile stay unsigned. When the log's limit retires signed records, a signed
 //  retention statement names their counters and their signatures leave the file. Any other signed record that leaves the
 //  log is named in a signed absence statement, its signatures kept, and the event log is given one line saying so
-//  (item 182; the owner's rulings of 2026-10-31, "a" and "1 - a, 2 - a, 3 - wording approved").
+//  (item 182; the owner's rulings of 2026-10-31, "a" and "1 - a, 2 - a, 3 - wording approved"). A signature App Attest
+//  made that the file does not keep leaves a gap in its key's counters: a line the file refuses is held and written first
+//  at the next signing turn, so only a stop of the app leaves one, and the key in use's are named in a signed unkept
+//  statement at its next signature, or at its first pass when a build before this one left them (item 188, ADR 0073).
 //
 
 import DeviceCheck
@@ -80,6 +83,9 @@ actor EvidenceSigner {
         let content: Data
         /// The hash of the statement signed, so a cleanup drops this signature exactly (codex-1 on 68bd96b3).
         let statement: Data
+        /// The digests this revision signed for the record's photo or clip files, by name ("primary", "secondary"):
+        /// what a download from iCloud is compared with (item 190's A4, its download half).
+        let media: [String: EvidenceForm.Digest]
     }
 
     /// What the file says of one record's signatures: the record is what its latest revision signed, the highest of its
@@ -123,6 +129,7 @@ actor EvidenceSigner {
     private let app: String
     private let now: @Sendable () -> Date
     private let retryAfter: TimeInterval
+    private let logWarning: @Sendable (String) -> Void
 
     private var loaded = false
     /// A key made and its statement, waiting for Apple's certification (tried again with the same statement).
@@ -195,8 +202,16 @@ actor EvidenceSigner {
     private var heldAtLaunch: Set<UUID>?
     /// Each certified key's public point, from its certification in the file: what the file's signatures are checked
     /// with when it is read (codex-1 on ba2e282e), every one read before any signature (codex-1 on 5fa9ec18), and only
-    /// for a key every bundle lists (codex-1 on 68bd96b3).
+    /// for a key every bundle lists (codex-1 on 68bd96b3); and each key Apple certifies in this launch, so that a line the
+    /// signer writes late is acted on as one read (item 188).
     private var keyPoints: [Data: Data] = [:]
+    /// Each key's counters the file accounts for, as a verifier counts them: its signatures' that hold, and those its own
+    /// retention and unkept statements name below their own (item 188, ADR 0073). Below the key in use's highest, any
+    /// other was made by App Attest and not kept.
+    private var accounted: [Data: [ClosedRange<UInt32>]] = [:]
+    /// Lines the file refused once App Attest had made their signatures (a full disk), in the order made: written first at
+    /// the next signing turn, and no signature is made while one is held (item 188, ADR 0073, decision 3).
+    private var heldLines: [Entry] = []
 
     /// - Parameters:
     ///   - file: where the signatures are kept, beside the log.
@@ -209,11 +224,14 @@ actor EvidenceSigner {
     ///   - linesOwedChanged: told which lines are owed their note, to hold from the limit (item 182).
     ///   - keyList: where the keys this install certified are kept beside the file, where no edit of a backup reaches
     ///     (item 190's A3): the Keychain's in the app; none, for a test of the file alone.
+    ///   - logWarning: where the line saying signatures were thrown away goes (item 206): the phone's log, whose text is
+    ///     public, so it carries a count and nothing of a record; a test's list.
     init(file: EvidenceSignatureFile, keys: any EvidenceKeyService, mediaDirectory: URL, app: String,
          now: @escaping @Sendable () -> Date = { Date() }, retryAfter: TimeInterval = 60,
          removalsAccounted: (@Sendable (Set<UUID>) -> Void)? = nil,
          linesOwedChanged: (@Sendable (Set<UUID>) -> Void)? = nil,
-         keyList: (any EvidenceKeyListStore)? = nil) {
+         keyList: (any EvidenceKeyListStore)? = nil,
+         logWarning: @escaping @Sendable (String) -> Void = { Log.store.warning("\($0, privacy: .public)") }) {
         self.file = file
         self.keys = keys
         self.mediaDirectory = mediaDirectory
@@ -223,6 +241,7 @@ actor EvidenceSigner {
         self.removalsAccounted = removalsAccounted
         self.linesOwedChanged = linesOwedChanged
         self.keyList = keyList
+        self.logWarning = logWarning
     }
 
     #if DEBUG
@@ -268,6 +287,7 @@ actor EvidenceSigner {
         guard current != nil, !unnamedGone.isEmpty else { return }
         await startSigning()
         defer { finishSigning() }
+        guard writeHeldLines() else { return }   // a line the file refused, first (item 188)
         _ = await nameWhatIsOwedNow()
     }
 
@@ -287,6 +307,8 @@ actor EvidenceSigner {
             let entry = Entry(kind: .keyCertified, key: key.key, attestation: attestation, existing: baseline == nil ? records ?? [] : nil)
             guard file.append(entry) else { return failed() }
             apply(entry)
+            // Its point, as a key read with the file has: a line held and written late is checked with it (item 188).
+            keyPoints[key.key] = EvidenceVerifier.publicKey(ofAttestation: attestation, keyID: key.key)
             noteCertified(key.key)
             lastFailure = nil
         } catch let error as DCError where error.code == .invalidKey {
@@ -338,8 +360,11 @@ actor EvidenceSigner {
 
     /// For an export of `record` (phase 4; ADR 0067), once no pass is signing: signs an export statement naming the
     /// record's latest signed revision and the statements its bundle shows (`shownCounters`: the revisions of `showing`,
-    /// the record and the watch around it, and every retention and absence statement; the owner's "B"), kept in the file
-    /// like any signature, and returns the file's entries ending with it, so the bundle's last signature is the export's.
+    /// the record and the watch around it, and every retention, absence and unkept statement; the owner's "B"), kept in
+    /// the file like any signature, and returns the file's entries ending with it, so the bundle's last signature is the
+    /// export's. A line the file refused is written first, and the key in use's counters App Attest made and the file does
+    /// not keep are named before it; when its own counter shows more, a second export statement follows their statement
+    /// (item 188, ADR 0073, decision 4), and while they cannot be named, no snapshot (item 193's codex-1, the owner's "a").
     /// nil, with no statement, for a record with no signature of this phone's; nil when no export statement could be
     /// signed (no key, or the signing failed: a bundle without one would end its check in problems; item 187,
     /// deepseek-1 on 09d997f); nil when the file cannot be read now, or before the signer has compared the log on disk in
@@ -348,26 +373,22 @@ actor EvidenceSigner {
     func export(of record: UUID, showing: Set<UUID>) async -> EvidenceExportSnapshot? {
         await startSigning()
         defer { finishSigning() }
-        guard loadIfNeeded(), lastHeld != nil else { return nil }
+        guard loadIfNeeded(), lastHeld != nil, writeHeldLines() else { return nil }   // a refused line first (item 188)
         guard await nameWhatIsOwedNow() else { return nil }
         if !cleanupOwed.isEmpty, drop(cleanupOwed) { cleanupOwed = [] }   // retired signatures leave first (codex-2 on ba2e282e)
         var signedExport = false
-        if let key = current, let revision = records[record]?.revision {
-            guard let entries = file.read() else { return nil }
-            let statement = EvidenceForm.Export(record: record, revision: revision, signedAt: milliseconds(), app: app,
-                                                shown: Self.shownCounters(in: entries, showing: showing))
-            // Kept naming no record, so no record's retirement drops it: the next bundle has no gap where it was.
-            signedExport = await sign(.export(statement), record: nil, key: key, content: nil)
+        if current != nil, let revision = records[record]?.revision {
+            // Counters known not kept, named before the export statement, which ends the bundle (item 188).
+            await nameUnkept()
+            if let key = current { signedExport = await signExport(of: record, revision: revision, showing: showing, key: key) }
             // A key App Attest lost (a restore from a backup) shows only when a signature is refused: a new one at once,
             // as a pass asks for one, and the export statement signed with it, so the first share after a restore has
             // its bundle (item 190's deepseek-3, the owner's "A5 a"). With Apple out of reach, no bundle. (A signature that
             // succeeded leaves the key current.)
             if current == nil {
                 await certify(records: nil)
-                if let renewed = current, let renewedEntries = file.read() {
-                    let again = EvidenceForm.Export(record: record, revision: revision, signedAt: milliseconds(), app: app,
-                                                    shown: Self.shownCounters(in: renewedEntries, showing: showing))
-                    signedExport = await sign(.export(again), record: nil, key: renewed, content: nil)
+                if let renewed = current {
+                    signedExport = await signExport(of: record, revision: revision, showing: showing, key: renewed)
                 }
             }
         }
@@ -377,7 +398,8 @@ actor EvidenceSigner {
     }
 
     /// The counters of the statements a bundle shows in full, by key: the revisions of the records in `showing`, and every
-    /// retention and absence statement, as `EvidenceExporter.contents` shows them (item 182, the owner's "B").
+    /// retention, absence and unkept statement, as `EvidenceExporter.contents` shows them (item 182, the owner's "B"; item
+    /// 188).
     static func shownCounters(in entries: [EvidenceSignatureFile.Entry], showing: Set<UUID>) -> [EvidenceForm.KeyCounters] {
         var byKey: [Data: [UInt32]] = [:]
         for entry in entries where entry.kind == .signature {
@@ -386,7 +408,7 @@ actor EvidenceSigner {
             switch try? EvidenceForm.read(statement) {
             case .record(let form)?:
                 guard showing.contains(form.id) else { continue }
-            case .retention?, .absence?:
+            case .retention?, .absence?, .unkept?:
                 break
             case .export?, .key?, nil:
                 continue
@@ -402,6 +424,39 @@ actor EvidenceSigner {
     /// read now.
     func hasSignature(of record: UUID) -> Bool {
         loadIfNeeded() && records[record] != nil
+    }
+
+    /// Runs `join` while no signature can be made (the signing turn held, as a pass or a share holds it), handing it what
+    /// this phone signed for `record`'s photos and clips, for a download from iCloud to be compared with (item 190's A4,
+    /// its download half): by slot ("primary", "secondary"), the digest of the latest revision naming it, among the
+    /// signatures this phone made or its file's read checked under their key, one whose line the file still refuses
+    /// included; none for a slot no revision names (a copy from another device, a record from before 1.10, or one signed
+    /// without it); nil while the file cannot be read now, when nothing can be told and the download waits. The turn
+    /// waits for a signature in progress and writes the lines the file refused first, so a download compares a capture
+    /// and attaches it with no signature made between (item 194's codex-1, the owner's "a").
+    func whileSigningHeld<T: Sendable>(mediaOf record: UUID,
+                                       _ join: @MainActor @Sendable ([String: EvidenceForm.Digest]?) async -> T) async -> T {
+        await startSigning()
+        defer { finishSigning() }
+        guard loadIfNeeded() else { return await join(nil) }
+        writeHeldLines()
+        return await join(mediaSigned(of: record))
+    }
+
+    /// What `whileSigningHeld` hands a download: each slot's digest in the latest revision naming it.
+    private func mediaSigned(of record: UUID) -> [String: EvidenceForm.Digest] {
+        var latest: [String: (revision: Int64, digest: EvidenceForm.Digest)] = [:]
+        func take(_ revision: Int64, _ media: [String: EvidenceForm.Digest]) {
+            for (slot, digest) in media where revision > latest[slot]?.revision ?? 0 { latest[slot] = (revision, digest) }
+        }
+        for signature in records[record]?.signatures ?? [] { take(signature.revision, signature.media) }
+        // A signature App Attest made here whose line the file still refuses, written first at the next turn (item 194).
+        for line in heldLines {
+            guard let statement = line.statement, case .record(let form)? = try? EvidenceForm.read(statement),
+                  form.id == record else { continue }
+            take(form.revision, Self.media(of: form))
+        }
+        return latest.mapValues { $0.digest }
     }
 
     /// Whether Share can offer `record`'s bundle: the record has a signature of this phone's, a certified key is current
@@ -443,6 +498,8 @@ actor EvidenceSigner {
         }
         if keyListUnsaved { saveKeyList() }   // a list the Keychain refused, written again (deepseek-5 on b7702f5)
         noteKeysMissingIfKnown()   // a line the file did not take at its read, owed again (item 190's A3)
+        // A line the file refused at the last signing, first, so this pass reads what it says (item 188, ADR 0073).
+        writeHeldLines()
         // This phone's own records: a copy from iCloud under a record's ID never stands for it (item 182), nor a row whose
         // start or kind is not the signed record's, which is never signed as it (codex-2 on 21ea9a43, the owner's "a").
         let firstHand = events.filter { !$0.isMirrored }
@@ -508,17 +565,30 @@ actor EvidenceSigner {
             }
             lastSeen[event.id] = event
         }
+        // The key in use's counters App Attest made and the file does not keep that no signature of this pass named: a
+        // build before this one left them, or their statement's signing failed (item 188, ADR 0073, decision 2). A key
+        // App Attest lost shows here as at a record's signature: a new one, and what is owed named with it.
+        await nameUnkept()
+        if current == nil {
+            await certify(records: nil)
+            _ = await nameWhatIsOwedNow()
+        }
     }
 
     /// Signs `statement` with `key` and keeps the signature; false when it could not (the record untouched either way).
+    /// A line the file refuses once App Attest has made its signature is held, written first at the next signing turn
+    /// (item 188, ADR 0073, decision 3). The counters a kept signature shows App Attest made and the file does not keep
+    /// are named at once in an unkept statement, whose own signature names nothing more, so statements never chain
+    /// (decision 2): a gap it shows waits for the next signing.
     private func sign(_ statement: EvidenceForm.Statement, record: UUID?, key: Data, content: Data?) async -> Bool {
         // App Attest counts every signature, and one missing from the file reads as removed: none is asked for while the
-        // file cannot take it (the phone locked), and the record waits for a later write.
-        guard file.canAppend() else { return false }
+        // file cannot take it (the phone locked), nor while a line it refused is held (item 188), and the record waits for
+        // a later write.
+        guard heldLines.isEmpty, file.canAppend() else { return false }
         let bytes = EvidenceForm.bytes(statement)
         let assertion: Data
         do {
-            assertion = try await keys.generateAssertion(key.base64EncodedString(), clientDataHash: EvidenceHash.sha256(bytes))
+            assertion = try await assertionPastTheFile(over: bytes, key: key)
         } catch let error as DCError where error.code == .invalidKey {
             if file.append(Entry(kind: .keyLost, key: key, at: now())) { current = nil }
             return false
@@ -527,11 +597,137 @@ actor EvidenceSigner {
             return false
         }
         let entry = Entry(kind: .signature, key: key, statement: bytes, assertion: assertion, record: record)
-        guard file.append(entry) else { return false }
+        guard file.append(entry) else {
+            // App Attest has counted it: held, its counter is lost only if the app stops before the next turn (item 188).
+            heldLines.append(entry)
+            return false
+        }
+        if let counter = Self.counter(of: assertion) { account(key: key, counter: counter, statement: statement) }
         if let record, case .record(let form) = statement {
             note(record: record, revision: form.revision, startDate: Self.startDate(of: form), kind: Self.kind(of: form),
                  interrupted: Self.interrupted(of: form), content: content ?? Data(), statement: EvidenceHash.sha256(bytes),
-                 key: key, assertion: assertion)
+                 media: Self.media(of: form), key: key, assertion: assertion)
+        }
+        // An unkept statement's own signature names nothing more: a gap it shows waits for the next signing.
+        if case .unkept = statement { return true }
+        await nameUnkept()
+        return true
+    }
+
+    /// App Attest's signature over `bytes`, its counter past all the file accounts for under `key`. App Attest's count can go
+    /// back: a forced restart took it back by two on the owner's phone (TestFlight 84, item 205, ADR 0077), and it gave those
+    /// counters out again though their signatures were kept, which every later bundle of the key then showed as repeated. A
+    /// counter the file already accounts for is thrown away and asked for again, each ask moving the count on, so no counter is
+    /// kept twice and none goes missing. At most `maxAsksPastTheFile` at a time: past that the record waits for a later write.
+    /// The file keeps nothing of what is thrown away, so a bundle looks the same whether the count went back or not. The phone's
+    /// log says how many were thrown away, on every way out (item 206). No line means nothing was thrown away, never that the
+    /// count did not go back: a stop that loses a signature and takes the count back over it leaves nothing to throw away.
+    private func assertionPastTheFile(over bytes: Data, key: Data) async throws -> Data {
+        let hash = EvidenceHash.sha256(bytes)
+        var thrownAway = 0
+        defer {
+            if thrownAway > 0 { logWarning("Evidence signing: the count went back: \(thrownAway) signature(s) thrown away") }
+        }
+        while thrownAway < Self.maxAsksPastTheFile {
+            let assertion = try await keys.generateAssertion(key.base64EncodedString(), clientDataHash: hash)
+            guard let counter = Self.counter(of: assertion), let highest = accounted[key]?.map(\.upperBound).max(),
+                  counter <= highest else { return assertion }
+            thrownAway += 1
+        }
+        throw CocoaError(.fileWriteUnknown)
+    }
+
+    /// How many signatures one statement may throw away (`assertionPastTheFile`): far more than a restart has taken back. A real
+    /// count rises at each ask, so what a pass throws away adds up to how far it went back; one that did not rise would cost this
+    /// many asks for each statement of the pass, each statement then waiting for a later write.
+    private static let maxAsksPastTheFile = 64
+
+    /// Signs the export statement of `record` at `revision` with `key`, naming what the bundle shows as the file stands:
+    /// true once the file's last signature is an export statement signed here. When its own counter shows counters App
+    /// Attest made and the file did not keep, their unkept statement follows it, then a second export statement, which
+    /// the bundle carries; the first stays in the file, a signature of its own (item 188, ADR 0073, decision 4).
+    private func signExport(of record: UUID, revision: Int64, showing: Set<UUID>, key: Data) async -> Bool {
+        for _ in 1...2 {
+            guard let entries = file.read() else { return false }
+            let statement = EvidenceForm.Statement.export(EvidenceForm.Export(
+                record: record, revision: revision, signedAt: milliseconds(), app: app,
+                shown: Self.shownCounters(in: entries, showing: showing)))
+            // Kept naming no record, so no record's retirement drops it: the next bundle has no gap where it was.
+            guard await sign(statement, record: nil, key: key, content: nil), let after = file.read() else { return false }
+            if after.last(where: { $0.kind == .signature })?.statement == EvidenceForm.bytes(statement) {
+                // Only an export its key's counters account for up to its own: when the statement naming a gap it showed
+                // was refused, or its line is held (always that statement, the gap then unaccounted until it is written),
+                // the bundle would show the gap missing, so no bundle; the next share names it first (item 193's codex-1,
+                // the owner's "a").
+                return unaccounted(key).isEmpty
+            }
+        }
+        return false
+    }
+
+    /// Names, in a signed unkept statement, the counters of the key in use App Attest made and the file does not keep:
+    /// those below the highest it accounts for (item 188, ADR 0073, decision 2). Never an earlier key's, whose entries came
+    /// through a backup someone could have edited, nor a key whose signatures the file's read could not check (one no
+    /// bundle lists), whose counters would all look unkept. Named again at a later turn when the signing fails.
+    private func nameUnkept() async {
+        guard let key = current else { return }
+        let unkept = unaccounted(key)
+        guard !unkept.isEmpty else { return }
+        _ = await sign(.unkept(EvidenceForm.Unkept(signedAt: milliseconds(), app: app, counters: unkept)), record: nil, key: key,
+                       content: nil)
+    }
+
+    /// The counters of `key` below the highest its file accounts for that nothing accounts for: App Attest made them and
+    /// the file does not keep them. None for a key whose signatures the file's read could not check (one no bundle lists),
+    /// whose counters would all look so (item 188; the export's check too, item 193's codex-1).
+    private func unaccounted(_ key: Data) -> [ClosedRange<UInt32>] {
+        keyPoints[key] == nil ? [] : Self.holes(in: accounted[key, default: []])
+    }
+
+    /// What a signature the file keeps accounts for under its key (`accounted`): its own counter, and the key's own
+    /// counters a retention or unkept statement names below it, as a verifier counts them (item 188).
+    private func account(key: Data, counter: UInt32, statement: EvidenceForm.Statement?) {
+        var ranges = [counter...counter]
+        switch statement {
+        case .retention(let retention)?:
+            ranges += retention.retired.filter { $0.keyID == key }.flatMap(\.counters).compactMap { Self.below(counter, $0) }
+        case .unkept(let unkept)?:
+            ranges += unkept.counters.compactMap { Self.below(counter, $0) }
+        default:
+            break
+        }
+        accounted[key] = EvidenceVerifier.merged(accounted[key, default: []] + ranges)
+    }
+
+    /// The part of `range` below `counter`: what a statement signed at `counter` may name of its own key's.
+    private static func below(_ counter: UInt32, _ range: ClosedRange<UInt32>) -> ClosedRange<UInt32>? {
+        counter > range.lowerBound ? range.lowerBound...min(range.upperBound, counter - 1) : nil
+    }
+
+    /// The counters from 1 to the highest of `ranges` that none of them holds, as ascending ranges.
+    private static func holes(in ranges: [ClosedRange<UInt32>]) -> [ClosedRange<UInt32>] {
+        var holes: [ClosedRange<UInt32>] = []
+        var next: UInt64 = 1
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if UInt64(range.lowerBound) > next { holes.append(UInt32(next)...(range.lowerBound - 1)) }
+            next = max(next, UInt64(range.upperBound) + 1)
+        }
+        return holes
+    }
+
+    /// Writes the lines the file refused once App Attest had made their signatures, in the order made, each acted on as a
+    /// line the file is read with (item 188, ADR 0073, decision 3): true once none is held.
+    @discardableResult
+    private func writeHeldLines() -> Bool {
+        while let line = heldLines.first {
+            guard file.append(line) else { return false }
+            heldLines.removeFirst()
+            apply(line)
+            switch line.statement.flatMap({ try? EvidenceForm.read($0) }) {
+            case .retention?: retireWhatTheFileRetired()   // its signatures dropped at the next cleanup, as at a read
+            case .absence?: reportLinesOwed()
+            default: break
+            }
         }
         return true
     }
@@ -846,7 +1042,12 @@ actor EvidenceSigner {
             guard !retired.isEmpty else { continue }
             cleanupOwed.formUnion(retired.map { SignatureRef(key: $0.key, counter: $0.counter, statement: $0.statement) })
             let live = signed.signatures.filter { !isRetired($0) }
-            if live.isEmpty { records[id] = nil } else { records[id]?.signatures = live }
+            if live.isEmpty {
+                records[id] = nil
+                lastSeen[id] = nil   // a retention statement written late, as a retirement forgets it (item 188)
+            } else {
+                records[id]?.signatures = live
+            }
         }
     }
 
@@ -875,14 +1076,17 @@ actor EvidenceSigner {
                   let point = keyPoints[key] else { return }
             let formHash = EvidenceHash.sha256(statement)
             guard EvidenceVerifier.signs(assertion, formHash: formHash, publicKey: point) else { return }
-            switch try? EvidenceForm.read(statement) {
+            let read = try? EvidenceForm.read(statement)
+            // What it accounts for under its key, whatever it signs, a statement this build cannot read included (item 188).
+            if let counter = Self.counter(of: assertion) { account(key: key, counter: counter, statement: read) }
+            switch read {
             case .record(let form)?:
                 // The record the signed statement names, never the entry's unsigned label (Claude's finding on
                 // 417158fe: a relabelled signature would have hidden its record's deletion).
                 note(record: form.id, revision: form.revision, startDate: Self.startDate(of: form), kind: Self.kind(of: form),
                      interrupted: Self.interrupted(of: form),
                      content: Self.content(id: form.id, facts: form.facts, attachments: form.attachments), statement: formHash,
-                     key: key, assertion: assertion)
+                     media: Self.media(of: form), key: key, assertion: assertion)
             case .absence(let absence)?:
                 noteAbsence(absence, statement: statement)
             case .retention(let retention)?:
@@ -903,11 +1107,11 @@ actor EvidenceSigner {
     }
 
     private func note(record: UUID, revision: Int64, startDate: Int64?, kind: String?, interrupted: Bool, content: Data,
-                      statement: Data, key: Data, assertion: Data) {
+                      statement: Data, media: [String: EvidenceForm.Digest], key: Data, assertion: Data) {
         guard let counter = Self.counter(of: assertion) else { return }
         records[record, default: Signed(signatures: [])].signatures.append(
             RecordSignature(key: key, counter: counter, revision: revision, startDate: startDate, kind: kind,
-                            interrupted: interrupted, content: content, statement: statement))
+                            interrupted: interrupted, content: content, statement: statement, media: media))
     }
 
     /// Whether `event` is the record `signed` signs: the start, kind (incident, or which status entry) and interruption
@@ -960,6 +1164,12 @@ actor EvidenceSigner {
     private static func content(id: UUID, facts: [EvidenceJSON.Member], attachments: [EvidenceForm.Attachment]) -> Data {
         EvidenceHash.sha256(EvidenceForm.bytes(.record(EvidenceForm.Record(id: id, revision: 1, signedAt: 0, app: "-", facts: facts,
                                                                            attachments: attachments))))
+    }
+
+    /// The digests a record's revision signs for its photo or clip files, by name ("primary", "secondary").
+    private static func media(of form: EvidenceForm.Record) -> [String: EvidenceForm.Digest] {
+        Dictionary(form.attachments.filter { $0.name == "primary" || $0.name == "secondary" }.map { ($0.name, $0.digest) },
+                   uniquingKeysWith: { first, _ in first })
     }
 
     /// A record's kind as its revision signed it: its "stateChange" fact, nil for an incident.
