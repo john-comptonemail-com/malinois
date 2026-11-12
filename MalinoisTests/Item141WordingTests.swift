@@ -90,7 +90,7 @@ final class Item141WordingTests: XCTestCase {
 
     // MARK: - claude-1: the launch check's notice with iCloud backup off
 
-    /// iCloud no longer holds this phone's records and backup is off: they are queued again, and Home says they wait
+    /// iCloud no longer has this phone's records and backup is off: they are queued again, and Home says they wait
     /// for backup, not that they are uploading.
     func testWithBackupOffTheNoticeSaysTheRecordsWaitForBackup() async throws {
         let engine = try await wipedEngine(backupOn: false)

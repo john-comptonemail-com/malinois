@@ -11,15 +11,26 @@ import AVKit
 
 struct EventDetailView: View {
     let event: Event
+    /// A record read from a set-aside log (item 122): shown as that log has it, read only, with no Share of its own (its
+    /// log's screen shares the whole file), no download and nothing asked of iCloud; and nothing said of an upload, since
+    /// it never uploads: no hold, no "Last heard from", and its iCloud row says where it was (item 213), or, for a record
+    /// the event log also has, is not shown (item 214).
+    var setAside = false
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var engine: MonitoringEngine
     @EnvironmentObject private var entitlements: ProEntitlements
     @Environment(\.evidenceExporter) private var exporter
     @ObservedObject private var enrollment = CloudEnrollment.shared
 
+    /// Why this record's upload is held, on Pro; none for a set-aside record, which never uploads (item 213).
     private var holdReason: CloudEnrollment.UploadHoldReason? {
-        entitlements.proActive ? enrollment.uploadHoldReason(for: current) : nil
+        guard !setAside, entitlements.proActive else { return nil }
+        return enrollment.uploadHoldReason(for: current)
     }
+
+    /// A set-aside record the event log also has (item 214's fable-4): its screen shows no iCloud row, since the event
+    /// log's row for it has the one that is true now. Read from the event log as it is, as the set-aside log's mark is.
+    private var alsoInLog: Bool { setAside && eventStore.events.contains { $0.id == event.id } }
 
     /// The sheet Share opened, with what it sends, fixed when it opens (item 90, phase 4). The sheet is handed these, not
     /// what the screen held when SwiftUI last drew it: the first sheet a screen opened was handed the screen's first
@@ -30,6 +41,9 @@ struct EventDetailView: View {
     /// The evidence bundle the open sheet offers (item 90, phase 4), made only when the owner picks where to send it,
     /// and removed once the sheet is gone.
     @State private var bundleItem: EvidenceBundleItem?
+    /// After a share that went without the signed evidence ZIP, why (item 200): shown until the owner leaves the screen,
+    /// and cleared when Share opens again.
+    @State private var shareNote: String?
     @State private var downloading = false
     @State private var downloadFoundNothing = false
     /// A download ran but some iCloud slots went unchecked (R3-3) — keeps the download
@@ -44,12 +58,19 @@ struct EventDetailView: View {
 
     /// The live copy from the store — the view renders THIS, so a download that attaches
     /// media (34.B1) reflows the screen the moment the store updates. Falls back to the
-    /// passed value for an event no longer in the store.
-    private var current: Event { eventStore.events.first { $0.id == event.id } ?? event }
+    /// passed value for an event no longer in the store. A set-aside log's record is shown
+    /// as that log has it, even when the log has it too (item 122).
+    private var current: Event { setAside ? event : (eventStore.events.first { $0.id == event.id } ?? event) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let shareNote {
+                    Label(shareNote, systemImage: "doc.zipper")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+
                 mediaSection
 
                 metadata
@@ -66,17 +87,26 @@ struct EventDetailView: View {
         .navigationTitle("Event")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(action: startShare) {
-                    Image(systemName: "square.and.arrow.up")
+            if !setAside {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: startShare) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Share evidence")
+                    .reportedAction("Share evidence", startShare)
                 }
-                .accessibilityLabel("Share evidence")
-                .reportedAction("Share evidence", startShare)
             }
         }
-        .sheet(item: $sharing, onDismiss: finishShare) { ShareSheet(items: $0.items) }
+        .sheet(item: $sharing, onDismiss: finishShare) { request in
+            ShareSheet(items: request.items) { destination, completed in
+                // The sheet's own end (item 200): the bundle and the reason the request was opened with, whichever of
+                // this and the sheet's dismissal comes first.
+                shareNote = ShareNote.line(readiness: request.readiness, completed: completed, destination: destination,
+                                           made: request.bundle?.madeForTheDestination, mirrored: current.isMirrored)
+            }
+        }
         .task(id: current.id) {   // item 52
-            guard Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive) else { return }
+            guard Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive, setAside: setAside) else { return }
             lastHeard = await engine.lastHeard(session: current.id)
         }
     }
@@ -115,9 +145,10 @@ struct EventDetailView: View {
         guard sharing == nil, !openingShare else { return }
         openingShare = true
         defer { openingShare = false }
-        let bundle = await EvidenceBundleItem.forShare(of: current, log: eventStore.events, exporter: exporter)
-        bundleItem = bundle
-        sharing = ShareRequest(items: shareItems(bundle: bundle))
+        let offer = await EvidenceBundleItem.offer(of: current, log: eventStore.events, exporter: exporter)
+        bundleItem = offer.item
+        shareNote = nil
+        sharing = ShareRequest(items: shareItems(bundle: offer.item), bundle: offer.item, readiness: offer.readiness)
     }
 
     /// Once the sheet is gone: its bundle removed off the main thread, which never waits on one still being made.
@@ -127,19 +158,28 @@ struct EventDetailView: View {
         Task.detached { item.finish() }
     }
 
+    /// The files the media section shows, the first camera's and the second's: a live event's as its Share and its
+    /// upload have them, a set-aside record's through the store's own two for it, which take nothing through a media
+    /// folder that is a link (ADR 0078's decision 5; item 226's Codex-5).
+    static func shownMedia(of event: Event, in store: EventStore, setAside: Bool) -> (primary: URL?, secondary: URL?) {
+        setAside ? (store.setAsideMediaURL(for: event), store.setAsideSecondaryMediaURL(for: event))
+                 : (store.mediaURL(for: event), store.secondaryMediaURL(for: event))
+    }
+
     @ViewBuilder
     private var mediaSection: some View {
+        let shown = Self.shownMedia(of: current, in: eventStore, setAside: setAside)
         VStack(alignment: .leading, spacing: 8) {
             if let label = captureLabel(camera: current.primaryCamera, duration: current.primaryDuration) {
                 Text(label).font(.caption).foregroundStyle(.secondary)
             }
-            EvidenceMediaView(url: eventStore.mediaURL(for: current),
+            EvidenceMediaView(url: shown.primary,
                               fallbackThumbnail: current.thumbnailData)
             if current.secondaryMediaFilename != nil {
                 if let label = captureLabel(camera: current.secondaryCamera, duration: current.secondaryDuration) {
                     Text(label).font(.caption).foregroundStyle(.secondary).padding(.top, 4)
                 }
-                EvidenceMediaView(url: eventStore.secondaryMediaURL(for: current),
+                EvidenceMediaView(url: shown.secondary,
                                   fallbackThumbnail: nil)
             }
             // The storage cap removed the local files, and none remain in iCloud: before their first upload or after
@@ -168,7 +208,7 @@ struct EventDetailView: View {
             // the owner can retry for the rest. Offered only where a copy can exist (item 118):
             // never after a capture that never happened, or for this iPhone's events that never
             // uploaded.
-            if current.mayLackAFileHere || downloadIncomplete, !current.isStateChange,
+            if !setAside, current.mayLackAFileHere || downloadIncomplete, !current.isStateChange,
                entitlements.proActive, current.mediaDiscarded != true, current.fullCaptureMayBeInICloud {
                 downloadSection
             }
@@ -251,16 +291,20 @@ struct EventDetailView: View {
             if let thermal = current.thermalStateSummary {
                 row("Phone temperature", thermal)   // item 38, choice 3
             }
-            if Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive) {
+            if Heartbeat.showsLastHeard(for: current, pro: entitlements.proActive, setAside: setAside) {
                 row("Last heard from", Heartbeat.lastHeardText(lastHeard))
             }
-            HStack {
-                Text("Exfiltration").foregroundStyle(.secondary)
-                Spacer()
-                Label(holdReason == nil ? current.cloudSyncState.displayName : "Local only", systemImage: "icloud")
-                    .foregroundStyle(holdReason == nil ? syncColor : .secondary)
+            if CloudSyncState.showsBadge(setAside: setAside, alsoInLog: alsoInLog) {
+                HStack {
+                    Text("Exfiltration").foregroundStyle(.secondary)
+                    Spacer()
+                    let badge = current.cloudSyncState.badge(held: holdReason != nil, setAside: setAside)
+                    Label(badge, systemImage: "icloud")
+                        .foregroundStyle(holdReason == nil ? syncColor : .secondary)
+                        .reportedOnScreen(badge)
+                }
+                .font(.subheadline)
             }
-            .font(.subheadline)
             if let holdReason {
                 Text(holdReason.explanation)
                     .font(.caption).foregroundStyle(.secondary)
@@ -289,6 +333,9 @@ struct EventDetailView: View {
     }
 
     private var syncColor: Color {
+        // It never uploads (item 213), and its badge is what the file recorded, never a state checked now, so never
+        // green (item 227's DS-2).
+        if setAside { return .secondary }
         switch current.cloudSyncState {
         case .synced:    return .green
         case .pending:   return .orange
@@ -329,6 +376,9 @@ struct EvidenceMediaView: View {
     let url: URL?
     let fallbackThumbnail: Data?
 
+    /// The words over a thumbnail shown in place of a photo or clip that is not on this phone.
+    static let thumbnailOnly = "Thumbnail only - full media not on this device"
+
     // Loaded once per url (via .task) rather than rebuilt on every body pass — a
     // fresh AVPlayer per render restarted playback, and reading the still on the
     // main thread hitched the scroll.
@@ -361,7 +411,8 @@ struct EvidenceMediaView: View {
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottom) {
-                        Text("Thumbnail only - full media not on this device")
+                        Text(Self.thumbnailOnly)
+                            .reportedOnScreen(Self.thumbnailOnly)
                             .font(.caption2)
                             .padding(6)
                             .background(.ultraThinMaterial)
@@ -403,21 +454,31 @@ struct EvidenceMediaView: View {
     }
 }
 
-/// What one share sheet sends, fixed when Share opens it (item 90, phase 4).
+/// What one share sheet sends, fixed when Share opens it (item 90, phase 4), with its bundle and, when it has none, the
+/// signer's reason, for the line after the share (item 200).
 struct ShareRequest: Identifiable {
     let id = UUID()
     let items: [Any]
+    var bundle: EvidenceBundleItem?
+    var readiness: EvidenceExportReadiness?
 }
 
 /// Thin wrapper around `UIActivityViewController` for exporting an event's
-/// evidence (text summary + media file) via the system share sheet.
+/// evidence (text summary + media file) via the system share sheet. `ended` hears the sheet's end: the destination
+/// picked, and whether the share completed (false when it was cancelled; item 200).
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
+    var ended: @MainActor (UIActivity.ActivityType?, Bool) -> Void = { _, _ in }
     func makeUIViewController(context: Context) -> UIActivityViewController {
         #if DEBUG
         context.environment.onScreenRecorder?.handed(items)   // what a test that lays out the screen reads
         #endif
-        return UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let ended = ended
+        controller.completionWithItemsHandler = { destination, completed, _, _ in
+            MainActor.assumeIsolated { ended(destination, completed) }   // UIKit calls it on the main thread
+        }
+        return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

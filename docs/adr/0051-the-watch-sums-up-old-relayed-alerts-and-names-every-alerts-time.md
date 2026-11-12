@@ -12,6 +12,8 @@
 - **Amended 2026-10-19 by ADR 0052** (1.8 (75)): path 4 below is out of date. iCloud reaches the watch from its own
   iPhone also while connected through it, and each iCloud push now passes through the watch's alert extension; an
   old alert joining the summary removes iCloud's copy of its event from the list.
+- **Superseded in part by ADR 0079** (1.12): the wake of path 2 is no longer held until the alert is handled; it is
+  given back after 10 seconds at the latest.
 - **Date:** 2026-10-18
 
 ## Context

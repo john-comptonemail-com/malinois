@@ -65,6 +65,20 @@ struct KeychainEvidenceKeyList: EvidenceKeyListStore {
     func write(_ list: EvidenceKeyList) -> Bool { KeychainService.setEvidenceKeyList(list) }
 }
 
+/// Why Share can or cannot offer a record's bundle now (item 200): the event's screen says why a share went without it.
+enum EvidenceExportReadiness: Equatable, Sendable {
+    /// The bundle can be offered.
+    case ready
+    /// This phone has no signature of the record: another device's copy, a record from before the first certification,
+    /// or one not signed yet. No bundle is expected.
+    case notSigned
+    /// No certified key can sign the export: a new install or iPhone, or a key App Attest lost, until Apple certifies the next.
+    case noCertifiedKey
+    /// Not now: the signature file cannot be read, the log on disk is not compared yet in this launch, or a signed record
+    /// it found gone is not named yet.
+    case notNow
+}
+
 actor EvidenceSigner {
     private typealias Entry = EvidenceSignatureFile.Entry
 
@@ -426,6 +440,14 @@ actor EvidenceSigner {
         loadIfNeeded() && records[record] != nil
     }
 
+    /// What Settings shows of the signing key (item 199): the certified key in use, or that a key waits for Apple's
+    /// certification (before the install's first, or after App Attest lost one, until the next is certified); nil where
+    /// this iPhone cannot sign (App Attest not supported) and while the signature file cannot be read now.
+    func signingKey() -> SigningKey? {
+        guard keys.isSupported, loadIfNeeded() else { return nil }
+        return current.map(SigningKey.certified) ?? .waitingForApple
+    }
+
     /// Runs `join` while no signature can be made (the signing turn held, as a pass or a share holds it), handing it what
     /// this phone signed for `record`'s photos and clips, for a download from iCloud to be compared with (item 190's A4,
     /// its download half): by slot ("primary", "secondary"), the digest of the latest revision naming it, among the
@@ -466,9 +488,20 @@ actor EvidenceSigner {
     /// 401fe979, the owner's "a"). Never while the log failed to load, when a signed record it lost would not be named
     /// gone. A write of the log a pass could not compare is compared first (codex-2 on 424d8ce, the owner's "a").
     func canExport(_ record: UUID) async -> Bool {
-        guard loadIfNeeded() else { return false }
+        await exportReadiness(record) == .ready
+    }
+
+    /// Why Share can or cannot offer `record`'s bundle now (item 200), by `canExport`'s conditions: ready exactly when it
+    /// can. The signature file not readable now, the log on disk not compared yet in this launch, and a signed record it
+    /// found gone not named yet are each "not now"; a record with no signature of this phone's is "not signed"; a signed
+    /// record with no certified key to sign its export is "no certified key".
+    func exportReadiness(_ record: UUID) async -> EvidenceExportReadiness {
+        guard loadIfNeeded() else { return .notNow }
         await passWhatWasKept()
-        return records[record] != nil && current != nil && lastHeld != nil && unnamedGone.isEmpty
+        guard records[record] != nil else { return .notSigned }
+        guard current != nil else { return .noCertifiedKey }
+        guard lastHeld != nil, unnamedGone.isEmpty else { return .notNow }
+        return .ready
     }
 
     /// Waits until no pass or export is signing, then signs alone until `finishSigning()`.
@@ -620,8 +653,10 @@ actor EvidenceSigner {
     /// counter the file already accounts for is thrown away and asked for again, each ask moving the count on, so no counter is
     /// kept twice and none goes missing. At most `maxAsksPastTheFile` at a time: past that the record waits for a later write.
     /// The file keeps nothing of what is thrown away, so a bundle looks the same whether the count went back or not. The phone's
-    /// log says how many were thrown away, on every way out (item 206). No line means nothing was thrown away, never that the
-    /// count did not go back: a stop that loses a signature and takes the count back over it leaves nothing to throw away.
+    /// log says how many were thrown away, on every way out short of a kill (item 206): a kill in the middle of the asking runs
+    /// no `defer` (item 207). No line means nothing was thrown away, unless the app was killed in the middle of the asking; it
+    /// never means the count did not go back: a stop that loses a signature and takes the count back over it leaves nothing
+    /// to throw away.
     private func assertionPastTheFile(over bytes: Data, key: Data) async throws -> Data {
         let hash = EvidenceHash.sha256(bytes)
         var thrownAway = 0

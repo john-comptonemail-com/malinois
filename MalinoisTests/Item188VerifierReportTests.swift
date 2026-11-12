@@ -76,15 +76,15 @@ final class Item188VerifierReportTests: XCTestCase {
         try relabel(second, from: "malinois-evidence-bundle/2", to: "malinois-evidence-bundle/1")
         var outcome = MalinoisVerifier.run([second.path, "--root", try rootFile(named).path], appIDHash: testAppHash)
         XCTAssertEqual(outcome.status, 1, outcome.text)
-        XCTAssertTrue(outcome.text.contains("  - the bundle names the format malinois-evidence-bundle/1, but what it holds is in "
-                                            + "malinois-evidence-bundle/2 (it holds an unkept statement)\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("  - the bundle names the format malinois-evidence-bundle/1, but what it contains is in "
+                                            + "malinois-evidence-bundle/2 (it contains an unkept statement)\n"), outcome.text)
         let plain = try TestPhone()
         let first = try bundle(plain, gap: false)
         try relabel(first, from: "malinois-evidence-bundle/1", to: "malinois-evidence-bundle/2")
         outcome = MalinoisVerifier.run([first.path, "--root", try rootFile(plain).path], appIDHash: testAppHash)
         XCTAssertEqual(outcome.status, 1, outcome.text)
-        XCTAssertTrue(outcome.text.contains("  - the bundle names the format malinois-evidence-bundle/2, but what it holds is in "
-                                            + "malinois-evidence-bundle/1 (it holds no unkept statement)\n"), outcome.text)
+        XCTAssertTrue(outcome.text.contains("  - the bundle names the format malinois-evidence-bundle/2, but what it contains is in "
+                                            + "malinois-evidence-bundle/1 (it contains no unkept statement)\n"), outcome.text)
     }
 
     /// A statement names counters below its own alone: one naming a counter at or above its own leaves that counter

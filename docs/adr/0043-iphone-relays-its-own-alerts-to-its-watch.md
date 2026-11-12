@@ -12,6 +12,8 @@
   faster tap; the relay stays (Consequences). Amended 2026-10-28 (1.8.2, BACKLOG 155's A10): after a failed
   activation the waiting alerts keep waiting, and a later alert or a foreground asks WatchConnectivity to activate
   again, after a wait that doubles from 5 seconds up to 10 minutes (decision 2).
+- **Superseded in part by ADR 0079** (1.12): decision 3's wake rule. A link wake is given back after 10 seconds at
+  the latest, whatever is still in flight.
 - **Date:** 2026-10-12
 - **Amended 2026-10-17** (1.8, BACKLOG 124's F10): decision 1 relays a cancelled countdown too.
 - **Amended 2026-10-18 by ADR 0051** (1.8 (73), BACKLOG 134): decision 3's late-alert time becomes a time on every

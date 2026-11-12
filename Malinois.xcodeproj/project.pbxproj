@@ -92,6 +92,7 @@
 		B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000012 /* ArmingView.swift */; };
 		B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000013 /* ArmedView.swift */; };
 		B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000014 /* EventLogView.swift */; };
+		C12200000000000000000012 /* SetAsideLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12200000000000000000002 /* SetAsideLogView.swift */; };
 		B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000015 /* EventDetailView.swift */; };
 		C1900000000000000000010E /* EvidenceBundleItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000000E /* EvidenceBundleItem.swift */; };
 		C1900000000000000000030B /* Item90ShareTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1900000000000000000020B /* Item90ShareTests.swift */; };
@@ -107,6 +108,8 @@
 		C16000000000000000000016 /* PINStrength.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000006 /* PINStrength.swift */; };
 		C1600000000000000000001C /* DisarmTip.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1600000000000000000000C /* DisarmTip.swift */; };
 		C13100000000000000000011 /* FirstArmBriefing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13100000000000000000001 /* FirstArmBriefing.swift */; };
+		C19900000000000000000011 /* SigningKeyRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19900000000000000000001 /* SigningKeyRow.swift */; };
+		C12200000000000000000011 /* SetAsideLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12200000000000000000001 /* SetAsideLog.swift */; };
 		C16000000000000000000019 /* WatchAlertMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000009 /* WatchAlertMessage.swift */; };
 		B1B2C3D4E5F6000000000314 /* Heartbeat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000314 /* Heartbeat.swift */; };
 		B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000021 /* DryRunView.swift */; };
@@ -140,6 +143,12 @@
 		E1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */; };
 		E1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */; };
 		E1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */; };
+		E1D2C3D4E5F6000000000083 /* Item211MarkerWatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000083 /* Item211MarkerWatchTests.swift */; };
+		E1D2C3D4E5F6000000000084 /* Item212WatchWakeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000084 /* Item212WatchWakeTests.swift */; };
+		E1D2C3D4E5F6000000000085 /* Item201MirrorCameraTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000085 /* Item201MirrorCameraTests.swift */; };
+		E1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */; };
+		E1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */; };
+		E1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */; };
 		E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */; };
 		E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */; };
 		E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */; };
@@ -265,6 +274,8 @@
 		C16E00000000000000000025 /* WatchAlertStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16E00000000000000000005 /* WatchAlertStatus.swift */; };
 		C13400000000000000000011 /* WatchRelayInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13400000000000000000001 /* WatchRelayInbox.swift */; };
 		C17500000000000000000011 /* WatchAlertPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17500000000000000000001 /* WatchAlertPairing.swift */; };
+		C21200000000000000000011 /* WatchLinkWakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21200000000000000000001 /* WatchLinkWakes.swift */; };
+		C21200000000000000000012 /* WatchLinkWakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21200000000000000000001 /* WatchLinkWakes.swift */; };
 		C16E00000000000000000026 /* WatchAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16E00000000000000000006 /* WatchAppDelegate.swift */; };
 		C16E00000000000000000027 /* WatchAlertMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000009 /* WatchAlertMessage.swift */; };
 		C19000000000000000000101 /* EvidenceAuthenticatorData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19000000000000000000001 /* EvidenceAuthenticatorData.swift */; };
@@ -449,6 +460,7 @@
 		A1B2C3D4E5F6000000000012 /* ArmingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmingView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000013 /* ArmedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000014 /* EventLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventLogView.swift; sourceTree = "<group>"; };
+		C12200000000000000000002 /* SetAsideLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetAsideLogView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000015 /* EventDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
 		C1900000000000000000000E /* EvidenceBundleItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvidenceBundleItem.swift; sourceTree = "<group>"; };
 		C1900000000000000000020B /* Item90ShareTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item90ShareTests.swift; sourceTree = "<group>"; };
@@ -464,6 +476,8 @@
 		C16000000000000000000006 /* PINStrength.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINStrength.swift; sourceTree = "<group>"; };
 		C1600000000000000000000C /* DisarmTip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisarmTip.swift; sourceTree = "<group>"; };
 		C13100000000000000000001 /* FirstArmBriefing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstArmBriefing.swift; sourceTree = "<group>"; };
+		C19900000000000000000001 /* SigningKeyRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningKeyRow.swift; sourceTree = "<group>"; };
+		C12200000000000000000001 /* SetAsideLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetAsideLog.swift; sourceTree = "<group>"; };
 		C16000000000000000000009 /* WatchAlertMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAlertMessage.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000314 /* Heartbeat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Heartbeat.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000021 /* DryRunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DryRunView.swift; sourceTree = "<group>"; };
@@ -502,6 +516,12 @@
 		D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item188VerifierReportTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item190DownloadCheckTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item183InvariantTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000083 /* Item211MarkerWatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item211MarkerWatchTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000084 /* Item212WatchWakeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item212WatchWakeTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000085 /* Item201MirrorCameraTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item201MirrorCameraTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item199SigningKeyRowTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item200ShareNoteTests.swift; sourceTree = "<group>"; };
+		D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item122SetAsideLogTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144ArmPINCheckTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152SettingsGuardTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152BiometricBindingTests.swift; sourceTree = "<group>"; };
@@ -617,6 +637,7 @@
 		C16E00000000000000000005 /* WatchAlertStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAlertStatus.swift; sourceTree = "<group>"; };
 		C13400000000000000000001 /* WatchRelayInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchRelayInbox.swift; sourceTree = "<group>"; };
 		C17500000000000000000001 /* WatchAlertPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAlertPairing.swift; sourceTree = "<group>"; };
+		C21200000000000000000001 /* WatchLinkWakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchLinkWakes.swift; sourceTree = "<group>"; };
 		C17500000000000000000002 /* WatchNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchNotificationService.swift; sourceTree = "<group>"; };
 		C17500000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C17500000000000000000006 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -763,6 +784,8 @@
 				C16000000000000000000006 /* PINStrength.swift */,
 				C1600000000000000000000C /* DisarmTip.swift */,
 				C13100000000000000000001 /* FirstArmBriefing.swift */,
+				C19900000000000000000001 /* SigningKeyRow.swift */,
+				C12200000000000000000001 /* SetAsideLog.swift */,
 				C16000000000000000000009 /* WatchAlertMessage.swift */,
 				A1B2C3D4E5F6000000000314 /* Heartbeat.swift */,
 			);
@@ -858,6 +881,7 @@
 				A1B2C3D4E5F6000000000012 /* ArmingView.swift */,
 				A1B2C3D4E5F6000000000013 /* ArmedView.swift */,
 				A1B2C3D4E5F6000000000014 /* EventLogView.swift */,
+				C12200000000000000000002 /* SetAsideLogView.swift */,
 				A1B2C3D4E5F6000000000015 /* EventDetailView.swift */,
 				C1900000000000000000000E /* EvidenceBundleItem.swift */,
 				A1B2C3D4E5F6000000000021 /* DryRunView.swift */,
@@ -931,6 +955,12 @@
 				D1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift */,
 				D1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift */,
 				D1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift */,
+				D1D2C3D4E5F6000000000083 /* Item211MarkerWatchTests.swift */,
+				D1D2C3D4E5F6000000000084 /* Item212WatchWakeTests.swift */,
+				D1D2C3D4E5F6000000000085 /* Item201MirrorCameraTests.swift */,
+				D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */,
+				D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */,
+				D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */,
 				D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */,
 				D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */,
 				D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */,
@@ -1073,6 +1103,7 @@
 				C16E00000000000000000005 /* WatchAlertStatus.swift */,
 				C13400000000000000000001 /* WatchRelayInbox.swift */,
 				C17500000000000000000001 /* WatchAlertPairing.swift */,
+				C21200000000000000000001 /* WatchLinkWakes.swift */,
 				C16E00000000000000000003 /* Assets.xcassets */,
 				C16E00000000000000000008 /* PrivacyInfo.xcprivacy */,
 				C16E00000000000000000004 /* MalinoisWatch.entitlements */,
@@ -1397,6 +1428,8 @@
 				C16000000000000000000016 /* PINStrength.swift in Sources */,
 				C1600000000000000000001C /* DisarmTip.swift in Sources */,
 				C13100000000000000000011 /* FirstArmBriefing.swift in Sources */,
+				C19900000000000000000011 /* SigningKeyRow.swift in Sources */,
+				C12200000000000000000011 /* SetAsideLog.swift in Sources */,
 				C16000000000000000000019 /* WatchAlertMessage.swift in Sources */,
 				B1B2C3D4E5F6000000000314 /* Heartbeat.swift in Sources */,
 				B1B2C3D4E5F6000000000301 /* Log.swift in Sources */,
@@ -1416,6 +1449,7 @@
 				B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */,
 				B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */,
 				B1B2C3D4E5F6000000000014 /* EventLogView.swift in Sources */,
+				C12200000000000000000012 /* SetAsideLogView.swift in Sources */,
 				B1B2C3D4E5F6000000000015 /* EventDetailView.swift in Sources */,
 				C1900000000000000000010E /* EvidenceBundleItem.swift in Sources */,
 				B1B2C3D4E5F6000000000021 /* DryRunView.swift in Sources */,
@@ -1472,6 +1506,12 @@
 				E1D2C3D4E5F6000000000080 /* Item188VerifierReportTests.swift in Sources */,
 				E1D2C3D4E5F6000000000081 /* Item190DownloadCheckTests.swift in Sources */,
 				E1D2C3D4E5F6000000000082 /* Item183InvariantTests.swift in Sources */,
+				E1D2C3D4E5F6000000000083 /* Item211MarkerWatchTests.swift in Sources */,
+				E1D2C3D4E5F6000000000084 /* Item212WatchWakeTests.swift in Sources */,
+				E1D2C3D4E5F6000000000085 /* Item201MirrorCameraTests.swift in Sources */,
+				E1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift in Sources */,
+				E1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift in Sources */,
+				E1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift in Sources */,
 				E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */,
 				E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */,
 				E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */,
@@ -1524,6 +1564,7 @@
 				C1600000000000000000004D /* Item116ReviewTests.swift in Sources */,
 				C16000000000000000000018 /* Item57WatchAlertsTests.swift in Sources */,
 				C16E0000000000000000002E /* WatchAlertStatus.swift in Sources */,
+				C21200000000000000000012 /* WatchLinkWakes.swift in Sources */,
 				C13400000000000000000012 /* WatchRelayInbox.swift in Sources */,
 				C17500000000000000000012 /* WatchAlertPairing.swift in Sources */,
 				C17500000000000000000013 /* WatchNotificationService.swift in Sources */,
@@ -1602,6 +1643,7 @@
 				C16E00000000000000000022 /* ContentView.swift in Sources */,
 				C16E00000000000000000026 /* WatchAppDelegate.swift in Sources */,
 				C16E00000000000000000025 /* WatchAlertStatus.swift in Sources */,
+				C21200000000000000000011 /* WatchLinkWakes.swift in Sources */,
 				C17900000000000000000012 /* StoredJSON.swift in Sources */,
 				C13400000000000000000011 /* WatchRelayInbox.swift in Sources */,
 				C17500000000000000000011 /* WatchAlertPairing.swift in Sources */,
@@ -1781,7 +1823,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1791,7 +1833,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1809,7 +1851,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1819,7 +1861,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1838,7 +1880,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1855,7 +1897,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1870,7 +1912,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1879,7 +1921,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1895,7 +1937,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1904,7 +1946,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1921,7 +1963,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatch/MalinoisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1933,7 +1975,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1952,7 +1994,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "MalinoisWatch/MalinoisWatch-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1964,7 +2006,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1982,7 +2024,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -1991,7 +2033,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -2008,7 +2050,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -2017,7 +2059,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.11;
+				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;

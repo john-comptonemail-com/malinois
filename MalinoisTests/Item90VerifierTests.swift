@@ -426,7 +426,7 @@ final class Item90VerifierTests: XCTestCase {
         let outcome = MalinoisVerifier.run([try written(phone).path, "--root", try rootFile(phone).path], appIDHash: testAppHash)
         XCTAssertEqual(outcome.status, 0, outcome.text)
         XCTAssertTrue(outcome.text.contains("primary: as signed"), outcome.text)
-        XCTAssertTrue(outcome.text.contains("primary: signed with other bytes in revision 1; the bundle holds the last revision's"),
+        XCTAssertTrue(outcome.text.contains("primary: signed with other bytes in revision 1; the bundle contains the last revision's"),
                       outcome.text)
         // Unchanged, nothing is said.
         let unchanged = try TestPhone()
@@ -525,7 +525,7 @@ final class Item90VerifierTests: XCTestCase {
         // and of the key the chain stops at whether or not the bundle holds its line uncertified.
         func cutOff(_ keyID: Data, at stop: Data) -> String {
             "key \(short(keyID)): cannot be tied to the export's key; the export's chain stops at key \(short(stop)), "
-                + "which this bundle does not hold certified"
+                + "which this bundle does not certify"
         }
         let phone = try TestPhone()
         let first = try phone.certifyKey()
@@ -848,8 +848,8 @@ final class Item90VerifierTests: XCTestCase {
         XCTAssertEqual(early.status, 2, early.text)
         XCTAssertTrue(early.text.contains("was not unpacked: macOS could not unpack it. Nothing was checked."), early.text)
         let refused = [
-            ("comment-sig.zip", "its comment holds an end record's signature"),
-            ("comment-sig-24.zip", "its comment holds an end record's signature"),
+            ("comment-sig.zip", "its comment contains an end record's signature"),
+            ("comment-sig-24.zip", "its comment contains an end record's signature"),
             ("comment-fake-end.zip", "its index is not where its end record says"),
             ("unicode-path.zip", "a file carries an extra field the check does not allow"),
             ("unicode-path-index.zip", "a file carries an extra field the check does not allow"),
@@ -858,9 +858,9 @@ final class Item90VerifierTests: XCTestCase {
             ("stored-zero-after.zip", "a stored file's sizes come after its data"),
             ("stored-short.zip", "a stored file's two sizes differ"),
             ("stored-after-short.zip", "a stored file's sizes come after its data"),
-            ("folder-with-bytes.zip", "a folder's entry holds bytes"),
-            ("folder-deflated.zip", "a folder's entry holds bytes"),
-            ("folder-sized.zip", "a folder's entry holds bytes"),
+            ("folder-with-bytes.zip", "a folder's entry contains bytes"),
+            ("folder-deflated.zip", "a folder's entry contains bytes"),
+            ("folder-sized.zip", "a folder's entry contains bytes"),
             ("index-extra-long.zip", "its index is not one list of files"),
             ("leading.zip", "its index is not where its end record says"),
             ("trailing.zip", "bytes after its end"),
@@ -1026,7 +1026,8 @@ final class Item90VerifierTests: XCTestCase {
         let fields = "  2.0 unx        2 b-        2 stor 26-Oct-31 15:10 "
         XCTAssertNil(MalinoisVerifier.refusal(ofListing: listing("-rw-r--r--" + fields + "Malinois evidence 2026-10-31 0100/bundle.json")))
         XCTAssertNil(MalinoisVerifier.refusal(ofListing: listing("drwxr-xr-x" + fields + "Malinois evidence 2026-10-31 0100/")))
-        XCTAssertNotNil(MalinoisVerifier.refusal(ofListing: listing("lrwxr-xr-x" + fields + "bundle/linked")), "a link")
+        XCTAssertEqual(MalinoisVerifier.refusal(ofListing: listing("lrwxr-xr-x" + fields + "bundle/linked")),
+                       "it contains a link (bundle/linked)", "a link")
         XCTAssertNotNil(MalinoisVerifier.refusal(ofListing: listing("-rw-r--r--" + fields + "../escaped.txt")), "outside")
         XCTAssertNotNil(MalinoisVerifier.refusal(ofListing: listing("-rw-r--r--" + fields + "a/../../escaped.txt")), "outside, further in")
         XCTAssertNotNil(MalinoisVerifier.refusal(ofListing: listing("-rw-r--r--" + fields + "/etc/escaped")), "a path from the root")
@@ -1141,7 +1142,7 @@ final class Item90VerifierTests: XCTestCase {
         try runTool("/usr/bin/ditto", ["-c", "-k", "--norsrc", other.path, none.path])
         outcome = MalinoisVerifier.run([none.path, "--root", root.path], appIDHash: testAppHash)
         XCTAssertEqual(outcome.status, 2, outcome.text)
-        XCTAssertTrue(outcome.text.hasPrefix("\(none.path) holds no Malinois evidence bundle"), outcome.text)
+        XCTAssertTrue(outcome.text.hasPrefix("\(none.path) contains no Malinois evidence bundle"), outcome.text)
         XCTAssertFalse(outcome.text.contains("malinois-verify-"), outcome.text)
     }
 
@@ -1281,7 +1282,7 @@ final class Item90VerifierTests: XCTestCase {
         outcome = MalinoisVerifier.run([empty.path])
         XCTAssertEqual(outcome.status, 2, outcome.text)
         assertTheSenderWroteNothing(outcome)
-        XCTAssertTrue(outcome.text.contains(" holds no Malinois evidence bundle"), outcome.text)
+        XCTAssertTrue(outcome.text.contains(" contains no Malinois evidence bundle"), outcome.text)
 
         let named = folder.deletingLastPathComponent().appendingPathComponent(hostileLine, isDirectory: true)
         try FileManager.default.moveItem(at: folder, to: named)

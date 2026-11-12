@@ -85,6 +85,43 @@ final class Item183InvariantTests: XCTestCase {
         engine.disarm()
     }
 
+    /// Home says "The log itself is saving normally." only while it is. The journal's notice ends with that sentence,
+    /// and when the log's own write fails too (a full disk fails both), Home showed it beside "New events aren't being
+    /// saved to this device": two notices that contradict each other. Found by a sweep of the documents against the
+    /// code, and reached by one more way since item 220's defect 3 (an event that cannot be encoded fails both). The
+    /// owner, 2026-11-10: "as you recommend": the journal's notice shows only while the log is saving, its words as
+    /// they were. On the real Home, with a journal that cannot be written, then a log that cannot either. Written
+    /// before the fix, red at that commit.
+    func testHomeSaysTheLogIsSavingOnlyWhileItIs() throws {
+        let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
+        let files = FileManager.default
+        try files.createDirectory(at: root.appendingPathComponent("events.journal"), withIntermediateDirectories: true)
+        let (engine, settings, store, cloud) = engine(.free)
+        func home() throws -> [String] {
+            try shownOnScreen(HomeView().environmentObject(engine).environmentObject(settings).environmentObject(cloud)
+                .environmentObject(store).environmentObject(engine.entitlements)).shown
+        }
+        let now = Date()
+        store.add(Event(startDate: now, endDate: now, triggeredSensors: [.touch], cloudSyncState: .localOnly))
+        store.drainIOForTesting()
+        XCTAssertTrue(store.journalDegraded, "the journal's append failed")
+        XCTAssertFalse(pump(until: { store.persistDegraded }, timeout: 0.3), "and the log's write landed")
+        let journalOnly = try home()
+        XCTAssertTrue(journalOnly.contains(HomeView.journalNotice), "the journal's notice, while the log is saving: \(journalOnly)")
+        XCTAssertFalse(journalOnly.contains(HomeView.logNotice))
+
+        // Now the log cannot be written either: the store's folder refuses its replacement.
+        let permissions = try XCTUnwrap(files.attributesOfItem(atPath: root.path)[.posixPermissions])
+        try files.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+        defer { try? files.setAttributes([.posixPermissions: permissions], ofItemAtPath: root.path) }
+        store.add(Event(startDate: now, endDate: now, triggeredSensors: [.motion], cloudSyncState: .localOnly))
+        XCTAssertTrue(pump(until: { store.persistDegraded }, timeout: 5), "the log's write failed")
+        XCTAssertTrue(store.journalDegraded, "and the journal's append still does")
+        let both = try home()
+        XCTAssertTrue(both.contains(HomeView.logNotice), "the log's notice: \(both)")
+        XCTAssertFalse(both.contains(HomeView.journalNotice), "and none beside it saying the log is saving normally")
+    }
+
     /// An armed free install on a store that can write neither its journal nor its log, with both flags Home shows up,
     /// for `body`; they are still up after it. A folder where the journal file goes fails every append, as in
     /// Item73RegressionTests, and a closed store folder refuses the log's replacement, as in Item165ReviewTests.

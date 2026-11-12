@@ -128,6 +128,8 @@ struct PINPad: View {
             }
             .buttonStyle(.plain)
             .disabled(isSubmit && !canSubmit)
+            // For a test that lays out a screen with a pad on it, to type on the pad itself (item 232).
+            .reportedActionAsDrawn("PIN key " + key) { tap(key) }
         }
     }
 
@@ -553,6 +555,7 @@ struct PINEntryView: View {
                         .modifier(Shake(animatableData: shakes))
                     Button("Cancel", action: onCancel)
                         .foregroundStyle(.white.opacity(0.7))
+                        .reportedAction("Cancel: " + title) { onCancel() }
                 }
                 .padding(40)
                 .frame(maxWidth: .infinity, minHeight: room.size.height)

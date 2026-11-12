@@ -13,6 +13,8 @@
   (BACKLOG 141): that tidy-up now runs beside the queue. Amended 2026-10-20 for 1.8 (77) after TestFlight 76 (the
   owner's "A"): decisions 3 and 5. The relayed copy always asks for an alert as in 74, since the list says iCloud's copy arrived,
   not that it tapped; on the owner's watch, with the app closed, tamper alerts came silently.
+- **Superseded in part by ADR 0079** (1.12): decision 4's deadline, for the reads before posts. The alerts of one run
+  share the 2 seconds; a clean-up read keeps its own.
 - **Date:** 2026-10-19
 
 ## Context

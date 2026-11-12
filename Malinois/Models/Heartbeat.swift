@@ -97,9 +97,11 @@ enum Heartbeat {
     }
 
     /// Whether an Event Log record shows when its phone was last heard from: an arm record from
-    /// another phone, on Pro.
-    static func showsLastHeard(for event: Event, pro: Bool) -> Bool {
-        pro && event.stateChange == "armed" && event.isMirrored
+    /// another phone, on Pro. Never a record of a set-aside log, which asks nothing of iCloud
+    /// (item 213): its row would say "Checking iCloud" for good. The event's screen asks this for
+    /// both the read and the row, so the two cannot disagree.
+    static func showsLastHeard(for event: Event, pro: Bool, setAside: Bool) -> Bool {
+        !setAside && pro && event.stateChange == "armed" && event.isMirrored
     }
 
     /// The detail row's words (nil: the reader has not answered yet).

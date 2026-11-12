@@ -101,7 +101,7 @@ final class Item90EvidenceBundleTests: XCTestCase {
     /// The README's words as the owner approved them (2026-10-31; its sentence on what the verifier prints, 2026-11-04:
     /// "a"): a change to them is a change for the owner to approve.
     private static let approvedReadme = [
-        "This folder holds one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
+        "This folder contains one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
             + "it was signed, the photos, clips and sensor traces it names, the phone's signatures, and Apple's certification "
             + "of the key that made them.",
         "",

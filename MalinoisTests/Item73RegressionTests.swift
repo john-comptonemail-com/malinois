@@ -437,7 +437,8 @@ final class Item73RegressionTests: XCTestCase {
         quarantined.add(Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .localOnly))
         quarantined.flush()
         let reloaded = EventStore()
-        XCTAssertFalse(reloaded.logWasQuarantined, "a clean load clears the notice")
+        XCTAssertFalse(reloaded.logWasQuarantined, "a clean load clears the launch's own flag (since item 122 Home's notice "
+                       + "follows the set-aside logs kept)")
         XCTAssertEqual(reloaded.events.count, 1)
     }
 
@@ -455,6 +456,20 @@ final class Item73RegressionTests: XCTestCase {
         store.add(Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], cloudSyncState: .localOnly))
         XCTAssertTrue(store.journalDegraded, "the failed append reaches the owner's screen, not only the console")
         XCTAssertEqual(store.events.count, 1, "the record still lands in memory and through the full write")
+    }
+
+    /// Item 220's defect 3 (an outside reading of 1.11's public source; the owner, 2026-11-09: into 1.12): an event that
+    /// does not encode has no journal line, and the append returned without a word, where every other journal failure
+    /// raises the flag Home renders. No event the app makes is known to fail to encode; one with a number that is not
+    /// finite does. Written before the fix, red at that commit.
+    func testAnEventTheJournalCannotEncodeIsSurfacedToo() {
+        let store = EventStore()
+        XCTAssertFalse(store.journalDegraded, "nothing written yet")
+        store.add(Event(startDate: Date(), endDate: Date(), triggeredSensors: [.motion], motionTrace: [.nan],
+                        cloudSyncState: .localOnly))
+        XCTAssertNil(EventStore.journalLine(for: store.events[0]), "the test's event does not encode")
+        XCTAssertTrue(store.journalDegraded, "an event with no journal line reaches the owner's screen, as a failed append does")
+        XCTAssertEqual(store.events.count, 1, "the record is still in memory")
     }
 
     // MARK: - Review 1, R10: a refused Keychain write cannot lower the brute-force count

@@ -770,9 +770,11 @@ final class MonitoringEngine: ObservableObject {
 
     /// Logs an explicit "armed" / "disarmed" record so the timeline of when protection was
     /// on or off is auditable — the point being the disarm case: an attacker who knows the
-    /// PIN can turn monitoring off, but there's no delete affordance, so the "disarmed" entry
-    /// stands as proof of exactly when it happened (rather than the owner having to infer it
-    /// from a re-armed session's start time). Pushed to the cloud as a silent audit record
+    /// PIN can turn monitoring off, but the event log has no delete affordance, so the "disarmed"
+    /// entry stands as proof of exactly when it happened (rather than the owner having to infer it
+    /// from a re-armed session's start time). A set-aside log's Delete (1.12), which removes
+    /// records and photos from the phone behind the PIN, writes an entry here itself
+    /// (`deleteSetAsideLog`, item 234). Pushed to the cloud as a silent audit record
     /// (BACKLOG 8); a disarm additionally writes the disarm signal that fires the
     /// correctly-worded push on the owner's other devices (BACKLOG 59) — never through the
     /// tamper subscription, whose static body would be wrong and noisy for a routine arm.
@@ -1167,8 +1169,12 @@ final class MonitoringEngine: ObservableObject {
                                                  micGranted: AVAudioApplication.shared.recordPermission == .granted)
         cameraWarmGeneration += 1
         let generation = cameraWarmGeneration
+        // Each task below holds the engine until its warm-up ends or the deadline passes; the warm-up
+        // itself, which can outlast the deadline, holds it only weakly, so one that ends late does not
+        // keep the engine alive. The strong hold is written out (`[self, camera]`, item 210): left
+        // implicit, it drew the compiler's warning that the inner weak capture differs from it.
         if effectiveCameraPosition == .both && camera.supportsMultiCam {
-            Task { [camera] in
+            Task { [self, camera] in
                 do {
                     _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { [weak self] in
                         let reconfigured = try await camera.warmUpMultiCam(forClips: forClips)
@@ -1189,7 +1195,7 @@ final class MonitoringEngine: ObservableObject {
             case .auto: warmCamera = resolveAutoCamera()
             default:    warmCamera = .front   // front, both-unsupported
             }
-            Task { [camera] in
+            Task { [self, camera] in
                 do {
                     _ = try await EvidenceCapturePipeline.withDeadline(timing.warmUpDeadline) { [weak self] in
                         let reconfigured = try await camera.warmUp(forClips: forClips, camera: warmCamera)

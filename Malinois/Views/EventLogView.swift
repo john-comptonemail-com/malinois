@@ -90,13 +90,31 @@ struct EventLogView: View {
 
     var body: some View {
         let summary = Self.syncSummary(events: eventStore.events, enrollment: enrollment)
+        // What Deletes of set-aside logs left to tell (item 227's DS-5): first in the list, each until the owner
+        // dismisses it, and shown even with nothing else to list.
+        let deleteNotices = eventStore.setAsideDeletionsToTell
         return Group {
-            if eventStore.events.isEmpty {
+            if eventStore.events.isEmpty && eventStore.setAsideLogs.isEmpty && deleteNotices.isEmpty {
                 ContentUnavailableView("No events",
                                        systemImage: "checkmark.shield",
                                        description: Text("No tamper events have been recorded."))
             } else {
                 List {
+                    ForEach(deleteNotices, id: \.self) { outcome in
+                        if let notice = SetAsideLogWords.deleteNotice(for: outcome) { deleteNoticeRow(notice, of: outcome) }
+                    }
+                    // Each set-aside log at the top (item 122), read only on its own screen; the fresh log may be empty.
+                    if !eventStore.setAsideLogs.isEmpty {
+                        Section {
+                            ForEach(eventStore.setAsideLogs) { setAside in
+                                NavigationLink {
+                                    SetAsideLogView(log: setAside)
+                                } label: {
+                                    SetAsideLogRow(log: setAside)
+                                }
+                            }
+                        }
+                    }
                     if unsyncedCount > 0 {
                         // On the free tier these events never sync (cloud backup is Pro), so
                         // don't promise a sync or offer a no-op Retry — say plainly they were
@@ -129,6 +147,32 @@ struct EventLogView: View {
         // Home's authenticated navigation binding marks records seen before each
         // open/close transition. Appearance callbacks can run later than the return
         // to Home; a late callback must not clear records received after the visit.
+    }
+
+    /// What a Delete of a set-aside log left to tell (item 227's DS-5): that its photos and clips may still be on the
+    /// phone, or that nothing was deleted. Delete's screen leaves for this one, so it is said here, and it stays until
+    /// the owner presses OK: leaving the Event Log does not dismiss it, so however the screens close it is not lost.
+    private func deleteNoticeRow(_ notice: SetAsideLogWords.DeleteNotice, of outcome: SetAsideLogDeletion) -> some View {
+        let dismissed: @MainActor () -> Void = { eventStore.setAsideDeletionWasTold(outcome) }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Label(notice.title, systemImage: "exclamationmark.triangle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .reportedOnScreen(notice.title)
+                Spacer()
+                Button(SetAsideLogWords.deleteNoticeButton, action: dismissed)
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .reportedAction(SetAsideLogWords.deleteNoticeButton + ": " + notice.title, dismissed)
+            }
+            Text(notice.message)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .reportedOnScreen(notice.message)
+        }
+        .listRowSeparator(.hidden)
     }
 
     /// Offers Retry only for eligible local uploads; held evidence has a separate explanation.
@@ -216,11 +260,19 @@ struct EventLogView: View {
 
 struct EventRow: View {
     let event: Event
+    /// A record read from a set-aside log (item 213): it never uploads, so its badge says where it was when the log was
+    /// set aside, and it has no hold note.
+    var setAside = false
+    /// A set-aside record the event log also has (item 214's fable-4): no iCloud badge, since the event log's row for it
+    /// has the one that is true now. Only the set-aside log's screen sets it.
+    var alsoInLog = false
     @ObservedObject private var enrollment = CloudEnrollment.shared
     @EnvironmentObject private var entitlements: ProEntitlements
 
+    /// Why this record's upload is held, on Pro; none for a set-aside record (item 213).
     private var holdReason: CloudEnrollment.UploadHoldReason? {
-        entitlements.proActive ? enrollment.uploadHoldReason(for: event) : nil
+        guard !setAside, entitlements.proActive else { return nil }
+        return enrollment.uploadHoldReason(for: event)
     }
 
     var body: some View {
@@ -249,7 +301,9 @@ struct EventRow: View {
                     if !event.durationSummary.isEmpty {
                         Text(event.durationSummary)
                     }
-                    syncBadge
+                    if CloudSyncState.showsBadge(setAside: setAside, alsoInLog: alsoInLog) {
+                        syncBadge
+                    }
                 }
                 .font(.caption2)
                 if holdReason != nil {
@@ -275,8 +329,13 @@ struct EventRow: View {
     static func summaryColor(for event: Event) -> Color? { isAlarm(event) ? .red : nil }
 
     /// How many lines the summary may take: no limit for a row the owner must not miss, its whole sentence at every text
-    /// size (three lines cut it at the larger ones: item 190's claude-1); one otherwise.
-    static func summaryLineLimit(for event: Event) -> Int? { isAlarm(event) ? nil : 1 }
+    /// size (three lines cut it at the larger ones: item 190's claude-1), and none for the entry of a set-aside log's
+    /// Delete, whose numbers are at its sentence's end and would be cut off (item 234); one otherwise.
+    static func summaryLineLimit(for event: Event) -> Int? {
+        if isAlarm(event) { return nil }
+        if event.stateChange.flatMap(Event.setAsideDeleted(kind:)) != nil { return nil }   // item 234
+        return 1
+    }
 
     private var isVideo: Bool { event.mediaFilename?.lowercased().hasSuffix(".mov") ?? false }
 
@@ -332,6 +391,7 @@ struct EventRow: View {
         case let kind? where Event.clockChangeSeconds(kind: kind) != nil: return "clock.badge.exclamationmark"   // item 113
         case let kind? where Event.resumedSeconds(kind: kind) != nil: return "eye"   // item 153's MAL-06
         case let kind? where Event.sirenElsewhereDevice(kind: kind) != nil: return "headphones"   // 1.8.2's step 26
+        case let kind? where Event.setAsideDeleted(kind: kind) != nil: return "trash"   // item 234
         case let kind? where Event.signedRecordsGone(kind: kind) != nil || kind == Event.signaturesMissingKind:
             return "exclamationmark.triangle.fill"   // items 182 and 190, in red
         default:         return "camera.metering.none"
@@ -347,13 +407,18 @@ struct EventRow: View {
         // can have: the cloud copy is the entire reason that record survives an attacker who
         // deletes the app, and silence about it read as success.
         let color: Color = {
+            // It never uploads (item 213), and its badge is what the file recorded, never a state checked now, so
+            // never green (item 227's DS-2).
+            if setAside { return .secondary }
             switch event.cloudSyncState {
             case .synced:    return .green
             case .pending:   return .orange
             case .localOnly: return .red
             }
         }()
-        Label(holdReason == nil ? event.cloudSyncState.displayName : "Local only", systemImage: "icloud")
+        let badge = event.cloudSyncState.badge(held: holdReason != nil, setAside: setAside)
+        Label(badge, systemImage: "icloud")
             .foregroundStyle(holdReason == nil ? color : .secondary)
+            .reportedOnScreen(badge)
     }
 }

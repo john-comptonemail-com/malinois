@@ -8,7 +8,8 @@
 //  it, in the log's order), the retention, absence and unkept statements (item 188) and the export statement, every
 //  other as its hash; the phone's notes; and the attachments the record's latest revision signed, from the files on the
 //  phone. iOS zips the folder. A record with no signature of this phone's has no bundle and is shared as before, as is
-//  one whose export statement no key can sign (item 187).
+//  one whose export statement no key can sign (item 187), and one whose attachments or facts are not what its latest
+//  revision signed (items 190 and 234).
 //
 
 import Foundation
@@ -34,9 +35,10 @@ struct EvidenceExporter: Sendable {
 
     /// The bundle of `record`, zipped, in a folder of its own in the temporary folder, ready to share: `log` is the event
     /// log as the app holds it. nil when the record has no signature of this phone's, no key could sign its export
-    /// statement (item 187, deepseek-1), the signature file cannot be read now, or the record's photos, clips and traces
-    /// are not the bytes its latest revision signed, on the phone or as copied (item 190). The caller removes the ZIP's
-    /// folder once the share is done.
+    /// statement (item 187, deepseek-1), the signature file cannot be read now, the record's photos, clips and traces
+    /// are not the bytes its latest revision signed, on the phone or as copied (item 190), or its facts are not the ones
+    /// that revision signed (item 234: a change not signed yet, or one whose signature failed). The caller removes the
+    /// ZIP's folder once the share is done.
     func bundle(of record: Event, log: [Event]) async throws -> URL? {
         let manager = FileManager.default
         let place = temporaryDirectory.appendingPathComponent(Self.folderPrefix + UUID().uuidString, isDirectory: true)
@@ -74,7 +76,8 @@ struct EvidenceExporter: Sendable {
     }
 
     /// What the bundle of `record` holds, from the signature file's `snapshot` and the log; nil when the record has no
-    /// signature in it.
+    /// signature in it, or when its attachments or its facts are not the ones its latest revision there signed (items
+    /// 190 and 234).
     static func contents(of record: Event, log: [Event], snapshot: EvidenceExportSnapshot,
                          mediaDirectory: URL) -> EvidenceBundle.Contents? {
         assembled(of: record, log: log, snapshot: snapshot, mediaDirectory: mediaDirectory)?.contents
@@ -130,6 +133,11 @@ struct EvidenceExporter: Sendable {
         // signed yet (a thumbnail replaced, a photo attached, a clip the limit removed) makes no bundle, which the
         // phone's own check would read as altered; the record waits for the signer's next pass.
         guard attachmentsAsSigned(of: record, mediaDirectory: mediaDirectory) == latest.attachments else { return nil }
+        // And only the facts it signed (item 234's A2, Codex-2 of the third full review): a change to the record that
+        // no revision has signed (the owner's mark after the right PIN, a wrong-PIN count, a capture's failure note),
+        // whether the signer has not come to it yet or its signature failed, makes no bundle. The ZIP went out with
+        // the earlier facts and checked out, and nothing said they were not the event's.
+        guard latest.facts == record.evidenceFacts else { return nil }
         #if DEBUG
         afterTheBytesCheckForTesting?()
         #endif
@@ -255,8 +263,9 @@ struct EvidenceExporter: Sendable {
         EvidenceBundle.Attachment(name: name, file: "\(name).bin", source: .bytes(EvidenceForm.traceBytes(samples)))
     }
 
-    /// Zips `folder` into `destination` as iOS does for uploading: the folder itself, in a standard ZIP.
-    private static func zip(_ folder: URL, to destination: URL) throws {
+    /// Zips `folder` into `destination` as iOS does for uploading: the folder itself, in a standard ZIP. Share of a set-aside
+    /// log zips its folder the same way (item 122).
+    static func zip(_ folder: URL, to destination: URL) throws {
         var coordination: NSError?
         var copying: (any Error)?
         NSFileCoordinator().coordinate(readingItemAt: folder, options: .forUploading, error: &coordination) { zipped in

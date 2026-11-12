@@ -229,7 +229,7 @@ final class Item168ReviewTests: XCTestCase {
     func testTheCopiesCheckSaysTheRecordsAreStillOnThisPhone() async throws {
         let engine = try await engineMissingItsCopies(signedInto: nil)
         await engine.checkCloudCopies()
-        XCTAssertEqual(engine.cloudResetNotice, "iCloud no longer holds this phone's records. They are still on this phone.")
+        XCTAssertEqual(engine.cloudResetNotice, "iCloud no longer has this phone's records. They are still on this phone.")
     }
 
     // MARK: - Rig

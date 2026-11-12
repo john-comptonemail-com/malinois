@@ -227,10 +227,10 @@ final class Item52HeartbeatTests: XCTestCase {
             Event(startDate: Date(), endDate: Date(), triggeredSensors: [], cloudSyncState: .synced,
                   stateChange: kind, sourceDevice: device)
         }
-        XCTAssertTrue(Heartbeat.showsLastHeard(for: record("armed", from: "iPhone Air"), pro: true))
-        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("armed", from: nil), pro: true), "this phone's own watch")
-        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("disarmed", from: "iPhone Air"), pro: true))
-        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("armed", from: "iPhone Air"), pro: false))
+        XCTAssertTrue(Heartbeat.showsLastHeard(for: record("armed", from: "iPhone Air"), pro: true, setAside: false))
+        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("armed", from: nil), pro: true, setAside: false), "this phone's own watch")
+        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("disarmed", from: "iPhone Air"), pro: true, setAside: false))
+        XCTAssertFalse(Heartbeat.showsLastHeard(for: record("armed", from: "iPhone Air"), pro: false, setAside: false))
     }
 
     /// The row says when, in the Event Log's own date words, or plainly why it cannot.

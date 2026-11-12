@@ -61,14 +61,25 @@ final class EventStore: ObservableObject {
     /// The log could not be decoded and was set aside as a timestamped backup; a fresh log has
     /// started (item 73, review 2 R2.2). Cleared by the next clean load.
     @Published private(set) var logWasQuarantined = false
+    /// The event logs set aside because they could not be read as a whole (item 122), newest first: listed after each load
+    /// (at launch, and after the unlock when the launch could not read the log), once it has set one aside, and kept until
+    /// the owner deletes one. Home says so while any is kept; the Event Log lists them at its top.
+    @Published private(set) var setAsideLogs: [SetAsideLog] = []
+    /// What Deletes of set-aside logs left to tell the owner (item 227's DS-5), each kind once, in the order they
+    /// happened: a Delete that deleted nothing, and one that removed its log and may have left the log's photos and
+    /// clips. The Event Log, where Delete's screen leaves for, shows each until the owner dismisses it there
+    /// (`setAsideDeletionWasTold`). A whole delete adds nothing and takes nothing away. Kept in memory only.
+    @Published private(set) var setAsideDeletionsToTell: [SetAsideLogDeletion] = []
     /// A birth-journal append or full sync failed, so the crash-durability promise does not
     /// hold for recent events (item 73, review 1 R6). The full log write still lands them.
     @Published private(set) var journalDegraded = false
-    /// ioQueue-confined mirror, so the main-actor hop happens only on state CHANGES.
-    nonisolated(unsafe) private var persistFailedOnQueue = false
+    /// ioQueue-confined mirror, so the main-actor hop happens only on state CHANGES. Held to the queue by its type, as
+    /// the four like it are (`QueueConfined`, item 220's defect 2): each was a field marked unsafe, kept to the queue
+    /// by its comment alone.
+    nonisolated private let persistFailedOnQueue = QueueConfined(false, onQueueLabelled: EventStore.ioQueueLabel)
     /// Media a limit dropped while the log write before its deletion had failed: deleted after the next write that
     /// succeeds, those that log no longer names (item 165's A1). `ioQueue`-confined, as `persistFailedOnQueue`.
-    nonisolated(unsafe) private var mediaOwedDeletion: Set<String> = []
+    nonisolated private let mediaOwedDeletion = QueueConfined(Set<String>(), onQueueLabelled: EventStore.ioQueueLabel)
     private var protectedDataObserver: NSObjectProtocol?
     private var activeObserver: NSObjectProtocol?
 
@@ -98,7 +109,9 @@ final class EventStore: ObservableObject {
     private let fileManager = FileManager.default
     /// Serial queue so background writes never race or land out of order. Also the
     /// queue that `store(_:ext:)` uses to keep all media I/O off the main actor.
-    nonisolated private let ioQueue = DispatchQueue(label: "com.malinois.eventstore.io", qos: .utility)
+    nonisolated private let ioQueue = DispatchQueue(label: EventStore.ioQueueLabel, qos: .utility)
+    /// The file queue's name: what the state confined to it checks it is used on (`QueueConfined`).
+    nonisolated private static let ioQueueLabel = "com.malinois.eventstore.io"
 
     // Directory URLs are computed with FileManager (thread-safe) and no actor
     // state, so the resolvers are `nonisolated static` — usable from `ioQueue`.
@@ -231,6 +244,7 @@ final class EventStore: ObservableObject {
         root = Self.resolvedRoot()
         self.protectedDataAvailable = protectedDataAvailable
         load()
+        refreshSetAsideLogs()   // item 122: the one this load set aside among them
         let onDisk = events, writesAtLoad = writesQueued   // the log as read, for the signer (item 182, codex-3)
         noteTheLogRead(onDisk)
         loadReportsOwed()   // item 166's A1: before the journal's recovery and the launch trims add their own (codex-22)
@@ -382,16 +396,55 @@ final class EventStore: ObservableObject {
     /// A cloud-decoded mirror carries `mediaFilename` nil BY CONSTRUCTION (the file is not on
     /// this device) — but the owner may have downloaded full evidence onto this mirror, and a
     /// wholesale replacement dropped that reference, stranding the file for the orphan sweep
-    /// to delete (eighth-review M3). Locally-born enrichment survives; everything the cloud
-    /// copy actually carries (counts, revision, metadata) wins as before.
+    /// to delete (eighth-review M3). Locally-born enrichment survives, each downloaded file in
+    /// the slot of its camera (`carryingFiles`); everything the cloud copy actually carries
+    /// (counts, revision, metadata) wins as before.
     nonisolated static func inheritingLocalEnrichment(existing: Event, incoming: Event) -> Event {
-        var out = incoming
+        var out = carryingFiles(of: existing, into: incoming)
         if existing.mediaDiscarded == true { out.mediaDiscarded = true }   // never taken back (item 166's A2)
-        if out.mediaFilename == nil { out.mediaFilename = existing.mediaFilename }
-        if out.secondaryMediaFilename == nil { out.secondaryMediaFilename = existing.secondaryMediaFilename }
         // Never a thumbnail the decoder would refuse (codex-13 on 1.8.2: one an older version saved).
         if out.thumbnailData == nil, let kept = existing.thumbnailData, kept.count <= CloudExfiltrator.maxThumbnailBytes {
             out.thumbnailData = kept
+        }
+        return out
+    }
+
+    /// Pure (unit-tested): `incoming` with the files downloaded onto `existing`, each in the slot of its camera
+    /// (item 201). A file the download placed by its camera (`MonitoringCloudCoordinator.mediaPlacement`) goes to the
+    /// slot the later record names for that camera; where it names none, the file keeps its own slot if the later
+    /// record leaves that slot unnamed, or else takes the other, unnamed one, and gives the slot its camera. A file a
+    /// legacy position placed, with no camera known, keeps its position. When the files would not land in empty
+    /// slots of their own, they keep the slots they had, as before 1.12: no file is dropped.
+    nonisolated static func carryingFiles(of existing: Event, into incoming: Event) -> Event {
+        var out = incoming
+        let held = [existing.mediaFilename.map { (file: $0, camera: existing.primaryCamera, primary: true) },
+                    existing.secondaryMediaFilename.map { (file: $0, camera: existing.secondaryCamera, primary: false) }]
+            .compactMap { $0 }
+        func label(_ primary: Bool) -> String? { primary ? incoming.primaryCamera : incoming.secondaryCamera }
+        func empty(_ primary: Bool) -> Bool { (primary ? incoming.mediaFilename : incoming.secondaryMediaFilename) == nil }
+        /// The slot a file goes to: true for the first.
+        func slot(file camera: String?, from primary: Bool) -> Bool {
+            guard let camera else { return primary }   // a legacy position: kept
+            if incoming.primaryCamera == camera { return true }
+            if incoming.secondaryCamera == camera { return false }
+            if label(primary) == nil { return primary }
+            if label(!primary) == nil { return !primary }
+            return primary
+        }
+        let slots = held.map { slot(file: $0.camera, from: $0.primary) }
+        guard Set(slots).count == slots.count, slots.allSatisfy(empty) else {
+            if out.mediaFilename == nil { out.mediaFilename = existing.mediaFilename }
+            if out.secondaryMediaFilename == nil { out.secondaryMediaFilename = existing.secondaryMediaFilename }
+            return out
+        }
+        for (item, primary) in zip(held, slots) {
+            if primary {
+                out.mediaFilename = item.file
+                if out.primaryCamera == nil { out.primaryCamera = item.camera }
+            } else {
+                out.secondaryMediaFilename = item.file
+                if out.secondaryCamera == nil { out.secondaryCamera = item.camera }
+            }
         }
         return out
     }
@@ -795,13 +848,13 @@ final class EventStore: ObservableObject {
 
     /// The removals as last written to disk (nil: not known), so a log write writes them first when they differ.
     /// `ioQueue`-confined.
-    nonisolated(unsafe) private var limitRemovalsOnDisk: [UUID: RecordIdentity]?
+    nonisolated private let limitRemovalsOnDisk = QueueConfined<[UUID: RecordIdentity]?>(nil, onQueueLabelled: EventStore.ioQueueLabel)
 
     /// A file of removals that cannot be read and could not be set aside: never written over.
     private var limitRemovalsFrozen = false
 
     /// This phone's key for the removals' check, once read or made. `ioQueue`-confined.
-    nonisolated(unsafe) private var limitRemovalsKeyRead: SymmetricKey?
+    nonisolated private let limitRemovalsKeyRead = QueueConfined<SymmetricKey?>(nil, onQueueLabelled: EventStore.ioQueueLabel)
 
     private var limitRemovalsURL: URL { rootURL.appendingPathComponent(Self.limitRemovalsFileName) }
 
@@ -847,7 +900,7 @@ final class EventStore: ObservableObject {
                 guard let key = limitRemovalsKeyOnQueue() else { throw CocoaError(.fileWriteNoPermission) }
                 try Self.limitRemovalsData(removals, key: key).write(to: url, options: options)
             }
-            limitRemovalsOnDisk = removals
+            limitRemovalsOnDisk.set(removals)
             return true
         } catch {
             Log.store.error("Failed to save the limit's removals: \(Log.ref(error), privacy: .public)")
@@ -874,7 +927,7 @@ final class EventStore: ObservableObject {
         }
         if !limitRemovalsFrozen {
             let onDisk = stored
-            ioQueue.async { [weak self] in self?.limitRemovalsOnDisk = onDisk }
+            ioQueue.async { [weak self] in self?.limitRemovalsOnDisk.set(onDisk) }
         }
         limitRemovalsAsRemoved.merge(stored) { inMemory, _ in inMemory }
         if limitRemovalsAsRemoved != stored { saveLimitRemovals() }
@@ -890,7 +943,7 @@ final class EventStore: ObservableObject {
     }
 
     private func setLimitRemovalsAside(_ url: URL) {
-        let backup = url.deletingPathExtension().appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
+        let backup = Self.setAsideURL(for: url)   // a name not yet taken (item 220's defect 4)
         if (try? fileManager.moveItem(at: url, to: backup)) == nil {
             limitRemovalsFrozen = true
             Log.store.fault("limit-removals.json unreadable or unchecked and could not be set aside; it is not written over")
@@ -901,9 +954,10 @@ final class EventStore: ObservableObject {
 
     /// This phone's key for the removals' check, made at the first write that needs it. `ioQueue`-confined.
     nonisolated private func limitRemovalsKeyOnQueue() -> SymmetricKey? {
-        if let limitRemovalsKeyRead { return limitRemovalsKeyRead }
-        limitRemovalsKeyRead = Self.limitRemovalsKey(create: true)
-        return limitRemovalsKeyRead
+        if let read = limitRemovalsKeyRead.get() { return read }
+        let key = Self.limitRemovalsKey(create: true)
+        limitRemovalsKeyRead.set(key)
+        return key
     }
 
     /// The key that checks the removals' file: this phone's, kept in the keychain for this device only
@@ -987,7 +1041,7 @@ final class EventStore: ObservableObject {
 
     /// The reports owed as last written to disk (nil: not known, before they are read or after a file that could not be
     /// set aside), so a log write can check its reports are there first (`persist`, codex-22). `ioQueue`-confined.
-    nonisolated(unsafe) private var reportsOwedOnDisk: [OwedReport]?
+    nonisolated private let reportsOwedOnDisk = QueueConfined<[OwedReport]?>(nil, onQueueLabelled: EventStore.ioQueueLabel)
 
     /// An unreadable file of reports owed that could not be set aside: never written over, and no log that drops an event
     /// whose report is owed is written either.
@@ -1028,7 +1082,7 @@ final class EventStore: ObservableObject {
             } else {
                 try JSONEncoder().encode(owed).write(to: url, options: options)
             }
-            reportsOwedOnDisk = owed
+            reportsOwedOnDisk.set(owed)
             return true
         } catch {
             Log.store.error("Failed to save the reports owed: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
@@ -1052,7 +1106,7 @@ final class EventStore: ObservableObject {
         }
         if !reportsOwedFrozen {
             let onDisk = stored
-            ioQueue.async { [weak self] in self?.reportsOwedOnDisk = onDisk }
+            ioQueue.async { [weak self] in self?.reportsOwedOnDisk.set(onDisk) }
         }
         let known = Set(reportsOwed.map(\.id))
         for report in stored where !known.contains(report.id) {
@@ -1083,8 +1137,7 @@ final class EventStore: ObservableObject {
     /// An unreadable file of reports owed, kept aside as a damaged log is (`setAside`): the reports start afresh. If it
     /// cannot even be moved, it is never written over, and a log that would drop an event whose report is owed waits.
     private func setReportsOwedAside(_ url: URL) {
-        let backup = url.deletingPathExtension()
-            .appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
+        let backup = Self.setAsideURL(for: url)   // a name not yet taken (item 220's defect 4)
         if (try? fileManager.moveItem(at: url, to: backup)) == nil {
             reportsOwedFrozen = true
             Log.store.fault("reports-owed.json unreadable and could not be set aside; it is not written over")
@@ -1298,8 +1351,8 @@ final class EventStore: ObservableObject {
             // Only once the log that drops them is down (34.H4): after a failed write the log on disk still names them,
             // so they wait for the next write that succeeds (item 165's A1). The queue is serial, so the flag is the
             // outcome of the write each caller queued just before.
-            if persistFailedOnQueue {
-                mediaOwedDeletion.formUnion(names)
+            if persistFailedOnQueue.get() {
+                mediaOwedDeletion.update { $0.formUnion(names) }
                 return
             }
             removeMediaOnQueue(names)
@@ -1307,46 +1360,72 @@ final class EventStore: ObservableObject {
     }
 
     /// Deletes media files, on `ioQueue`, except those a set-aside log may refer to, and never by a name that is not a
-    /// plain file name (`mediaFile(named:in:)`, item 187): such a name names no file of the log's.
+    /// plain file name (`mediaFile(named:in:)`, item 187): such a name names no file of the log's. Only a plain file
+    /// goes, and none while the media folder is not a real folder (item 218's Codex-1, Claude's inventory of its shape):
+    /// a folder an edited backup put under a photo's name went with everything in it, and a link in the media folder's
+    /// place was followed into another folder.
     nonisolated private func removeMediaOnQueue(_ names: [String]) {
         let dir = Self.mediaDirectoryURL(in: root)
+        guard Self.realDirectory(dir) else {
+            if !names.isEmpty { Log.store.fault("Deleted no media: the media folder is not a real folder") }
+            return
+        }
         let kept = Self.mediaNamesSetAsideLogsMayReference(names, in: Self.ensured(root))
         if !kept.isEmpty {
             Log.store.info("Kept \(kept.count, privacy: .public) media file(s) a set-aside log refers to")
         }
         var refused = 0
         for name in names where !kept.contains(name) {
-            guard let file = Self.mediaFile(named: name, in: dir) else {
+            guard let file = Self.mediaFile(named: name, in: dir), Self.isPlainFileOrNothing(file) else {
                 refused += 1
                 continue
             }
             try? FileManager.default.removeItem(at: file)
         }
         if refused > 0 {
-            Log.store.fault("Deleted no file for \(refused, privacy: .public) media name(s) that are not plain file names")
+            Log.store.fault("Deleted no file for \(refused, privacy: .public) media name(s) that name no plain file")
         }
     }
 
     /// After a write that succeeded, on `ioQueue`: the media owed deletion (item 165's A1) that the log just written no
     /// longer names goes now.
     nonisolated private func removeMediaOwedDeletion(notNamedIn snapshot: [Event]) {
-        guard !mediaOwedDeletion.isEmpty else { return }
+        let waiting = mediaOwedDeletion.get()
+        guard !waiting.isEmpty else { return }
         let named = Set(snapshot.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
-        let owed = mediaOwedDeletion.subtracting(named)
-        mediaOwedDeletion = []
+        let owed = waiting.subtracting(named)
+        mediaOwedDeletion.set([])
         removeMediaOnQueue(Array(owed))
     }
 
     /// Which of `names` a set-aside event log (`events.corrupt-*`) may refer to: each name whose
     /// bytes appear in one, and all of them when the folder or a set-aside log cannot be read. A
-    /// set-aside log does not decode, so its bytes are searched; the names are UUIDs (item 120, V1).
+    /// set-aside log does not decode, so its bytes are searched (item 120, V1).
+    /// They are searched as written and with a JSON escape read (item 230: `SetAsideLog.searchForms`), since
+    /// the log's screen decodes its records. That finds every spelling of a name the store gives
+    /// (`isStoredMediaName`), which is the only kind a set-aside log names (item 231's Codex-10). A name of
+    /// another form that a log's bytes happen to have is still kept here, which is more than that rule asks:
+    /// this search never removes, and the limits' removals ask it for any name a row of the log has.
+    /// Only a plain file is opened (item 218's rule for Codex-1, which this search had been left out of): a link
+    /// or a folder under a set-aside log's name is not read, wherever it leads, and keeps every name, as an entry
+    /// that cannot be read does.
     nonisolated static func mediaNamesSetAsideLogsMayReference(_ names: [String], in root: URL) -> Set<String> {
+        mediaNamesSetAsideLogsReference(names, in: root) ?? Set(names)
+    }
+
+    /// The search behind `mediaNamesSetAsideLogsMayReference`: which of `names` appear in a set-aside log's bytes, and
+    /// nil where that one answers every name, because the folder, or an entry named like a set-aside log, cannot be
+    /// read as a plain file. A set-aside log's Delete asks this one, to say that it could not tell which photos and
+    /// clips were only the deleted log's (item 227's DS-5).
+    nonisolated static func mediaNamesSetAsideLogsReference(_ names: [String], in root: URL) -> Set<String>? {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: root.path) else { return Set(names) }
+        guard let entries = try? fm.contentsOfDirectory(atPath: root.path) else { return nil }
         var kept: Set<String> = []
         for entry in entries where entry.hasPrefix("events.corrupt-") {
-            guard let data = try? Data(contentsOf: root.appendingPathComponent(entry)) else { return Set(names) }
-            for name in names where !kept.contains(name) && data.range(of: Data(name.utf8)) != nil {
+            let url = root.appendingPathComponent(entry)
+            guard isPlainFile(url), let data = try? Data(contentsOf: url) else { return nil }
+            let forms = SetAsideLog.searchForms(of: data)
+            for name in names where !kept.contains(name) && SetAsideLog.names(name, in: forms) {
                 kept.insert(name)
             }
         }
@@ -1401,13 +1480,18 @@ final class EventStore: ObservableObject {
             // Reading one record by record and sharing it are item 122 (1.8).
             let corruptBackupPresent = rootNames.contains { $0.hasPrefix("events.corrupt-") }
             let dir = Self.mediaDirectoryURL(in: storeRoot)
+            // Only in a real folder, and only plain files (item 218's Codex-1, Claude's inventory of its shape): a
+            // folder an edited backup put under a photo's name went with everything in it. Where probed, Foundation's
+            // listing by URL lists nothing through a link in the folder's place; the rule here does not rest on that.
+            guard Self.realDirectory(dir) else { return }
             let onDisk: [(name: String, modified: Date)] = ((try? fm.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles])) ?? []).compactMap { url in
                     guard UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                          Self.isPlainFile(url),
                           let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                               .contentModificationDate
-                    else { return nil }   // not ours, or unreadable — never sweep what we can't judge
+                    else { return nil }   // not ours, not a plain file, or unreadable — never sweep what we can't judge
                     return (url.lastPathComponent, modified)
                 }
             let orphans = Self.orphanedMediaNames(onDisk: onDisk, referenced: referenced,
@@ -1423,12 +1507,16 @@ final class EventStore: ObservableObject {
     /// the settings stashes (`AppSettings`), which otherwise accumulated without bound (seventh
     /// review, #6). Set-aside event logs no longer use it: they and their media are kept
     /// (item 120, F5). A future-dated stamp reads as young: kept, same clock-weirdness rule as
-    /// the sweep's.
+    /// the sweep's. Of two of one second the later is the newer, by the number after the seconds
+    /// in its name (`corruptArtifactOrder`; item 220): by the time alone, which of the two was
+    /// reaped depended on the order they were found in, and could be the one just made.
     nonisolated static func reapableCorruptArtifacts(stamps: [(name: String, date: Date)],
                                                      now: Date,
                                                      keepNewest: Int = 3,
                                                      maxAge: TimeInterval = 30 * 86_400) -> [String] {
-        stamps.sorted { $0.date > $1.date }.enumerated().compactMap { idx, s in
+        stamps.sorted {
+            ($0.date, corruptArtifactOrder($0.name)) > ($1.date, corruptArtifactOrder($1.name))
+        }.enumerated().compactMap { idx, s in
             (idx >= keepNewest || now.timeIntervalSince(s.date) > maxAge) ? s.name : nil
         }
     }
@@ -1439,6 +1527,39 @@ final class EventStore: ObservableObject {
         guard let range = name.range(of: "corrupt-") else { return nil }
         let digits = name[range.upperBound...].prefix { $0.isNumber }
         return Int(digits).map { Date(timeIntervalSince1970: Double($0)) }
+    }
+
+    /// Pure (unit-tested): a set-aside file's place among those of its second, from its name: 1 for the plain name, the
+    /// number after the seconds for a later one (`setAsideURL`: `-2`, `-3` and so on). So that the list of set-aside
+    /// logs is newest first within a second too (item 220's defect 4).
+    nonisolated static func corruptArtifactOrder(_ name: String) -> Int {
+        guard let range = name.range(of: "corrupt-") else { return 1 }
+        let afterSeconds = name[range.upperBound...].drop { $0.isNumber }
+        guard afterSeconds.first == "-" else { return 1 }
+        return Int(afterSeconds.dropFirst().prefix { $0.isNumber }) ?? 1
+    }
+
+    /// Where a file that cannot be read is set aside: beside it, as `<name>.corrupt-<seconds>.json`, the seconds those of
+    /// `now`. While a name of that second is already there, a number follows the seconds, `-2`, `-3` and so on (item
+    /// 220's defect 4): two set-asides in one second, or the clock set back to the second of a set-aside log still kept,
+    /// left the second file unmoved, and the store then wrote nothing until the next launch. The number is the one after
+    /// the LAST name taken of that second, never a lower one that is free again (item 226's Codex-6): it is the order
+    /// the files of a second were made in, which the list of set-aside logs and the reaping of settings stashes go by,
+    /// and a name given a second time counted as the oldest. The name starts as every set-aside's does and still gives
+    /// its time (`corruptArtifactDate`). When the last of `tries` names is taken it is the plain one: while that is
+    /// taken too, the move fails as it did. `taken` is asked of the entry itself, so a link that leads nowhere counts.
+    nonisolated static func setAsideURL(
+        for url: URL, now: Date = Date(), tries: Int = 100,
+        taken: (URL) -> Bool = { (try? FileManager.default.attributesOfItem(atPath: $0.path)) != nil }
+    ) -> URL {
+        let seconds = Int(now.timeIntervalSince1970)
+        let base = url.deletingPathExtension()
+        func name(_ number: Int) -> URL {
+            base.appendingPathExtension(number == 1 ? "corrupt-\(seconds).json" : "corrupt-\(seconds)-\(number).json")
+        }
+        let last = max(2, tries)
+        guard let lastTaken = (1...last).last(where: { taken(name($0)) }) else { return name(1) }
+        return lastTaken < last ? name(lastTaken + 1) : name(1)
     }
 
     /// Pure (unit-tested): which on-disk media names the sweep may delete — unreferenced AND
@@ -1497,8 +1618,18 @@ final class EventStore: ObservableObject {
     /// cut or a forced restart, or a partial write), it used to be written straight after the
     /// fragment, so neither decoded, and the event rested on the async log write alone until a
     /// checkpoint shed the fragment (item 129, F1).
+    /// An event that does not encode has no line, and that is an append that failed, said on Home as
+    /// any other (item 220's defect 3): it used to be passed over without a word. The log's own write
+    /// of such an event fails too, and says so itself.
     private func appendToJournal(_ event: Event) {
-        guard var line = Self.journalLine(for: event) else { return }
+        guard var line = Self.journalLine(for: event) else {
+            journalDegraded = true
+            if !journalFailureLogged {
+                journalFailureLogged = true
+                Log.store.error("Journal append failed: the event did not encode — birth records fall back to the async log write")
+            }
+            return
+        }
         let url = journalFile
         var appended = false
         var sync: (synced: Bool, errno: Int32, elapsed: Duration)?
@@ -1966,12 +2097,67 @@ final class EventStore: ObservableObject {
         return Self.isPlainFileOrNothing(url) ? url : nil
     }
 
+    /// A set-aside record's photo or clip file, for its screen (item 122): as `mediaURL(for:)`, and nil while the media
+    /// folder is not a real folder, as a set-aside log's Share and Delete have it (ADR 0078's decision 5). The screen
+    /// showed the file through a link an edited backup had put in the folder's place (item 226's Codex-5): the file was
+    /// asked, the folder was not. A live event's screen, its Share and its upload still read through `mediaURL(for:)`
+    /// (the owner's ruling of 2026-11-10; BACKLOG item 224's point 7). And nil for a name the store never gives
+    /// (`isStoredMediaName`, item 231's Codex-10): a set-aside log names no file by one, here as in its Share and its
+    /// Delete, so the screen shows the record's thumbnail only, as for a name that is not a plain file name.
+    func setAsideMediaURL(for event: Event) -> URL? {
+        guard Self.realDirectory(mediaDirectory), let name = event.mediaFilename, Self.isStoredMediaName(name) else { return nil }
+        return mediaURL(for: event)
+    }
+
+    /// A set-aside record's second camera's file, as `setAsideMediaURL(for:)`.
+    func setAsideSecondaryMediaURL(for event: Event) -> URL? {
+        guard Self.realDirectory(mediaDirectory), let name = event.secondaryMediaFilename, Self.isStoredMediaName(name) else {
+            return nil
+        }
+        return secondaryMediaURL(for: event)
+    }
+
     /// Whether what is at `url` is a plain file, or nothing: its own attributes, a link's never followed (item 190).
     nonisolated static func isPlainFileOrNothing(_ url: URL) -> Bool {
         guard let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType else {
             return true
         }
         return type == .typeRegular
+    }
+
+    /// Whether what is at `url` is a plain file: its own attributes, a link's never followed, and a folder is not one.
+    /// The rule for a set-aside log and for each photo or clip it names, in its list and its Share, and for the
+    /// launch's sweep (item 218's Codex-1): only an edited backup restored to the phone puts a link or a folder where
+    /// the app keeps a file. It answers no for what could not be looked at, too; a set-aside log's Delete, which must
+    /// tell that apart, asks `look(at:)` (item 228).
+    nonisolated static func isPlainFile(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeRegular
+    }
+
+    /// What a look at a path found, by its own attributes, a link's never followed.
+    enum Looked: Sendable {
+        /// A plain file.
+        case plainFile
+        /// Something else: a folder, a link.
+        case notAPlainFile
+        /// Nothing under that name.
+        case nothing
+        /// The look itself failed (the folder it is in cannot be searched, say): what is there is not known.
+        case notKnown
+    }
+
+    /// What is at `url`: `isPlainFile`'s look, with its three ways of not being a plain file told apart (item 228's
+    /// Codex-7 and Codex-8). A set-aside log's Delete needs them apart to say what it did: nothing under a log's name
+    /// is a log already gone, and a look that failed is neither that nor a folder.
+    nonisolated static func look(at url: URL) -> Looked {
+        do {
+            let type = try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
+            return type == .typeRegular ? .plainFile : .notAPlainFile
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .nothing
+        } catch {
+            return .notKnown
+        }
     }
 
     /// The file a photo's or clip's name from the log stands for in the media folder `directory`, when the name is a
@@ -1983,6 +2169,40 @@ final class EventStore: ObservableObject {
     nonisolated static func mediaFile(named name: String, in directory: URL) -> URL? {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else { return nil }
         return directory.appendingPathComponent(name)
+    }
+
+    /// Whether `name` is a name the store gives a photo or clip: a UUID as `UUID().uuidString` writes it, in capitals,
+    /// and ".jpg" or ".mov", byte for byte. Every build has given these names and no other (`store(_:ext:)`, and the
+    /// attachment intents since they exist).
+    ///
+    /// The one rule for what a set-aside log names (item 231, Codex-10; the owner, 2026-11-11: "a, wording
+    /// approved"): its record's screen shows, its Share carries and its Delete removes a file under such a name only.
+    /// A set-aside log is searched for a name, not decoded, while its screen decodes its records, and the two must
+    /// agree on what the log names. For a name of this form they do: JSON can write each of its characters as itself
+    /// or as its unicode escape, the search reads both (`SetAsideLog.searchForms`), and no other text is the same name
+    /// to the decoder or to a phone's file system, which tells capitals from lower case: plain digits, the letters
+    /// here, hyphens and a dot have no equivalent form. For a wider name they did not: a quote's short escape and an
+    /// accented letter as one character or as two each wrote one name two ways, so that Delete of one set-aside log
+    /// took a photo another one's screen showed. A file under any other name is none of a set-aside log's. It stays;
+    /// once no set-aside log is kept, the launch's sweep takes it if it has a UUID before its last dot and no record
+    /// names it, and leaves it otherwise. A live event's screen, its Share and its upload read by
+    /// `mediaFile(named:in:)` alone, as they did. One limit stays, on a volume that ignores case, which the
+    /// Simulator's is and a phone's is not: there a row of the event log can name a set-aside log's photo in another
+    /// case, and the app compares names.
+    nonisolated static func isStoredMediaName(_ name: String) -> Bool {
+        let bytes = Array(name.utf8)
+        guard bytes.count == 40 else { return false }
+        for (index, byte) in bytes[..<36].enumerated() {
+            switch index {
+            case 8, 13, 18, 23:
+                guard byte == UInt8(ascii: "-") else { return false }
+            default:
+                guard (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                    || (UInt8(ascii: "A")...UInt8(ascii: "F")).contains(byte) else { return false }
+            }
+        }
+        let ending = Array(bytes[36...])
+        return ending == Array(".jpg".utf8) || ending == Array(".mov".utf8)
     }
 
     /// A captured payload to persist. Stills arrive as in-memory JPEG data; clips
@@ -2095,7 +2315,9 @@ final class EventStore: ObservableObject {
         return (attrs[.size] as? NSNumber)?.int64Value
     }
 
-    nonisolated private static func realDirectory(_ url: URL) -> Bool {
+    /// Whether what is at `url` is a real folder: its own attributes, so a link to a folder is not one. A set-aside
+    /// log's Share asks it of the media folder too (item 218's Codex-1).
+    nonisolated static func realDirectory(_ url: URL) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.type]) as? FileAttributeType == .typeDirectory
     }
 
@@ -2577,12 +2799,12 @@ final class EventStore: ObservableObject {
             do {
                 // The limit's removals before the log that drops them (item 182): a write that fails is tried again by the
                 // next log write, and never holds this one up.
-                if !removalsFrozen, removals != self.limitRemovalsOnDisk {
+                if !removalsFrozen, removals != self.limitRemovalsOnDisk.get() {
                     _ = self.writeLimitRemovalsOnQueue(removals, to: removalsURL, options: options)
                 }
                 // A log never drops an event whose report is owed until that report is on disk (item 166's A1, codex-22):
                 // a write of the reports owed that failed is tried again here, and the log waits while it fails.
-                if owed != self.reportsOwedOnDisk, !(owedFrozen && owed.isEmpty) {
+                if owed != self.reportsOwedOnDisk.get(), !(owedFrozen && owed.isEmpty) {
                     guard !owedFrozen, self.writeReportsOwedOnQueue(owed, to: owedURL, options: options) else {
                         throw CocoaError(.fileWriteUnknown)
                     }
@@ -2594,8 +2816,8 @@ final class EventStore: ObservableObject {
                 #if DEBUG
                 observer?(self.root, snapshot, data)
                 #endif
-                if self.persistFailedOnQueue {
-                    self.persistFailedOnQueue = false
+                if self.persistFailedOnQueue.get() {
+                    self.persistFailedOnQueue.set(false)
                     Task { @MainActor in self.persistDegraded = false }
                 }
                 // This snapshot is durably on disk — its events' journal lines are now
@@ -2606,8 +2828,8 @@ final class EventStore: ObservableObject {
                 Task { @MainActor in self.onDurableWrite?(writeNumber, snapshot) }
             } catch {
                 Log.store.fault("Failed to persist event metadata: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
-                if !self.persistFailedOnQueue {
-                    self.persistFailedOnQueue = true
+                if !self.persistFailedOnQueue.get() {
+                    self.persistFailedOnQueue.set(true)
                     Task { @MainActor in self.persistDegraded = true }
                 }
             }
@@ -2674,6 +2896,183 @@ final class EventStore: ObservableObject {
         persist()
     }
 
+    /// Lists the set-aside event logs in the store's folder again (item 122).
+    func refreshSetAsideLogs() {
+        setAsideLogs = SetAsideLog.all(in: Self.ensured(root))
+    }
+
+    /// Deletes a set-aside log at the owner's word, from its screen (item 122's decision 3 (a); the owner, 2026-11-07: the
+    /// photos and clips only it names go at once), then lists the set-aside logs again. Only a plain file named
+    /// `events.corrupt-…` in the store's own folder is deleted: not a folder or a link under such a name, which only an
+    /// edited backup restored to the phone can put there (item 218's Codex-1). With it go, at once, the photos and clips
+    /// under a name the store gives (`isStoredMediaName`, item 231) whose names its bytes have (as written, or with a
+    /// JSON escape read: item 230) and that nothing else names (`mediaGoingWithASetAsideLog`), plain files in a real
+    /// media folder only. A log whose bytes cannot be read goes
+    /// alone: what it names is not known, and the launch's sweep takes those once nothing names them. On the store's
+    /// own queue, as the sweep is. The names the event log has in memory
+    /// are read before the queue's turn; a record added meanwhile names a new file, since photos and clips are named by
+    /// fresh UUIDs, and no set-aside log can name it (Fable's note in item 213: this relies on those names staying
+    /// fresh).
+    ///
+    /// Its answer says what happened (item 227's DS-5): `.notDeleted` when the log was not deleted, and then nothing
+    /// was; `.deleted` when it went with each photo and clip only it names, or was gone already; `.deletedMediaLeft`
+    /// when it went and Malinois could not tell which photos and clips were only its own, or could not remove one. Any
+    /// answer but `.deleted` is kept in `setAsideDeletionsToTell`, for the Event Log to say until the owner dismisses it.
+    func deleteSetAsideLog(_ log: SetAsideLog) async -> SetAsideLogDeletion {
+        await deleteSetAsideLogReporting(log).outcome
+    }
+
+    /// `deleteSetAsideLog`, with what the status entry of the Delete says (item 234's A1): whether the log's file went
+    /// by this call, how many records it had and how many photos and clips went with it. The app's Delete is the
+    /// engine's (`MonitoringEngine.deleteSetAsideLog`), which writes that entry.
+    func deleteSetAsideLogReporting(_ log: SetAsideLog) async -> SetAsideLogDeletionReport {
+        let storeRoot = Self.ensured(root)
+        guard log.id.hasPrefix(SetAsideLog.namePrefix),
+              log.url.deletingLastPathComponent().resolvingSymlinksInPath().path == storeRoot.resolvingSymlinksInPath().path
+        else {
+            keepToTell(.notDeleted)
+            return SetAsideLogDeletionReport(outcome: .notDeleted, removedLog: false, records: nil, mediaRemoved: 0)
+        }
+        let inMemory = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        let report = await withCheckedContinuation { (done: CheckedContinuation<SetAsideLogDeletionReport, Never>) in
+            ioQueue.async { [self] in
+                done.resume(returning: deleteSetAsideLogOnQueue(log.url, root: storeRoot, inMemory: inMemory))
+            }
+        }
+        keepToTell(report.outcome)
+        refreshSetAsideLogs()
+        return report
+    }
+
+    /// Keeps a Delete's answer for the Event Log to say, each kind once: not a whole delete, which has nothing to tell
+    /// and takes nothing away from what an earlier Delete left to tell.
+    private func keepToTell(_ outcome: SetAsideLogDeletion) {
+        guard outcome != .deleted, !setAsideDeletionsToTell.contains(outcome) else { return }
+        setAsideDeletionsToTell.append(outcome)
+    }
+
+    /// The owner dismissed the Event Log's notice of `outcome`.
+    func setAsideDeletionWasTold(_ outcome: SetAsideLogDeletion) {
+        setAsideDeletionsToTell.removeAll { $0 == outcome }
+    }
+
+    /// `deleteSetAsideLog`'s work on the store's queue: the file first, so a failure leaves its photos and clips with it.
+    /// Only a plain file is a set-aside log, and only plain files in a real media folder go with it (item 218's Codex-1):
+    /// a folder under either name went with everything in it, a link's bytes are another file's, and a link in the media
+    /// folder's place leads into another folder. A plain file that cannot be read still goes, alone. One that cannot
+    /// even be looked at is not deleted, and is not taken for a log already gone (item 228's Codex-7). And only a file
+    /// under a name the store gives goes with it (`isStoredMediaName`, item 231's Codex-10): a file under any other
+    /// name is not the log's, stays, and is nothing to tell.
+    ///
+    /// Once the log is gone, each place where Malinois cannot tell which photos and clips are only its own, or cannot
+    /// remove one, answers `.deletedMediaLeft` (item 227's DS-5): the log's bytes, the media folder's listing, the event
+    /// log on disk, a capture's record or another set-aside log could not be read, something that is not a real folder
+    /// is in the media folder's place, what is under a photo's name there could not be looked at (item 228's Codex-8),
+    /// a link or a folder is where the event log is kept or a link where the captures still being saved are (item
+    /// 229's Codex-9: nothing is asked through a link), or a removal failed. Each of these left the photos and clips
+    /// without a word.
+    nonisolated private func deleteSetAsideLogOnQueue(_ file: URL, root: URL, inMemory: Set<String>) -> SetAsideLogDeletionReport {
+        let manager = FileManager.default
+        // What the Delete's status entry says (item 234's A1), as far as this call got.
+        var removedLog = false
+        var records: Int?
+        var removed = 0
+        func answer(_ outcome: SetAsideLogDeletion) -> SetAsideLogDeletionReport {
+            SetAsideLogDeletionReport(outcome: outcome, removedLog: removedLog, records: records, mediaRemoved: removed)
+        }
+        switch Self.look(at: file) {
+        case .plainFile:
+            break
+        case .nothing:
+            // The log is gone already (its Delete asked twice, the first still under way when the second was), which
+            // is what was asked.
+            return answer(.deleted)
+        case .notAPlainFile, .notKnown:
+            // A folder or a link there is not a set-aside log. And where the look failed, the log may well be there:
+            // nothing is deleted, and that is not a log already gone (item 228's Codex-7).
+            return answer(.notDeleted)
+        }
+        let bytes = try? Data(contentsOf: file)
+        guard (try? manager.removeItem(at: file)) != nil else { return answer(.notDeleted) }
+        removedLog = true
+        guard let bytes else { return answer(.deletedMediaLeft) }
+        records = SetAsideLog.reading(bytes).records.count
+        let media = Self.mediaDirectoryURL(in: root)
+        // The media folder is made whenever it is asked for, so what is not a real folder here is a link or a file in
+        // its place: nothing is looked at through it, and what is left is not known.
+        guard Self.realDirectory(media) else { return answer(.deletedMediaLeft) }
+        guard let onPhone = try? manager.contentsOfDirectory(atPath: media.path) else { return answer(.deletedMediaLeft) }
+        var named: [String] = []
+        let forms = SetAsideLog.searchForms(of: bytes)
+        // Only a file under a name the store gives is the log's (item 231's Codex-10): for such a name the search
+        // finds every spelling, in this log and in the others. A name with a UUID before its last dot and anything
+        // after it was taken too, and for those one log's spelling was found and another's was not.
+        for name in onPhone where Self.isStoredMediaName(name) && SetAsideLog.names(name, in: forms) {
+            switch Self.look(at: media.appendingPathComponent(name)) {
+            case .plainFile:
+                named.append(name)
+            case .notAPlainFile, .nothing:
+                // A folder or a link under a photo's name is no photo of the log's, and a file that went after the
+                // listing is no longer on the phone.
+                continue
+            case .notKnown:
+                // Whether this is a photo of the log's cannot be told, so nothing more is removed, and the owner is
+                // told: it was passed over as if it were no file, and the delete counted as a whole one (item 228's
+                // Codex-8).
+                return answer(.deletedMediaLeft)
+            }
+        }
+        guard !named.isEmpty else { return answer(.deleted) }
+        guard let onDisk = Self.mediaNamedOnDisk(in: root) else { return answer(.deletedMediaLeft) }
+        guard let saving = mediaNamedByCapturesBeingSaved() else { return answer(.deletedMediaLeft) }
+        guard let otherLogs = Self.mediaNamesSetAsideLogsReference(named, in: root) else { return answer(.deletedMediaLeft) }
+        let going = Self.mediaGoingWithASetAsideLog(named: named, inMemory: inMemory, onDisk: onDisk, otherLogs: otherLogs,
+                                                    saving: saving)
+        let left = going.filter { (try? manager.removeItem(at: media.appendingPathComponent($0))) == nil }
+        Log.store.info("A set-aside log deleted at the owner's word, with \(going.count - left.count, privacy: .public) photo(s) and clip(s) only it named")
+        removed = going.count - left.count
+        return answer(left.isEmpty ? .deleted : .deletedMediaLeft)
+    }
+
+    /// Pure (unit-tested): which of `named`, the photos and clips a deleted set-aside log names, go with it (item 122): none the
+    /// event log names, in memory or on disk; none another set-aside log may name; none a capture still being saved names;
+    /// and none at all when the log on disk or a capture's record could not be read (nil).
+    nonisolated static func mediaGoingWithASetAsideLog(named: [String], inMemory: Set<String>, onDisk: Set<String>?,
+                                                       otherLogs: Set<String>, saving: Set<String>?) -> [String] {
+        guard let onDisk, let saving else { return [] }
+        return named.filter { !inMemory.contains($0) && !onDisk.contains($0) && !otherLogs.contains($0) && !saving.contains($0) }
+    }
+
+    /// The photos and clips the event log on disk names: none when nothing is under the log's name; nil when what is
+    /// there cannot be read, cannot be looked at, or is not a plain file. A link there is not followed (item 229's
+    /// Codex-9): `fileExists` followed one, and took a file it could not reach for no log, so that a photo that log
+    /// names went with a set-aside log.
+    nonisolated private static func mediaNamedOnDisk(in root: URL) -> Set<String>? {
+        let url = root.appendingPathComponent("events.json")
+        switch look(at: url) {
+        case .nothing: return []
+        case .notAPlainFile, .notKnown: return nil
+        case .plainFile: break
+        }
+        guard let data = try? Data(contentsOf: url), let logged = try? StoredJSON.decode([Event].self, from: data) else { return nil }
+        return Set(logged.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+    }
+
+    /// The photos and clips a capture still being saved names, by its attachment intent: none when nothing is under
+    /// their folder's name, so none is waiting; nil when the folder, or one of them, cannot be read. A link there is
+    /// not followed (item 229, Codex-9's twin): `attachmentFiles` reads a real folder only, and `fileExists` had taken
+    /// a link to a folder it could not reach for no folder.
+    nonisolated private func mediaNamedByCapturesBeingSaved() -> Set<String>? {
+        guard Self.look(at: root.appendingPathComponent("MediaAttachments")) != .nothing else { return [] }
+        guard let files = attachmentFiles() else { return nil }
+        var names: Set<String> = []
+        for url in files where url.pathExtension == "json" {
+            guard let intent = readIntent(url) else { return nil }
+            names.insert(intent.filename)
+        }
+        return names
+    }
+
     /// Sets a damaged or broken log aside as a timestamped backup and starts fresh (F-11).
     private func setAside(_ url: URL) {
         // The locked-file question is settled — a deferred load that lands here must clear its
@@ -2683,9 +3082,9 @@ final class EventStore: ObservableObject {
         awaitingUnlock = false
         // Do NOT start empty and let the next persist()
         // silently overwrite it — that would destroy recoverable evidence. Preserve it as a
-        // timestamped backup, then start fresh (F-11).
-        let backup = url.deletingPathExtension()
-            .appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970)).json")
+        // timestamped backup, then start fresh (F-11). Under a name not yet taken (item 220's defect 4): a second
+        // set-aside in the same second as one still kept failed to move, and persistence stayed off until a relaunch.
+        let backup = Self.setAsideURL(for: url)
         if (try? fileManager.moveItem(at: url, to: backup)) == nil {
             // Couldn't even preserve it — so refuse to overwrite it either (R-05).
             // persist() no-ops while this is set, and Home surfaces the frozen state.
@@ -2738,6 +3137,7 @@ final class EventStore: ObservableObject {
         // again.
         isReadingHistory = true
         load()
+        refreshSetAsideLogs()   // item 122: the one this load set aside among them
         let onDisk = events, writesAtLoad = writesQueued   // the log as read, for the signer (item 182, codex-3)
         noteTheLogRead(onDisk)
         loadReportsOwed()      // item 166's A1: before the recovery's and the reconciliation's trims (codex-22)
@@ -2814,3 +3214,64 @@ extension EventStore {
     }
 }
 #endif
+
+/// A value only one queue may touch (item 220's defect 2; the owner, 2026-11-09: "a for defect 2"). The store keeps a
+/// few pieces of state for its file queue alone. Each was a field marked unsafe, whose confinement only its comment
+/// stated, so a new use from another thread would have compiled, and raced. Here the value has one way in, and in
+/// Debug builds, which the tests run, each use checks that it is on the queue named `label`: a use from anywhere else
+/// is reported, to a test's own hook or by stopping (`QueueConfinement`). A Release build makes no check, and behaves
+/// as the fields did. The queue is known by its name, which a value can take before its queue is made: two queues of
+/// one name are not told apart (each store's file queue has the one name). Unchecked for the compiler in this one
+/// place: the queue is what makes its uses one at a time.
+final class QueueConfined<Value>: @unchecked Sendable {
+    private var value: Value
+    private let label: String
+
+    /// - Parameter label: the name of the queue the value is confined to (`DispatchQueue(label:)`).
+    init(_ value: Value, onQueueLabelled label: String) {
+        self.value = value
+        self.label = label
+    }
+
+    /// The value, on its queue.
+    func get() -> Value {
+        check()
+        return value
+    }
+
+    /// Replaces the value, on its queue.
+    func set(_ new: Value) {
+        check()
+        value = new
+    }
+
+    /// Changes the value in place, on its queue.
+    func update<Result>(_ change: (inout Value) -> Result) -> Result {
+        check()
+        return change(&value)
+    }
+
+    /// In Debug builds: reports a use that is not on the value's queue.
+    private func check() {
+        #if DEBUG
+        if String(cString: __dispatch_queue_get_label(nil)) != label { QueueConfinement.violated() }
+        #endif
+    }
+}
+
+/// What a use of a `QueueConfined` value off its queue does, in Debug builds: a test's hook when one is set, a stop
+/// otherwise, so that the tests of anything that makes such a use fail where it is made.
+enum QueueConfinement {
+    #if DEBUG
+    /// Test-only: called for a use off the queue, in place of the stop.
+    nonisolated(unsafe) static var violationForTesting: (@Sendable () -> Void)?
+
+    static func violated() {
+        if let violationForTesting {
+            violationForTesting()
+        } else {
+            preconditionFailure("a queue-confined value was used off its queue")
+        }
+    }
+    #endif
+}

@@ -98,7 +98,7 @@ enum MalinoisVerifier {
     static func refusal(ofListing listing: String) -> String? {
         guard let listed = entries(inListing: listing) else { return "its listing could not be read" }
         for (mode, name) in listed.entries {
-            if mode.hasPrefix("l") { return "it holds a link (\(name))" }
+            if mode.hasPrefix("l") { return "it contains a link (\(name))" }
             if name.hasPrefix("/") || name.split(separator: "/").contains("..") { return "it names a path outside itself (\(name))" }
         }
         if listed.unpackedBytes > largestUnpacked {
@@ -359,7 +359,7 @@ enum MalinoisVerifier {
     /// the ZIP's own name, never by the folder the ZIP unpacked to (item 187's deepseek-9).
     private static func check(_ folder: URL, given: URL, root: (der: Data, name: String), appIDHash: Data) -> Outcome {
         guard let bundle = bundleFolder(in: folder) else {
-            return Outcome(text: "\(shown(given.path)) holds no Malinois evidence bundle (no \(EvidenceBundle.indexName)): nothing was checked.\n",
+            return Outcome(text: "\(shown(given.path)) contains no Malinois evidence bundle (no \(EvidenceBundle.indexName)): nothing was checked.\n",
                            status: 2)
         }
         let name = shown(bundle.standardizedFileURL == folder.standardizedFileURL ? given.lastPathComponent : bundle.lastPathComponent)
@@ -428,7 +428,7 @@ enum MalinoisVerifier {
         for keyID in report.unrelatedKeys {
             let why = report.chainBreak.map {
                 "cannot be tied to the export's key; the export's chain stops at key \(short($0)), "
-                    + "which this bundle does not hold certified"
+                    + "which this bundle does not certify"
             } ?? "neither the export's key nor a key it follows"
             problems.append("key \(short(keyID)): \(why)")
         }
@@ -609,7 +609,7 @@ enum MalinoisVerifier {
         return signedIn.sorted { $0.key < $1.key }.map { name, revision in
             "  \(shown(name)): signed in revision \(revision) but not in the last revision, so not in the bundle\n"
         }.joined() + changedIn.sorted { $0.key < $1.key }.map { name, revision in
-            "  \(shown(name)): signed with other bytes in revision \(revision); the bundle holds the last revision's\n"
+            "  \(shown(name)): signed with other bytes in revision \(revision); the bundle contains the last revision's\n"
         }.joined()
     }
 
@@ -681,9 +681,9 @@ enum MalinoisVerifier {
         case .notCertified: "signed by a key the bundle does not certify"
         case .fileMissing(let path): "\(shown(path)) is not in the bundle"
         case .formatNotAsHeld(let named):
-            "the bundle names the format \(shown(named)), but what it holds is in "
-                + (named == EvidenceBundle.format ? "\(EvidenceBundle.formatWithUnkept) (it holds an unkept statement)"
-                   : "\(EvidenceBundle.format) (it holds no unkept statement)")
+            "the bundle names the format \(shown(named)), but what it contains is in "
+                + (named == EvidenceBundle.format ? "\(EvidenceBundle.formatWithUnkept) (it contains an unkept statement)"
+                   : "\(EvidenceBundle.format) (it contains no unkept statement)")
         }
     }
 
@@ -807,7 +807,7 @@ private struct ZIPLayout {
         }
         guard let last else { throw Problem.noEnd }
         guard let at = found else { throw last + 22 <= tail.count ? Problem(text: "bytes after its end") : Problem.noEnd }
-        guard at == last else { throw Problem(text: "its comment holds an end record's signature") }
+        guard at == last else { throw Problem(text: "its comment contains an end record's signature") }
         let count = u16(tail, at + 10), indexSize = u32(tail, at + 12), indexOffset = u32(tail, at + 16)
         guard u16(tail, at + 4) == 0, u16(tail, at + 6) == 0, u16(tail, at + 8) == count, count != 0xFFFF,
               indexSize != 0xFFFF_FFFF, indexOffset != 0xFFFF_FFFF else { throw Problem(text: "a ZIP64 or split archive") }
@@ -861,7 +861,7 @@ private struct ZIPLayout {
                   try read(at + 30, nameLength) == entry.name else { throw Problem(text: "a file's own header names another file") }
             // A folder's entry holds nothing: bytes in it reach no check, and some readers show them (claude-1 on c68e3ec).
             guard entry.name.last != UInt8(ascii: "/") || (entry.compressed == 0 && entry.size == 0) else {
-                throw Problem(text: "a folder's entry holds bytes")
+                throw Problem(text: "a folder's entry contains bytes")
             }
             try Self.checkExtras(try read(at + 30 + UInt64(nameLength), extraLength))
             let sizes = (u32(header, 14), u32(header, 18), u32(header, 22))

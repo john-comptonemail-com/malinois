@@ -122,6 +122,76 @@ final class Item90ShareTests: XCTestCase {
         item.finish()
     }
 
+    /// Item 220's defect 1 (an outside reading of 1.11's public source; the owner, 2026-11-09: into 1.12): a making that
+    /// does not end holds the share for its limit and no longer. The making signs through App Attest, whose calls have
+    /// no deadline of their own, and the wait for it had none either: a call that never answered held the sheet's thread
+    /// for good, and the main thread with it at the sheet's next ask. Past the limit the share goes on without the
+    /// bundle, the event's screen is told so, and a bundle that arrives late is removed at once. Written before the fix,
+    /// red at that commit against a limit the item did not yet keep. The stand-in's making ends when the test lets it,
+    /// so nothing here rests on how fast the test's machine is; and by itself after a while, so the red run ends too.
+    func testAMakingThatDoesNotEndHoldsTheShareForItsLimitOnly() async throws {
+        let release = TestFlag(), ended = TestFlag(), madeLate = TestFlag()
+        let late = folder.appendingPathComponent("late", isDirectory: true)
+        let item = EvidenceBundleItem(placeholder: folder.appendingPathComponent("Malinois evidence.zip"), limit: 0.2) { [late] in
+            let byItself = Date().addingTimeInterval(5)
+            while !release.value, Date() < byItself { try? await Task.sleep(nanoseconds: 20_000_000) }
+            let zip = try? standInBundle(in: late)
+            madeLate.value = zip != nil
+            ended.value = true
+            return zip
+        }
+        // A destination picked: the sheet asks on a thread of its own.
+        let asked: (bundle: URL?, makingHadEnded: Bool) = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let bundle = item.madeBundle(for: .airDrop)
+                continuation.resume(returning: (bundle, ended.value))
+            }
+        }
+        XCTAssertNil(asked.bundle, "no bundle for this share")
+        XCTAssertFalse(asked.makingHadEnded, "the share went on at the limit, before the making ended")
+        XCTAssertEqual(item.madeForTheDestination, false, "the event's screen says the share went without it")
+        XCTAssertNil(item.activityViewController(sheet(), itemForActivityType: .airDrop), "and the sheet's own ask leaves it out")
+        // The making ends now: the bundle that arrives after the limit is removed at once.
+        release.value = true
+        let deadline = Date().addingTimeInterval(5)
+        while !ended.value, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertTrue(madeLate.value, "the stand-in made its bundle, after the limit")
+        func left() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: late.path)) ?? [] }
+        while !left().isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(left(), [], "the late bundle's folder is gone")
+        item.finish()
+    }
+
+    /// The other order, which no test of the item can stage: the making ends just as the limit runs out, its bundle
+    /// already here when the waiter gives up. Whichever of the two comes second removes the bundle, and it is no longer
+    /// given. Of the holder alone; written with the fix, for its undo check.
+    func testABundleIsRemovedByWhicheverOfTheMakingAndTheWaiterComesSecond() throws {
+        // The waiter gave up first, as in the test above.
+        let afterTheLimit = try standInBundle(in: folder.appendingPathComponent("after", isDirectory: true))
+        let gaveUpFirst = EvidenceBundleItem.Made()
+        gaveUpFirst.giveUp()
+        gaveUpFirst.arrive(afterTheLimit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: afterTheLimit.deletingLastPathComponent().path), "removed as it arrives")
+        XCTAssertNil(gaveUpFirst.url)
+        // The making first, by a moment.
+        let justInTime = try standInBundle(in: folder.appendingPathComponent("before", isDirectory: true))
+        let arrivedFirst = EvidenceBundleItem.Made()
+        arrivedFirst.arrive(justInTime)
+        XCTAssertEqual(arrivedFirst.url, justInTime, "kept while a waiter may still take it")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: justInTime.path))
+        arrivedFirst.giveUp()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: justInTime.deletingLastPathComponent().path), "removed when the waiter gives up")
+        XCTAssertNil(arrivedFirst.url, "and no longer given")
+    }
+
+    /// An item waits a minute at most for its making unless a test gives it another limit. Share's own item is made
+    /// without one: `testOnlyARecordThisPhoneSignedHasABundleToShare` reads the limit of the item Share offers.
+    func testAnItemWaitsAMinuteAtMostUnlessATestSaysOtherwise() {
+        XCTAssertEqual(EvidenceBundleItem.makingLimit, 60)
+        let item = EvidenceBundleItem(placeholder: folder.appendingPathComponent("Malinois evidence.zip")) { nil }
+        XCTAssertEqual(item.limit, EvidenceBundleItem.makingLimit)
+    }
+
     func testTheItemMakesTheRealBundleOnlyOnceADestinationIsPicked() async throws {
         let (signer, _) = try makeSigner()
         await signer.certifyIfNeeded(records: [])
@@ -251,6 +321,7 @@ final class Item90ShareTests: XCTestCase {
         let exporter = EvidenceExporter(signer: signer, mediaDirectory: folder, temporaryDirectory: folder)
         let offered = await EvidenceBundleItem.forShare(of: signed, log: log, exporter: exporter)
         XCTAssertEqual(offered?.placeholderItem as? URL, folder.appendingPathComponent(EvidenceExporter.bundleName(for: signed) + ".zip"))
+        XCTAssertEqual(offered?.limit, EvidenceBundleItem.makingLimit, "and it waits for its making a minute at most (item 220's defect 1)")
         let forBefore = await EvidenceBundleItem.forShare(of: before, log: log, exporter: exporter)
         let forMirrored = await EvidenceBundleItem.forShare(of: mirrored, log: log, exporter: exporter)
         let withoutExporter = await EvidenceBundleItem.forShare(of: signed, log: log, exporter: nil)

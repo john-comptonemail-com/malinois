@@ -46,6 +46,11 @@ struct SettingsView: View {
     @State private var micPermission = CameraController.microphonePermission
     /// The notifications permission, for the iCloud section's row (item 69); nil until read.
     @State private var notificationStatus: UNAuthorizationStatus?
+    /// The signer, for the signing key's row (item 199); nil where the app sets none (a test's screen).
+    @Environment(\.evidenceExporter) private var exporter
+    /// The signing key, read from the signer each time Settings opens (item 199); nil until read, and where this iPhone
+    /// cannot sign.
+    @State private var signingKey: SigningKey?
 
     var body: some View {
         NavigationStack {
@@ -58,6 +63,7 @@ struct SettingsView: View {
                 captureSection
                 securitySection
                 iCloudSection
+                signingKeySection
                 consideringSection
                 helpSection
                 #if DEBUG
@@ -78,6 +84,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showChangePIN) { ChangePINView().environmentObject(settings) }
             .sheet(isPresented: $showPaywall) { PaywallView() }
             .task { micPermission = CameraController.microphonePermission; notificationStatus = await NotificationPermission.status(); await cloud.refreshAccountState() }
+            .task { signingKey = await exporter?.signer.signingKey() }
         }
         // Persist even if the sheet is swiped down instead of tapping Done.
         .onDisappear { settings.save() }
@@ -687,6 +694,40 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
         } header: {
             Text("Considering")
+        }
+    }
+
+    /// The signing key (item 199; the owner's approved words in `SigningKeyRow`): a certified key's ID as the verifier
+    /// prints a key, with Copy for the whole ID, so the owner can give it to someone before sending a ZIP; before Apple has
+    /// certified a key, that it waits for Apple. No row where this iPhone cannot sign. The footer names "these eight
+    /// characters", so it shows only under a certified key.
+    @ViewBuilder
+    private var signingKeySection: some View {
+        if let signingKey {
+            Section {
+                if let whole = SigningKeyRow.copyText(signingKey) {
+                    HStack {
+                        Text(SigningKeyRow.title)
+                        Spacer()
+                        Text(SigningKeyRow.value(signingKey))
+                            .font(.body.monospaced())
+                            .foregroundStyle(.secondary)
+                        Button(SigningKeyRow.copy) { UIPasteboard.general.string = whole }
+                            .buttonStyle(.borderless)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(SigningKeyRow.title)
+                        Text(SigningKeyRow.value(signingKey))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                if SigningKeyRow.copyText(signingKey) != nil {
+                    Text(SigningKeyRow.footer)
+                }
+            }
         }
     }
 

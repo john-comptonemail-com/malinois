@@ -589,6 +589,14 @@ final class CloudExfiltrator: ObservableObject {
         // The event's queue first, the identity lookup at its turn (item 162's A10): the writes for one event go out in
         // the order they were asked for, not in the order their lookups answered, each with the log's copy as it is then.
         return await enqueue(event.id) { [self] in
+            // No lease, whatever the reason: a lookup that failed for a moment, no iCloud account, or an account this
+            // phone is not enrolled for. The failure hook is called for each alike, on purpose (item 220's defect 5,
+            // which read this as an oversight beside `exfiltrate`'s split): it reopens only a record already marked
+            // synced (`reopenForReupload`, item 65's finding 3), whose newer change has not gone up, so "synced" has
+            // stopped being true whatever kept the change back, and the sweep carries it up once an account is
+            // there (`Item175ThumbnailRetryTests.testAnOwnerAttributionStillReopensWhenIdentityCannotBeResolved`).
+            // `exfiltrate` tells the two apart for another reason, its verdict on interference, which a fact's
+            // push does not give.
             guard let lease = await acquireCloudLease() else {
                 let current = storedEvent(event.id) ?? event
                 if backupPermits(current) { factFailed(current) }
@@ -1444,6 +1452,7 @@ final class CloudExfiltrator: ObservableObject {
                 || Event.sirenElsewhereDevice(kind: kind) != nil   // 1.8.2's step 26 (ADR 0062)
                 || Event.signedRecordsGone(kind: kind) != nil   // item 182
                 || kind == Event.signaturesMissingKind   // item 190's A3
+                || Event.setAsideDeleted(kind: kind) != nil   // item 234
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,

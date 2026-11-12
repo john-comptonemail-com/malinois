@@ -444,6 +444,149 @@ final class AppSettingsTests: XCTestCase {
         stashed.forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
+    /// Item 220's defect 4, the settings' half (a subagent's second path inventory, 2026-11-10; the fix's own inventory
+    /// had left it, counting only two launches in one second). The unreadable settings are stashed under a key with the
+    /// whole second, and a stash of that second still kept was stored over: the earlier bytes were gone, and nothing
+    /// said so. It takes the clock set back to the second of a kept stash, or two unreadable blobs in one second. Each
+    /// is now kept under a key of its own.
+    ///
+    /// Two stashes are put there first, of this second and the next (the test cannot know the second the load reads),
+    /// and no more: Malinois keeps the newest three stashes and reaps the rest as a load ends, so with more than two the
+    /// reaping decides the test. As first written this test put six, and failed the same way with the fix and without
+    /// it (chain i's green run, 2026-11-10). That it fails without the fix is shown by the fix's undo check.
+    @MainActor
+    func testAStashOfTheSameSecondIsNotStoredOver() throws {
+        let key = "com.malinois.settings"
+        let defaults = UserDefaults.standard
+        let saved = defaults.data(forKey: key)
+        func stashes() -> [String] { defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix(key + ".corrupt-") } }
+        defer {
+            if let saved { defaults.set(saved, forKey: key) } else { defaults.removeObject(forKey: key) }
+            defaults.removeObject(forKey: AppSettings.resetPendingKey)
+            stashes().forEach { defaults.removeObject(forKey: $0) }
+        }
+        stashes().forEach { defaults.removeObject(forKey: $0) }   // any an earlier test left would count toward the three kept
+        let now = Int(Date().timeIntervalSince1970)
+        let taken = [now, now + 1].map { "\(key).corrupt-\($0)" }
+        let earlier = Data("an earlier stash".utf8)
+        taken.forEach { defaults.set(earlier, forKey: $0) }
+        let blob = Data("{\"gracePeriodSeconds\":\"not a number\"}".utf8)
+        defaults.set(blob, forKey: key)
+
+        _ = AppSettings.load()
+        for stash in taken {
+            XCTAssertEqual(defaults.data(forKey: stash), earlier, "the earlier stashes are as they were")
+        }
+        let new = stashes().filter { !taken.contains($0) }
+        XCTAssertEqual(new.count, 1, "one more stash: \(stashes().sorted())")
+        XCTAssertEqual(new.first.flatMap { defaults.data(forKey: $0) }, blob, "the unreadable settings as they were")
+        XCTAssertEqual(new.first?.hasSuffix("-2"), true, "under its second's key, with a number after it: \(new)")
+    }
+
+    /// The key a stash takes: the plain one, with its seconds, while no key of that second is taken; then "-2", "-3" and
+    /// so on, the number after the last one taken (item 226's Codex-6; the first one free, until then: a test below has
+    /// the difference); the plain one again when the last try is taken. Its time still reads from it, for the reaping
+    /// of old stashes. Written with item 220's fix, for its undo check.
+    func testAStashTakesThePlainKeyThenTheNumberAfterTheLastTaken() {
+        let at = Date(timeIntervalSince1970: 1_762_520_000)
+        func key(taking: Set<String>, tries: Int = 100) -> String {
+            AppSettings.stashKey(now: at, tries: tries) { taking.contains($0) }
+        }
+        let plain = "com.malinois.settings.corrupt-1762520000", second = plain + "-2"
+        XCTAssertEqual(key(taking: []), plain)
+        XCTAssertEqual(key(taking: [plain]), second)
+        XCTAssertEqual(key(taking: [plain, second]), plain + "-3")
+        XCTAssertEqual(key(taking: [plain, second], tries: 2), plain, "every try taken: the plain key")
+        XCTAssertEqual(EventStore.corruptArtifactDate(second), at, "the key still gives its time")
+    }
+
+    /// Of two stashes of one second the later is the newer one. When the newest three are kept, it is the earlier of the
+    /// two that is reaped, in whatever order they are found. The reaping went by the time in the key alone, so which of
+    /// the two it took was a matter of the order it met them in, and it could be the one just made (found while
+    /// correcting the test above, chain i, 2026-11-10; tried on the Mac with the app's own function). Written before the
+    /// fix, red at that commit.
+    func testOfTwoStashesOfOneSecondTheEarlierIsReapedFirst() {
+        let now = Date(timeIntervalSince1970: 1_762_600_000)
+        let plain = "com.malinois.settings.corrupt-1762520000", later = plain + "-2"
+        let newer = ["com.malinois.settings.corrupt-1762530000", "com.malinois.settings.corrupt-1762540000"]
+        func reaped(_ names: [String]) -> [String] {
+            let stamps: [(name: String, date: Date)] = names.compactMap { name in
+                EventStore.corruptArtifactDate(name).map { (name, $0) }
+            }
+            return EventStore.reapableCorruptArtifacts(stamps: stamps, now: now)
+        }
+        XCTAssertEqual(reaped(newer + [plain, later]), [plain], "the earlier one found first")
+        XCTAssertEqual(reaped(newer + [later, plain]), [plain], "the later one found first")
+        XCTAssertEqual(reaped([later, plain] + newer), [plain], "the pair found before the newer ones")
+    }
+
+    /// Codex's look at 1.12's three rounds of fixes (BACKLOG item 226's Codex-6; the owner, 2026-11-10: "yes, it is"): a
+    /// key freed below the others of its second is not given again. The key was the first one free, while the reaping
+    /// takes the number after the seconds as the order of making: once the plain key of a second had been reaped, the
+    /// next stash of that second took it again and counted as the oldest. Written before the fix, red at that commit.
+    func testAStashKeyFreedBelowTheOthersOfItsSecondIsNotGivenAgain() {
+        let at = Date(timeIntervalSince1970: 1_762_520_000)
+        func key(taking: Set<String>, tries: Int = 100) -> String {
+            AppSettings.stashKey(now: at, tries: tries) { taking.contains($0) }
+        }
+        let plain = "com.malinois.settings.corrupt-1762520000"
+        XCTAssertEqual(key(taking: [plain + "-2", plain + "-3", plain + "-4"]), plain + "-5", "after the last one taken")
+        XCTAssertEqual(key(taking: [plain, plain + "-3"]), plain + "-4", "a free key between two taken is passed over too")
+        XCTAssertEqual(key(taking: [plain + "-2"], tries: 2), plain, "the last try taken: the plain key, as before")
+    }
+
+    /// The naming and the reaping together, as a load has them: six loads of unreadable settings in one second, each
+    /// stashed and the reaping then run, and each load's bytes are there when it ends. Each half passed its own test
+    /// while the fifth stash of a second was reaped as it was made (Codex-6): the fourth load's reaping frees the plain
+    /// key, and the fifth took it. Written before the fix, red at that commit.
+    func testEachStashOfOneSecondOutlivesTheReapingThatFollowsIt() {
+        let at = Date(timeIntervalSince1970: 1_762_520_000)
+        var kept: [String: Int] = [:]
+        for load in 1...6 {
+            let key = AppSettings.stashKey(now: at) { kept[$0] != nil }
+            kept[key] = load
+            let stamps: [(name: String, date: Date)] = kept.keys.compactMap { name in
+                EventStore.corruptArtifactDate(name).map { (name, $0) }
+            }
+            for reaped in EventStore.reapableCorruptArtifacts(stamps: stamps, now: at) { kept[reaped] = nil }
+            XCTAssertEqual(kept[key], load, "load \(load)'s stash, \(key), is there when the load ends: \(kept.keys.sorted())")
+            XCTAssertEqual(kept.count, min(load, 3), "the newest three are kept")
+        }
+        XCTAssertEqual(kept.values.sorted(), [4, 5, 6], "and they are the last three made")
+    }
+
+    /// The same through a real load. Three stashes of this second are put there as a fourth load's reaping leaves them
+    /// ("-2", "-3" and "-4", the plain key free again), then unreadable settings are loaded: their stash is kept, under
+    /// the key after the last. The test cannot hold the clock: a load that falls into a later second than the stashes
+    /// put there shows nothing either way, and is tried again. Written before the fix, red at that commit.
+    @MainActor
+    func testALoadInASecondWhoseFirstStashWasReapedKeepsItsBytes() throws {
+        let key = "com.malinois.settings"
+        let defaults = UserDefaults.standard
+        let saved = defaults.data(forKey: key)
+        func stashes() -> [String] { defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix(key + ".corrupt-") } }
+        defer {
+            if let saved { defaults.set(saved, forKey: key) } else { defaults.removeObject(forKey: key) }
+            defaults.removeObject(forKey: AppSettings.resetPendingKey)
+            stashes().forEach { defaults.removeObject(forKey: $0) }
+        }
+        let blob = Data("{\"gracePeriodSeconds\":\"not a number\"}".utf8)
+        for _ in 1...5 {
+            stashes().forEach { defaults.removeObject(forKey: $0) }
+            let plain = "\(key).corrupt-\(Int(Date().timeIntervalSince1970))"
+            for number in 2...4 { defaults.set(Data("an earlier stash".utf8), forKey: "\(plain)-\(number)") }
+            defaults.set(blob, forKey: key)
+
+            _ = AppSettings.load()
+            let withTheBlob = stashes().filter { defaults.data(forKey: $0) == blob }
+            if withTheBlob.contains(where: { !$0.hasPrefix(plain) }) { continue }   // a later second: nothing shown
+            XCTAssertEqual(withTheBlob, [plain + "-5"], "the unreadable settings are kept, after the last: \(stashes().sorted())")
+            XCTAssertEqual(stashes().sorted(), [plain + "-3", plain + "-4", plain + "-5"], "the newest three of the second")
+            return
+        }
+        XCTFail("five loads each fell into a later second than the stashes put there for them")
+    }
+
     // MARK: - Cloud retention policy (32.R2)
 
     /// Settings saved before the policy existed decode to the default (auto, 12 months) —

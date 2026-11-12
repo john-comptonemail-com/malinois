@@ -67,6 +67,9 @@ struct HomeView: View {
         /// Settings is a WRITE surface — a presented face could disable every tripwire,
         /// switch to Stealth, kill cross-device alerts, and purge cloud media — so it
         /// stays PIN-only, and SECURITY.md's "read surfaces" boundary is true word for word.
+        /// That holds only while nothing behind these two gates deletes or changes anything on a
+        /// face or finger: an action there that does asks for the PIN itself, as a set-aside
+        /// log's Delete does on its screen, reached from the Event Log (item 232).
         var allowsBiometrics: Bool {
             switch self {
             case .log, .test: true
@@ -82,6 +85,10 @@ struct HomeView: View {
     /// Pure (unit-tested; item 137, ADR 0058): whether Home makes Apple's rating request now. Only when a calm disarm has
     /// Home's offer of notifications for cross-device alerts (item 69).
     static let notificationAskLine = "Cross-device alerts need notifications on this device. You can also allow it later in Settings → iCloud."
+    /// Home's notice while the log's writes fail (item 73): new events are not being saved.
+    static let logNotice = "New events aren't being saved to this device - storage may be full. Anything already uploaded to iCloud is unaffected."
+    /// Home's notice while the journal's appends fail and the log is still saving (item 73).
+    static let journalNotice = "Recent events may not survive a crash - the event journal can't be written. The log itself is saving normally."
 
     /// asked for it (`MonitoringEngine.ratingRequestPending`), with no PIN pad up and Guided Access off; otherwise it
     /// waits for the next chance on Home.
@@ -478,28 +485,32 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if eventStore.persistDegraded {
-                Label("New events aren't being saved to this device - storage may be full. Anything already uploaded to iCloud is unaffected.",
-                      systemImage: "externaldrive.badge.exclamationmark")
+                Label(Self.logNotice, systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .reportedOnScreen(Self.logNotice)
             }
-            if eventStore.logWasQuarantined {
-                Label("The event log couldn't be read and was set aside as a backup - new events go to a fresh log.",
-                      systemImage: "externaldrive.badge.exclamationmark")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-            if eventStore.journalDegraded {
-                Label("Recent events may not survive a crash - the event journal can't be written. The log itself is saving normally.",
+            // While any set-aside log is kept, not only at the launch that set it aside (item 122's decision 4 (a)).
+            if !eventStore.setAsideLogs.isEmpty {
+                Label(SetAsideLogWords.home,
                       systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+            }
+            // Only while the log is saving: the notice says it is. When the log's write fails too (a full disk fails
+            // both; an event that cannot be encoded does), the notice above says new events are not being saved, and
+            // this one beside it said the opposite (item 220; the owner, 2026-11-10: "as you recommend").
+            if eventStore.journalDegraded && !eventStore.persistDegraded {
+                Label(Self.journalNotice, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .reportedOnScreen(Self.journalNotice)
             }
             if let notice = engine.cloudResetNotice {
                 Label(notice, systemImage: "icloud.slash")

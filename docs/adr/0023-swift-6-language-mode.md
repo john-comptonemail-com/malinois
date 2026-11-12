@@ -3,6 +3,10 @@
 - **Status:** accepted
 - **Date:** 2026-09-29
 - **Summary:** Every target builds in Swift 6 mode with no warning, and the changes keep the app's behavior.
+- **Amended 2026-11-09** (BACKLOG 220's defect 2, the owner: "a for defect 2"; its wording corrected 2026-11-10 after a
+  sweep of the documents against the code): the event store's state for its file queue is held in a `QueueConfined`
+  value, which checks its queue in Debug builds, and new state of that kind goes there; the camera controller's is left
+  as it is for now (BACKLOG 222) (the last section).
 
 ## Context
 
@@ -56,3 +60,42 @@ main-actor isolation (3a).
 - Not taken: default main-actor isolation (it changes every type's isolation at once); turning the
   runtime checks off (`-disable-dynamic-actor-isolation`, which would hide the one failure the
   audit cannot rule out for code written later); bringing the spike to Swift 6 now.
+
+## Amendment (2026-11-09, 1.12): the store's state for its queue is held in a checked holder
+
+Decision 2 lists the promises a `nonisolated(unsafe)` marking may rest on. It never named one the app also relies on:
+"used only on one dispatch queue". The camera controller's session state has rested on that since this record's own
+work (the comment at the head of its class says so), and the event store later gained five fields on it, for its file
+queue (`persistFailedOnQueue`, `mediaOwedDeletion`, `limitRemovalsOnDisk`, `limitRemovalsKeyRead`, `reportsOwedOnDisk`),
+stated in their comments and checked by nothing. Every use of the five was on the queue; a new use from another thread
+would have compiled, and raced. An outside reading of 1.11's public source raised the store's five (BACKLOG item 220's
+defect 2).
+
+Three ways went to the owner, ruled 2026-11-09 ("a for defect 2"):
+
+- **(a) A small checked holder (taken).** `QueueConfined` (`Malinois/Services/EventStore.swift`): the value has one way
+  in (`get`, `set`, `update`), and in Debug builds, which the tests run, each use checks that it is on the queue of the
+  name given. A use from anywhere else is reported, to a test's hook or by stopping the app. A Release build makes no
+  check and behaves as the fields did. The order and the timing of the store's writes do not change.
+- (b) A Swift actor tied to the file queue: the strongest checking by the compiler, with many more lines of the store's
+  write path changed, and no practical protection over (a).
+- (c) A check at each use, with the fields as they were: the smallest change, and the compiler still stops no new wrong
+  use.
+
+**The rule from here:** new state that only a dispatch queue may touch goes in a `QueueConfined` value, not in a field
+marked `nonisolated(unsafe)`. In the store no field keeps that marking but its test seams (fields whose names end in
+`ForTesting`, which only tests set), and `EventTests.testTheStoreKeepsNoUnsafeFieldForItsQueue` reads the store's source
+for any other.
+
+**What is left as it was: the camera controller** (the owner, 2026-11-10: "as you recommend", a later release; BACKLOG
+item 222). `CameraController` has 45 fields marked `nonisolated(unsafe)`: 32 kept to its session queue and 4 to its
+Vision queue by comment, 6 under `ownershipLock`, 1 under `clipAudioLock`, and 2 handlers the engine sets. They are of
+the kind the store's five were, in code only a phone can run (the Simulator has no camera), so they move into holders
+in a release of their own, after a short design and with a device run. Two of them are read by the main actor while
+the session queue may still be writing them (`visionTapActive` and `micUnavailableForClips`, after a warm-up's
+deadline), which that work also settles. The other fields so marked in the app rest on promises decision 2 lists, or
+are kept to the main actor (`DeviceInfo.name`, `AppSettings.loadWasReset`).
+
+**What it does not give:** the compiler still does not prove the confinement, since the holder itself is
+`@unchecked Sendable`; the check is made as the app runs, in Debug builds only; and the queue is known by its name, so
+two queues of one name are not told apart.

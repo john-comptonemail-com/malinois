@@ -45,6 +45,8 @@ private final class Rig {
     var stalledRead: Int?
     var stallLength: TimeInterval = 1
     private var reads = 0
+    /// How many times the list was asked (item 218's Codex-2).
+    var listReads: Int { reads }
 
     /// How long the read now starting takes, if it stalls.
     func nextReadStall() -> TimeInterval? {
@@ -446,6 +448,69 @@ final class Item140WatchPairingTests: XCTestCase {
         let start = Date()
         await inbox.reconcile()
         XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+    }
+
+    // MARK: - Item 218's Codex-2 (1.12): the alerts of one run share one allowance for the list
+    //
+    // Codex's look at all of 1.12: the watch gives each wake for the iPhone link back after 10 seconds at the latest (item
+    // 212), whatever is still in flight, and the alerts a wake hands over are handled one after another, each waiting up
+    // to the deadline for the list. A backlog with a list slow to answer could so outlast the wake, and its last alerts
+    // were cut off. Now the alerts of one run share the deadline: once it is used, the rest are posted without the list,
+    // as an alert already is when the list does not answer. Written before the change, red at that commit.
+
+    /// Six alerts handed over together, with a list that does not answer: every alert is posted, and the list is asked
+    /// once for the run, where it was asked, and waited for, once for each alert.
+    func testAListThatDoesNotAnswerCostsARunOfAlertsOneAllowance() async {
+        rig.listStall = 5
+        let inbox = rig.inbox(listDeadline: 0.2)
+        await handOver((0..<6).map { _ in relayed(.tamper, UUID()) }, to: inbox)
+        XCTAssertEqual(rig.posted.count, 6, "every alert is shown")
+        XCTAssertEqual(rig.listReads, 1, "the list is asked once for the run")
+    }
+
+    /// The allowance is the run's: once every alert handed over is handled, the next alert asks the list again with the
+    /// allowance whole, so a list that takes a moment to answer is waited for, and iCloud's copy of its event is replaced
+    /// as before. (The moment was added for the undo check: a list that answers at once also beats an allowance of
+    /// nothing, so the test could not see a new run that asked again but had no time left.) The allowance here is the
+    /// app's own 2 seconds, so the second run's answer, 0.05 seconds, has nearly all of it to arrive in on a busy
+    /// machine; it was 0.5 (a no-notes look at the change, 2026-11-10).
+    func testTheNextRunOfAlertsAsksTheListAgain() async {
+        rig.listStall = 5
+        let inbox = rig.inbox(listDeadline: 2)
+        await handOver((0..<3).map { _ in relayed(.tamper, UUID()) }, to: inbox)
+        XCTAssertEqual(rig.listReads, 1, "the first run used its allowance")
+        rig.listStall = 0.05
+        let event = UUID()
+        let iCloud = tamperPush(event)
+        rig.deliverICloud(iCloud)
+        let posted = await inbox.receive(relayed(.tamper, event))
+        XCTAssertTrue(posted)
+        XCTAssertEqual(rig.listReads, 2, "a new run asks the list again")
+        XCTAssertEqual(rig.removed, [[iCloud.identifier]], "and iCloud's copy is replaced as before")
+    }
+
+    /// A list that answers, but slowly, is asked only while the run's allowance lasts: the time an answer took counts
+    /// too. Two answers of 0.15 seconds use up 0.25, so the list is asked twice at most, where it was asked six times.
+    func testASlowListIsAskedOnlyWhileTheRunsAllowanceLasts() async {
+        rig.listStall = 0.15
+        let inbox = rig.inbox(listDeadline: 0.25)
+        await handOver((0..<6).map { _ in relayed(.tamper, UUID()) }, to: inbox)
+        XCTAssertEqual(rig.posted.count, 6, "every alert is shown")
+        XCTAssertLessThanOrEqual(rig.listReads, 2)
+    }
+
+    /// The guard, green before the change and after: a list that answers at once is asked for every alert of a run.
+    func testAListThatAnswersAtOnceIsAskedForEveryAlertOfARun() async {
+        let inbox = rig.inbox()
+        await handOver((0..<6).map { _ in relayed(.tamper, UUID()) }, to: inbox)
+        XCTAssertEqual(rig.posted.count, 6)
+        XCTAssertEqual(rig.listReads, 6, "answers that come at once do not use the allowance up")
+    }
+
+    /// Hands `alerts` to `inbox` together, as a wake hands a backlog over, and waits until each is handled.
+    private func handOver(_ alerts: [WatchAlertMessage], to inbox: WatchRelayInbox) async {
+        let handled = alerts.map { alert in Task { await inbox.receive(alert) } }
+        for task in handled { _ = await task.value }
     }
 
     private static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

@@ -687,6 +687,24 @@ final class AppSettings: ObservableObject, Codable {
         reapStaleCorruptStashes()
     }
 
+    /// Pure (unit-tested): the key unreadable settings are stashed under, `<the settings' key>.corrupt-<seconds>`, the
+    /// seconds those of `now`; while a stash of that second is still kept, a number follows the seconds, `-2`, `-3` and
+    /// so on (item 220's defect 4, the settings' half, as `EventStore.setAsideURL` does for the store's files). The
+    /// plain key was stored over: with the clock set back to the second of a kept stash, or two unreadable blobs in one
+    /// second, the earlier bytes were gone. The number is the one after the LAST key taken of that second, never a lower
+    /// one that is free again (item 226's Codex-6): the reaping keeps the newest three and reads the number as the
+    /// order of making, so a key given a second time was reaped as its load ended. The key still gives its time
+    /// (`EventStore.corruptArtifactDate`), which the reaping reads. When the last of `tries` keys is taken it is the
+    /// plain one, stored over as before.
+    static func stashKey(now: Date = Date(), tries: Int = 100,
+                         taken: (String) -> Bool = { UserDefaults.standard.object(forKey: $0) != nil }) -> String {
+        let plain = "\(storeKey).corrupt-\(Int(now.timeIntervalSince1970))"
+        func key(_ number: Int) -> String { number == 1 ? plain : "\(plain)-\(number)" }
+        let last = max(2, tries)
+        guard let lastTaken = (1...last).last(where: { taken(key($0)) }) else { return plain }
+        return lastTaken < last ? key(lastTaken + 1) : plain
+    }
+
     /// The stored settings decoded, or, when they cannot be, set aside and reset (announced on Home).
     private static func decodeOrReset(_ data: Data) -> AppSettings {
         do {
@@ -702,7 +720,7 @@ final class AppSettings: ObservableObject, Codable {
             // Preserved rather than overwritten, on the same reasoning as a corrupt `events.json`
             // (F-11): the bytes may be recoverable by hand, and nothing can recover them once the
             // next save lands on top.
-            let stash = "\(storeKey).corrupt-\(Int(Date().timeIntervalSince1970))"
+            let stash = stashKey()   // a key not yet taken (item 220's defect 4, the settings' half)
             UserDefaults.standard.set(data, forKey: stash)
             loadWasReset = true
             Log.store.fault("Settings could not be decoded; preserved as \(stash, privacy: .public) and reset to defaults: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")

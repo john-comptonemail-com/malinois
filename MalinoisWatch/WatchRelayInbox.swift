@@ -42,6 +42,18 @@ final class WatchRelayInbox {
     /// How long a read of the list may take before the inbox goes on without it (Codex's look at 75): a relayed copy is
     /// then posted as before, with sound, and nothing is removed, so a list that does not answer holds no alert back.
     private let listDeadline: TimeInterval
+    /// What is left of `listDeadline` for the alerts of this run (item 218's Codex-2). The alerts handed in are handled
+    /// one after another, each reading the list before its post, and the watch app gives a background wake for the
+    /// link back after 10 seconds at the latest, whatever is still in flight (`WatchLinkWakes`, item 212): with a
+    /// deadline for each read, a backlog and a list slow to answer could outlast the wake, and its last alerts were
+    /// cut off. So the reads of one run share the deadline. Once it is used, the rest of the run is posted without the
+    /// list, as an alert already is when the list does not answer; iCloud's copy of such an event leaves the list at
+    /// the next tidy-up.
+    private var listTimeLeft: TimeInterval
+    /// Whether this run's allowance for the list is used up.
+    private var listAllowanceUsed = false
+    /// The alerts handed in and not yet handled: the run ends when none is left, and the next has the allowance whole.
+    private var alertsInRun = 0
     private let log = Logger(subsystem: "com.johncompton.Malinois.watchkitapp", category: "alerts")
     /// The relayed alerts shown on their own, so a repeated delivery is not shown again, and those being
     /// posted now (item 108, CE-03).
@@ -70,6 +82,7 @@ final class WatchRelayInbox {
         self.delivered = delivered
         self.remove = remove
         self.listDeadline = listDeadline
+        listTimeLeft = listDeadline
         let kept = WatchRelayMemory.read(defaults.data(forKey: Self.memoryKey))
         let shownBefore = defaults.stringArray(forKey: Self.shownRelayIDsKey) ?? []
         ledger = WatchAlertStatus.RelayLedger(shown: WatchRelayMemory.merged(kept?.shown ?? [], shownBefore))
@@ -80,15 +93,29 @@ final class WatchRelayInbox {
     /// Handles one relayed alert, live or queued, once those handed in before it are done: shown on its
     /// own, joined to the summary, or passed over as one already shown or counted. One at a time, so a
     /// post that finishes late cannot overwrite a later count. Returns whether a notification was posted.
+    /// The alerts handed in while any is still to be handled make one run, which has one allowance for
+    /// reading the list (item 218's Codex-2).
     @discardableResult
     func receive(_ message: WatchAlertMessage) async -> Bool {
         let previous = last
+        alertsInRun += 1
         let task = Task { () -> Bool in
             _ = await previous?.value
-            return await self.handle(message)
+            let posted = await self.handle(message)
+            self.endOfAnAlert()
+            return posted
         }
         last = task
         return await task.value
+    }
+
+    /// One alert of the run is handled. When none is left to handle the run is over, and the next has the list's
+    /// allowance whole.
+    private func endOfAnAlert() {
+        alertsInRun -= 1
+        guard alertsInRun == 0 else { return }
+        listTimeLeft = listDeadline
+        listAllowanceUsed = false
     }
 
     /// The alert is remembered, and the summary kept, only once its post succeeded (item 108, CE-03),
@@ -113,8 +140,8 @@ final class WatchRelayInbox {
         let joined = message.isSummarized(handledAt: handledAt)
             ? WatchRelaySummary.adding(message, to: summary, at: handledAt) : nil
         // iCloud's copy of the event, if the list has it (ADR 0052): the relayed copy replaces it, and alerts as before,
-        // since iCloud's may not have tapped (TestFlight 76).
-        let plan = WatchAlertPairing.relayed(message, delivered: await readList())
+        // since iCloud's may not have tapped (TestFlight 76). Read within the run's allowance (item 218's Codex-2).
+        let plan = WatchAlertPairing.relayed(message, delivered: await listForAnAlert())
         let request: UNNotificationRequest
         var burstAfter: AlertBurst.Record?   // the burst record after this alert, kept once it is shown
         if let joined {
@@ -162,16 +189,31 @@ final class WatchRelayInbox {
         if !stale.isEmpty { remove(stale) }
     }
 
-    /// The list, or none when it does not answer within `listDeadline`.
-    private func readList() async -> [WatchAlertPairing.Delivered] {
-        await withCheckedContinuation { (done: CheckedContinuation<[WatchAlertPairing.Delivered], Never>) in
+    /// The list for an alert of this run, read within what is left of the run's allowance; none, without asking, once
+    /// the allowance is used up (item 218's Codex-2). The time a read took counts whether or not the list answered, so a
+    /// list that answers slowly uses the allowance up as one that does not answer does.
+    private func listForAnAlert() async -> [WatchAlertPairing.Delivered] {
+        guard !listAllowanceUsed else { return [] }
+        let clock = ContinuousClock()
+        let started = clock.now
+        let list = await readList(within: listTimeLeft)
+        listTimeLeft -= (clock.now - started) / .seconds(1)
+        if listTimeLeft <= 0 { listAllowanceUsed = true }
+        return list
+    }
+
+    /// The list, or none when it does not answer within `deadline`: `listDeadline` for a tidy-up, which runs beside the
+    /// alerts' queue, and what is left of the run's allowance for an alert (`listForAnAlert`).
+    private func readList(within deadline: TimeInterval? = nil) async -> [WatchAlertPairing.Delivered] {
+        let deadline = deadline ?? listDeadline
+        return await withCheckedContinuation { (done: CheckedContinuation<[WatchAlertPairing.Delivered], Never>) in
             let answer = FirstAnswer()
             Task { @MainActor in
                 let list = await self.delivered()
                 if answer.claim() { done.resume(returning: list) }
             }
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(max(0, self.listDeadline) * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(max(0, deadline) * 1_000_000_000))
                 if answer.claim() { done.resume(returning: []) }
             }
         }

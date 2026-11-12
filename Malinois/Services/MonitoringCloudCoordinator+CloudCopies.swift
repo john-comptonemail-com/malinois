@@ -86,7 +86,7 @@ extension MonitoringCloudCoordinator {
                 + "the one it used before. Malinois uploaded none of them to this account; they are still on this phone."
             Log.engine.warning("Cloud copies missing under a different iCloud account; nothing uploaded")
         case .unknownAccount:
-            cloudResetNotice = "iCloud no longer holds this phone's records. They are still on this phone."
+            cloudResetNotice = "iCloud no longer has this phone's records. They are still on this phone."
             Log.engine.warning("Cloud copies missing; the account cannot be confirmed, so nothing uploaded")
         }
     }

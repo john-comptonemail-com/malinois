@@ -45,8 +45,22 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     /// Which path brought that alert, kept beside it.
     nonisolated static let lastAlertSourceKey = "com.malinois.watch.lastAlertSource"
     private let log = Logger(subsystem: "com.johncompton.Malinois.watchkitapp", category: "alerts")
-    /// Background wakes for the iPhone link, held until the delivered alerts are handled.
-    private var linkTasks: [WKWatchConnectivityRefreshBackgroundTask] = []
+    /// Background wakes for the iPhone link, held until the delivered alerts are handled, and given
+    /// back at the app's own deadline at the latest, well inside watchOS's 15 seconds (item 212).
+    private lazy var linkWakes = Self.makeLinkWakes()
+
+    /// The wakes' keeper (item 212): a wake given back is completed without a snapshot, and a
+    /// deadline is a task sleeping on the main actor.
+    private static func makeLinkWakes() -> WatchLinkWakes<WKWatchConnectivityRefreshBackgroundTask> {
+        WatchLinkWakes<WKWatchConnectivityRefreshBackgroundTask>(
+            end: { $0.setTaskCompletedWithSnapshot(false) },
+            after: { delay, action in
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+                    action()
+                }
+            })
+    }
     /// The relayed alerts' handling (ADR 0043, ADR 0051): each event once, kept across launches (the
     /// iPhone sends an alert live while the app is open and queued as well, and a copy arriving after
     /// the app restarted must not alert again); one more than an hour old joins one summary; iCloud's
@@ -81,18 +95,20 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     }
 
     /// watchOS wakes the app in the background to deliver the iPhone's queued alerts. Each wake is
-    /// held until nothing is left to deliver; other kinds of wake are finished at once.
+    /// held until nothing is left to deliver, or until the app's own deadline; other kinds of wake
+    /// are finished at once.
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
         for task in backgroundTasks {
             if let linkTask = task as? WKWatchConnectivityRefreshBackgroundTask {
                 activateLink()
                 // Out of time: give the wake back rather than be ended by watchOS, which can cost
                 // the app its background deliveries; an alert not yet posted is lost either way
-                // (the 1.6 review's finding 6).
+                // (the 1.6 review's finding 6). The deadline `linkWakes` sets comes first: on 1.8.2
+                // (79) watchOS ended the app at 15 seconds with a wake still held (item 212).
                 linkTask.expirationHandler = { [weak self] in
-                    Task { @MainActor in self?.endLinkWake(linkTask) }
+                    Task { @MainActor in self?.linkWakes.giveBack(linkTask) }
                 }
-                linkTasks.append(linkTask)
+                linkWakes.hold(linkTask)
             } else {
                 task.setTaskCompletedWithSnapshot(false)
             }
@@ -106,15 +122,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                                               contentPending: session.hasContentPending,
                                               alertsInFlight: alertsInFlight.withLock { $0 },
                                               activationFailed: activationFailed) else { return }
-        linkTasks.forEach { $0.setTaskCompletedWithSnapshot(false) }
-        linkTasks.removeAll()
-    }
-
-    /// Ends one held wake, once: its expiration handler and the rule above can both reach it.
-    private func endLinkWake(_ task: WKWatchConnectivityRefreshBackgroundTask) {
-        guard let index = linkTasks.firstIndex(where: { $0 === task }) else { return }
-        linkTasks.remove(at: index)
-        task.setTaskCompletedWithSnapshot(false)
+        linkWakes.giveBackAll()
     }
 
     /// Hands a relayed alert to the inbox, which shows it on the wrist with its time, joins it to the

@@ -50,11 +50,11 @@ enum EvidenceBundle {
     static let statementsFolder = "statements"
     static let attachmentsFolder = "attachments"
     /// The README beside the index in every bundle: what the archive is and how to check it, in the words the owner
-    /// approved (2026-10-31; its sentence on what the verifier prints, 2026-11-04: "a"). Not signed, and no check reads
-    /// it.
+    /// approved (2026-10-31; its sentence on what the verifier prints, 2026-11-04: "a"; "contains" for "holds", 2026-11-07,
+    /// item 208). Not signed, and no check reads it.
     static let readmeName = "README.txt"
     static let readme = [
-        "This folder holds one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
+        "This folder contains one event that Malinois, an iPhone app, recorded and signed on the phone: the event's record as "
             + "it was signed, the photos, clips and sensor traces it names, the phone's signatures, and Apple's certification "
             + "of the key that made them.",
         "",

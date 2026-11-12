@@ -1977,4 +1977,67 @@ final class EventTests: XCTestCase {
                        ["Capture issue - the capture could not be written to storage. Saved evidence is available."])
     }
 
+    // MARK: - Item 220's defect 2: what the store keeps for its file queue is held there by its type
+    //
+    // An outside reading of 1.11's public source (the owner, 2026-11-09: into 1.12, "a for defect 2"): five fields of the
+    // store were `nonisolated(unsafe)`, confined to its file queue only by their comments, so a new use from another
+    // thread would compile and race. Each now has one way in, `QueueConfined`, which in Debug builds, the tests'
+    // builds, checks every use is on that queue. Written before the change, red at that commit against a stub that does
+    // not check.
+
+    /// A value confined to a queue is read and changed on that queue without a word, and a use from anywhere else is
+    /// reported: to a test's hook here, by a stop otherwise.
+    func testAQueueConfinedValueReportsAUseOffItsQueue() {
+        let queue = DispatchQueue(label: "com.malinois.tests.confined")
+        let value = QueueConfined(1, onQueueLabelled: "com.malinois.tests.confined")
+        let reports = TestCount()
+        QueueConfinement.violationForTesting = { reports.add() }
+        defer { QueueConfinement.violationForTesting = nil }
+        queue.sync {
+            XCTAssertEqual(value.get(), 1)
+            value.set(2)
+            XCTAssertEqual(value.update { $0 += 1; return $0 }, 3)
+        }
+        XCTAssertEqual(reports.count, 0, "on its queue: nothing to report")
+        XCTAssertEqual(value.get(), 3, "the value is still given")
+        XCTAssertEqual(reports.count, 1, "a read off its queue is reported")
+        value.set(5)
+        XCTAssertEqual(reports.count, 2, "and a write")
+        value.update { $0 += 1 }
+        XCTAssertEqual(reports.count, 3, "and a change in place")
+        DispatchQueue(label: "com.malinois.tests.another").sync { _ = value.get() }
+        XCTAssertEqual(reports.count, 4, "another queue is not its queue")
+    }
+
+    /// The store holds its queue's state that way: none of its fields is `nonisolated(unsafe)` any more, its test hooks
+    /// aside, and the five are `QueueConfined`. That every use the store makes of them is on the queue is checked by
+    /// every test that builds a store: a use off the queue stops a Debug build.
+    func testTheStoreKeepsNoUnsafeFieldForItsQueue() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Malinois/Services/EventStore.swift"), encoding: .utf8)
+        // Its code's lines, not its comments, which name the marking the fields had. A test seam is a field whose own
+        // name ends in ForTesting: the word elsewhere on a line, in a trailing comment for one, excuses nothing (a
+        // no-notes look at the change, 2026-11-10).
+        let declared = try NSRegularExpression(
+            pattern: #"nonisolated\(unsafe\)\s+(?:(?:static|private|private\(set\)|fileprivate)\s+)*(?:var|let)\s+(\w+)"#)
+        let unsafe = source.split(separator: "\n").map(String.init).filter { line in
+            guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//"), line.contains("nonisolated(unsafe)") else { return false }
+            guard let match = declared.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let name = Range(match.range(at: 1), in: line) else { return true }
+            return !line[name].hasSuffix("ForTesting")
+        }
+        XCTAssertEqual(unsafe, [], "no field safe only by its comment")
+        for name in ["persistFailedOnQueue", "mediaOwedDeletion", "limitRemovalsOnDisk", "limitRemovalsKeyRead", "reportsOwedOnDisk"] {
+            XCTAssertTrue(source.contains("nonisolated private let \(name) = QueueConfined"), name)
+        }
+    }
+
+}
+
+/// Counts from any thread.
+private final class TestCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func add() { lock.withLock { value += 1 } }
 }

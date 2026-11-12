@@ -9,6 +9,11 @@
   stands. Superseded in part by ADR 0073 (1.11): the format `malinois-evidence-bundle/2` of a bundle that holds an
   unkept statement, the counters such a statement accounts for, and the verifier's words for them; the sections below
   state the rest, and 1.10's design for those.
+- **Superseded in part by ADR 0080** (1.12): section 4's "Nothing new is on screen" (the event's screen now says when a
+  share went without the ZIP), its wait for a bundle's making (a minute at most), and, in the consequences, that an
+  edit made just before Share "is in the bundle once the log's write of it has reached the signer" (no bundle is made
+  until a revision has signed the record's facts as they are; a signature that failed leaves it so until the log's
+  next write).
 - **Date:** 2026-11-01
 - **Summary:** The bundle's layout, the check that accounts for every counter of every key, and the verifier's report,
   as ADRs 0067 and 0068 and their amendments built them.

@@ -3,7 +3,8 @@
 - **Status:** accepted (the owner, 2026-10-15: item 120's F5, "all as recommended": the stopgap in 1.7 (70), the
   full design in 1.8, item 122). A stopgap: item 122's design will replace or extend it. **Amended the same day**
   after Codex's look at build 70 (V1): the inventory had missed that the current log can share a file with a
-  set-aside log; decision 3 now covers it.
+  set-aside log; decision 3 now covers it. **Extended 2026-11-07 by ADR 0078** (item 122): the owner can read, share
+  and delete a set-aside log; the three decisions here stand.
 - **Date:** 2026-10-15
 
 ## Context

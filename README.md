@@ -4,6 +4,16 @@ A covert unattended-device tamper detector for iPhone.
 
 **[Download on the App Store](https://apps.apple.com/us/app/malinois-device-anti-tampering/id6797636246)**
 
+Malinois needs iOS 18 or later; its Apple Watch app needs watchOS 10 or later.
+
+<p>
+<img src="screenshots/1-home.png" width="250" alt="Home">
+<img src="screenshots/2-arming.png" width="250" alt="The arming screen">
+<img src="screenshots/3-event-log.png" width="250" alt="The Event Log">
+</p>
+
+*Home, the arming screen and the Event Log, as in the App Store listing.*
+
 Malinois' singular objective is that you either:
 
 - **A.** Return to an unattended device in the same state you left it, or
@@ -13,7 +23,9 @@ It is designed for that to hold even when the person who handles your phone know
 
 Once armed, if the phone is moved, tilted, unplugged, handled, touched, or approached, Malinois logs a tripwire event, tries to capture a photo or clip, and writes it to a PIN-gated Event Log. Arms, disarms and tripwire events are logged with no way to delete a single entry, not even with your PIN.
 
-**Before you rely on it:** turn on Guided Access with its Side Button option off, give Guided Access and Malinois codes of their own rather than your iPhone passcode, with Face ID and Touch ID off for ending Guided Access, turn Voice Control off if you use it, and set iOS to ask before new wired accessories connect. Malinois can check that Guided Access is on, but iOS doesn't let it see the other settings: those are up to you.
+> ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
+
+**Before you rely on it:** turn on Guided Access with its Side Button option off, give Guided Access and Malinois codes of their own rather than your iPhone passcode, with Face ID and Touch ID off for ending Guided Access, turn Voice Control off if you use it, and set iOS to ask before new wired accessories connect. Malinois can check that Guided Access is on, but iOS doesn't let it see the other settings: those are up to you. Your iPhone needs a passcode too (the arming screen warns when it has none): without one, a forced restart leaves it open and clears the wait Malinois sets after wrong PINs.
 
 **What you'll find afterwards**
 
@@ -51,6 +63,8 @@ CloudKit carries Pro's iCloud copies and alerts (the alert extension and the wat
 
 ## Try it out
 
+To see the sensors react before you arm anything, tap **Test sensors** on the home screen: nothing is recorded and no events are logged.
+
 1. **First run** — set a 4-digit PIN (or 6).
 2. Tap **ARM**. The camera prompt appears the first time; allow it.
 3. On the arming screen, **triple-click the side button** to start **Guided Access** (one-time iOS setup: Settings → Accessibility → Guided Access).
@@ -65,14 +79,14 @@ CloudKit carries Pro's iCloud copies and alerts (the alert extension and the wat
 
 This is ultimately a personal project, but it's a project I think others might find a use for, and it would not have happened without AI. As such, please poke holes in the code, the assumptions and decisions I made, threat model thinking, anything and everything: I'm relying on it too.
 
-**What you can check rather than take on trust.** Most rules in SECURITY.md are pinned by a unit test; [Where to look](#where-to-look) names the files, and the tests behind each invariant. Every release goes through adversarial reviews by other models and, lately, by outside readers of this repository; each finding and what was done about it is tracked in a numbered ledger before the fix ships. Builds are tested on two iPhones and an Apple Watch. The full test run for each release is in its [GitHub Release notes](https://github.com/john-comptonemail-com/malinois/releases).
+**What you can check rather than take on trust.** Most rules in SECURITY.md are pinned by a unit test; [Where to look](#where-to-look) names the files, and the tests behind each invariant. Every release goes through adversarial reviews by other models and, lately, by outside readers of this repository; each finding and what was done about it is tracked in a numbered ledger before the fix ships. Builds are tested on two iPhones and an Apple Watch. The full test run for each release is in its [GitHub Release notes](https://github.com/john-comptonemail-com/malinois/releases). From 1.12, the full reviews' reports, and what was done about each finding, are in [reviews](reviews/README.md).
 
 ## How this is engineered
 
-- About 37,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 2,171 unit tests in 147 files, 54,676 lines of tests. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 272 of them, each tested on its own.
-- 68 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 39,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 2,342 unit tests in 153 files, 58,451 lines of tests. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 283 of them, each tested on its own.
+- 71 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
@@ -83,19 +97,18 @@ A Pro in-app purchase is available, but **Pro is not required to meet Malinois' 
 
 With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copies readable only on your own devices.
 
-> ⚠️ Use this only on **your own device**. It is a personal anti-tampering / anti-snoop tool, not a surveillance tool for other people.
+## What's new in 1.12
 
-## What's new in 1.11
-
-- If your iPhone stops just after making a signature (a crash, a forced restart, a flat battery) and that leaves a gap, it now notices the next time it signs and adds a signed statement naming the gap. A check then reports the missing signatures as made and not kept, not as a problem. To check a ZIP with that statement in it, use the Mac verifier from 1.11 or later.
-- A photo or clip your iPhone signed now comes back from iCloud only if it is still what your iPhone signed. If it differs, it isn't added, the event's screen says so, and iCloud's copy is left as it is.
-- The Mac verifier now says, under PASS, what a check shows and what it cannot.
-- "Before you arm" has a new part asking you to turn off Guided Access's Side Button option. It shows once on every install, the next time you arm with Guided Access on.
-- Also: changing the time on your iPhone no longer upsets the Vision tripwire's pause around a capture or the Sound tripwire's outage report; and when several late disarms upload together and their "disarmed" alert fails to send, Malinois now tries it again.
+- If Malinois ever has to set aside an event log it can't read in full, that log now appears at the top of the Event Log, and Home reminds you about it until it's deleted. You can view the records that can still be read, share an exact copy of the file (not signed evidence) along with its photos and clips still on your iPhone, or delete it with your PIN, together with the photos and clips only it uses; the deletion is noted in the Event Log.
+- Settings now shows your iPhone's current signing key: its first eight characters, as the Mac verifier prints them, and the whole ID to copy. Give someone the ID before you send them an evidence ZIP, and they can tell it was signed on your iPhone.
+- If you share a signed event and its evidence ZIP can't be included, the event's screen now tells you so, and why when it can.
+- Also: a photo downloaded from another of your devices no longer shows under the wrong camera after that device updates the event; the Event Log's note that events not fully backed up to iCloud were removed to make room now appears only once per watch; and the Apple Watch app now hands back each background wake from your iPhone within 10 seconds, inside watchOS's time limit.
 
 Earlier releases are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Solo project, no dates. If something here matters to you, or something missing does, support@comptonemail.com reaches me.
+
+**Found something?** A security problem: report it privately, with **Report a vulnerability** on this repository's [Security tab](https://github.com/john-comptonemail-com/malinois/security) or by email ([SECURITY.md](SECURITY.md#report-a-security-issue) says what helps). A question about using the app: [Help & FAQ](https://john-comptonemail-com.github.io/malinois/support/). Issues and pull requests here aren't monitored. The app itself sends me nothing about how it's used (no analytics, no crash reporter of its own), so apart from the figures Apple gives every developer, I only hear of a problem when someone tells me.
 
 ---
 
@@ -103,7 +116,7 @@ Solo project, no dates. If something here matters to you, or something missing d
 
 This is the **source of each release since 1.2**, published so the app's privacy
 and security claims can be checked against the code rather than taken on
-trust. Each commit here corresponds to one App Store release (1.3 has a second commit, which corrects its build number). The app source
+trust. Each commit here corresponds to one App Store release (1.3 has a second commit, which corrects its build number). This repository starts at 1.2; 1.0 and 1.1 shipped before it was set up and are not here. 1.0 could not have been published as shipped anyway: it was archived from a working copy with changes that were never committed, so its tag in the private repository does not have the exact source of the build (a comment in `Malinois/Support/Info.plist` says so). The app source
 is byte-identical to what was submitted, with exactly one change: the developer
 team ID is removed from the project file. (This README, CHANGELOG.md and the licence files
 exist only in this mirror. SECURITY.md is published as written from 1.6 on;
@@ -121,13 +134,15 @@ against this source.
 
 ## Where to look
 
-- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 2,000
+- **[SECURITY.md](SECURITY.md)** — a full threat model and technical reference, about 2,100
   lines: every defense mechanism, the attacks the app explicitly does *not* defend against, and how to
-  report a vulnerability. If you read one file, read this one.
+  report a vulnerability. If you read one file, read this one: its first part, from
+  [Start here](SECURITY.md#start-here), is a practical guide of about 480 lines, and the technical reference after it is for reviewers.
 - **`Malinois/`** — the app. No third-party dependencies, by design: what you
   see is everything that runs.
 - **`MalinoisTests/`** — the unit tests. Most security rules in SECURITY.md
   are pinned by a test here.
+- **[`reviews/`](reviews/README.md)** — from 1.12, each release's full-review reports, as the reviewers wrote them, and what was done about each finding.
 - **`docs/adr/`** — the design decisions, one record each, as written when they were made; the code
   cites them by number, and [the index](docs/adr/README.md) lists them.
 
@@ -143,8 +158,8 @@ against this source.
 
 - The record is written and synced to disk before anything responds: before the alarm, before the camera. If that write fails, the response still goes ahead and Home reports the failure.
   Code: `Malinois/Services/MonitoringTripResponder+Responses.swift` (`respond`), `Malinois/Services/EventStore.swift` (`add`). Tests: `EngineCharacterizationTests.testTheFactIsRecordedBeforeTheCaptureAnswers`, `Item77RegressionTests.testTheBlackoutRecordExistsBeforeTheEscalation`, `EventTests.testEveryJournalAppendIsFullySyncedBeforeAddReturns`, `Item73RegressionTests.testAJournalThatCannotBeWrittenIsSurfaced`, `Item183InvariantTests.testATripWhoseRecordCannotBeWrittenStillResponds`.
-- There is no delete control for records; only the log's size limits remove them, and SECURITY.md says which removals the log reports.
-  Code: `Malinois/Services/EventStore.swift` (`pruneToCountCap`). Tests: `EventTests.testEventStorePrunesToCapKeepingNewest`, `Item114UnsyncedRemovalTests.testTheEngineRecordsOneMarkerOnPro`, `Item90SignerTests.testOnlyTheLimitsRemovalsAreRetiredAndAnyOtherLeavingIsDeclared`.
+- There is no delete control for the event log's records; only its size limits remove them, and SECURITY.md says which removals the log reports. An event log Malinois had to set aside can be deleted whole, with the PIN, and that leaves a status entry.
+  Code: `Malinois/Services/EventStore.swift` (`pruneToCountCap`), `Malinois/Services/MonitoringEngine+AuditRecords.swift` (`deleteSetAsideLog`). Tests: `EventTests.testEventStorePrunesToCapKeepingNewest`, `Item114UnsyncedRemovalTests.testTheEngineRecordsOneMarkerOnPro`, `Item90SignerTests.testOnlyTheLimitsRemovalsAreRetiredAndAnyOtherLeavingIsDeclared`, `Item122SetAsideLogTests.testDeletesStepsAskForThePINFirstEveryTime`, `Item122SetAsideLogTests.testTheEnginesDeleteWritesAStatusEntryWithItsNumbers`.
 - A Keychain that cannot be read is never taken for "no PIN": setup is never offered over a sealed one.
   Code: `Malinois/Services/KeychainService.swift`. Tests: `KeychainServiceTests.testItemReadKeepsSealDistinctFromAbsence`, `KeychainServiceTests.testASealedKeychainDefersClassificationEntirely`.
 - Monitoring continues during PIN entry; only the proximity sensor pauses, and PIN keys are not touch trips.
@@ -171,6 +186,8 @@ swiftc -O MalinoisEvidence/*.swift MalinoisVerifier/*.swift -o malinois-verify
 It prints each key Apple certified, the signatures, the counters, the export, the record's revisions and its attachments, then PASS or the problems it found. Apple's App Attestation root certificate is built in; to check against your own copy from https://www.apple.com/certificateauthority/, add `--root Apple_App_Attestation_Root_CA.pem`. Run it as an ordinary program: the certificate check uses macOS's trust service. What a check shows, and what it cannot, is in SECURITY.md ("Evidence someone else can check").
 
 A ZIP from Malinois 1.11 or later can also include the phone's signed statement naming signatures it made and did not keep (it stopped before saving them), which the verifier reports as information, not as a problem; such a ZIP needs the verifier from 1.11 or later, since 1.10's says it is "in another format".
+
+If Malinois on that iPhone ever had to set aside an event log it couldn't read, every ZIP the iPhone shares afterwards ends its check with problems that name that log's records, since the iPhone signed that they left the log.
 
 ## License
 

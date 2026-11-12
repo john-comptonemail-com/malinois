@@ -2,6 +2,14 @@
 
 What each App Store release of Malinois changed, newest first. The current release is under What's new in the [README](README.md).
 
+**Shipped in 1.11**
+
+- If your iPhone stops just after making a signature (a crash, a forced restart, a flat battery) and that leaves a gap, it now notices the next time it signs and adds a signed statement naming the gap. A check then reports the missing signatures as made and not kept, not as a problem. To check a ZIP with that statement in it, use the Mac verifier from 1.11 or later.
+- A photo or clip your iPhone signed now comes back from iCloud only if it is still what your iPhone signed. If it differs, it isn't added, the event's screen says so, and iCloud's copy is left as it is.
+- The Mac verifier now says, under PASS, what a check shows and what it cannot.
+- "Before you arm" has a new part asking you to turn off Guided Access's Side Button option. It shows once on every install, the next time you arm with Guided Access on.
+- Also: changing the time on your iPhone no longer upsets the Vision tripwire's pause around a capture or the Sound tripwire's outage report; and when several late disarms upload together and their "disarmed" alert fails to send, Malinois now tries it again.
+
 **Shipped in 1.10**
 
 - Your iPhone now signs its event records, so someone you share an event with can check it has not changed since the phone signed it. The signing key stays in the iPhone's Secure Enclave, and Apple's App Attest service certifies it belongs to Malinois on a genuine iPhone; that needs a network connection once, and again after a restore. Events recorded before then are not signed. If a signed record ever leaves the log other than by its size limit, the log says so.

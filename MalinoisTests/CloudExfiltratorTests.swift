@@ -682,6 +682,18 @@ final class CloudExfiltratorTests: XCTestCase {
 
     // MARK: - Arm/disarm audit records (BACKLOG 8)
 
+    /// Item 234's A1: the status entry of a set-aside log's Delete is read from iCloud with its numbers, and a kind
+    /// of the sort that is not as written is dropped, as any kind this version does not know is.
+    func testASetAsideLogsDeletionIsReadFromICloudAndAMalformedOneDropped() {
+        let kind = Event.setAsideDeletedKind(.init(setAsideAt: Date(timeIntervalSince1970: 1_762_520_700), records: 37,
+                                                   mediaRemoved: 4, mediaLeft: false))
+        let event = CloudExfiltrator.stateEvent(from: stateRecord(kind: kind))
+        XCTAssertEqual(event?.stateChange, kind)
+        XCTAssertNotNil(event?.sourceDevice, "a copy from iCloud, under its device's name")
+        XCTAssertNil(CloudExfiltrator.stateEvent(from: stateRecord(kind: "setAsideDeleted.1762520700.37.4")))
+        XCTAssertNil(CloudExfiltrator.stateEvent(from: stateRecord(kind: "setAsideDeleted.1762520700.37.4.2")))
+    }
+
     private func stateRecord(id: UUID = UUID(),
                              kind: String? = "disarmed",
                              start: Date = Date(timeIntervalSince1970: 1_700_000_000),

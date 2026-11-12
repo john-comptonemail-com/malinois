@@ -57,15 +57,28 @@ extension MonitoringEngine {
     /// Pure (unit-tested): whether a marker is due. Once per watch while armed; once a day while
     /// disarmed, so a long offline backlog cannot flood the 100 status entries. A last marker later
     /// than now means the clock was moved back: due, rather than waiting out the difference (item
-    /// 116, R9).
+    /// 116, R9). The last marker's watch is its start as read back from storage, which can differ
+    /// from the start kept in memory by a fraction of a microsecond: within `sameWatchTolerance`
+    /// it is the same watch (item 211). A marker written while disarmed counts for no watch.
     nonisolated static func unsyncedRemovalMarkerIsDue(last: (at: Date, watch: Date?)?, armedSince: Date?, now: Date) -> Bool {
         guard let last else { return true }
-        if let armedSince { return last.watch != armedSince }
+        if let armedSince {
+            guard let watch = last.watch else { return true }
+            let sameWatch = abs(watch.timeIntervalSince(armedSince)) < sameWatchTolerance
+            return !sameWatch
+        }
         return now < last.at || now.timeIntervalSince(last.at) >= 86_400
     }
 
+    /// How far apart two watch starts can be and still be one watch (item 211). A start kept as
+    /// seconds since 1970 comes back within a microsecond; the starts of two watches are a
+    /// person's disarm and arm apart, far more than a millisecond.
+    nonisolated static let sameWatchTolerance: TimeInterval = 0.001
+
     /// When the last event-limit marker was written, and in which watch. Kept on this device
-    /// across launches (item 116, R9), so the daily limit holds when the app is relaunched.
+    /// across launches (item 116, R9), so the daily limit holds when the app is relaunched. Both
+    /// are kept as seconds since 1970, so a time read back can differ from the one written by a
+    /// fraction of a microsecond: compare the watch with `unsyncedRemovalMarkerIsDue`, never `==`.
     var lastUnsyncedRemovalMarker: (at: Date, watch: Date?)? {
         get {
             let defaults = UserDefaults.standard

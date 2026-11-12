@@ -77,9 +77,11 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// A monitoring state change — `"armed"` or `"disarmed"` — logged so protection turning
     /// on/off is an explicit, auditable record, not something the owner has to infer from
     /// remembering their arm time. Its point is the disarm case: an attacker who knows the
-    /// PIN can disarm, but the app has no delete affordance, so the "disarmed" entry stands
-    /// as proof of exactly when protection stopped. `nil` for a normal event; carries no
-    /// media. Optional so older events decode fine.
+    /// PIN can disarm, but the event log has no delete affordance, so the "disarmed" entry stands
+    /// as proof of exactly when protection stopped. (Since 1.12 a set-aside log, which is out of
+    /// the event log, can be deleted behind the PIN, and that Delete leaves a status entry of its
+    /// own: item 234.) `nil` for a normal event; carries no media. Optional so older events
+    /// decode fine.
     var stateChange: String?
 
     /// Non-nil when this record was **mirrored from another device** rather than captured
@@ -451,6 +453,7 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         if let kind = stateChange, let words = Self.resumedSummary(kind: kind) { return words }   // item 153's MAL-06
         if let kind = stateChange, let words = Self.sirenElsewhereSummary(kind: kind) { return words }   // 1.8.2's step 26
         if let kind = stateChange, let words = Self.signedRecordsGoneSummary(kind: kind) { return words }   // item 182
+        if let kind = stateChange, let words = Self.setAsideDeletedSummary(kind: kind) { return words }   // item 234
         // A status entry this build does not know (a newer build's kind, or a damaged log) is
         // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
         // kinds; this covers the local log (item 105, F-09).
@@ -533,6 +536,76 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         }
         if gone.count == 1 { return "A signed record from \(goneTime(first)) is no longer in the log" }
         return "\(gone.count) signed records, from \(goneTime(first)) to \(goneTime(last)), are no longer in the log"
+    }
+
+    // MARK: - A set-aside log deleted (item 234's A1; the owner, 2026-11-11: "1", "wording approved also")
+
+    private static let setAsideDeletedPrefix = "setAsideDeleted."
+
+    /// What the status entry of a set-aside log's Delete records (item 234). A Delete removed records and photos from
+    /// the phone, behind the PIN, and left no record, where a disarm, a settings change and a PIN change each leave one.
+    struct SetAsideDeleted: Equatable, Sendable {
+        /// When the log was set aside, as its name has it; nil for a name without a time.
+        var setAsideAt: Date?
+        /// How many records it could read; nil when its bytes could not be read.
+        var records: Int?
+        /// How many of the photos and clips only it named went with it.
+        var mediaRemoved: Int
+        /// Whether photos and clips it names were left on the iPhone: Malinois could not tell which were only its own,
+        /// or could not remove one.
+        var mediaLeft: Bool
+    }
+
+    /// The status kind for a set-aside log deleted at the owner's word: "setAsideDeleted.<when>.<records>.<removed>.<left>":
+    /// when it was set aside in whole seconds since 1970 ("-" without a time), the records it could read ("-" when
+    /// they are not known), the photos and clips that went with it, and 1 when any were left, else 0. The numbers ride
+    /// in the kind, so the cloud record needs no new field, and an older version drops a kind it does not know.
+    static func setAsideDeletedKind(_ deleted: SetAsideDeleted) -> String {
+        func count(_ value: Int) -> String { String(min(max(value, 0), 1_000_000)) }
+        let when = deleted.setAsideAt.flatMap(wholeSeconds).map { String($0) } ?? "-"
+        let records = deleted.records.map(count) ?? "-"
+        return setAsideDeletedPrefix + [when, records, count(deleted.mediaRemoved), deleted.mediaLeft ? "1" : "0"].joined(separator: ".")
+    }
+
+    /// What a set-aside-deleted kind records; nil for any other kind or a malformed one: only the numbers as
+    /// `setAsideDeletedKind` writes them, a time from 1970 to 3000, counts up to a million.
+    static func setAsideDeleted(kind: String) -> SetAsideDeleted? {
+        guard kind.hasPrefix(setAsideDeletedPrefix) else { return nil }
+        let parts = kind.dropFirst(setAsideDeletedPrefix.count).split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        func number(_ part: Substring, upTo limit: Int64) -> Int64? {
+            guard let value = Int64(part), String(value) == part, value >= 0, value <= limit else { return nil }
+            return value
+        }
+        var when: Date?
+        if parts[0] != "-" {
+            guard let seconds = number(parts[0], upTo: 32_503_680_000) else { return nil }
+            when = Date(timeIntervalSince1970: TimeInterval(seconds))
+        }
+        var records: Int?
+        if parts[1] != "-" {
+            guard let read = number(parts[1], upTo: 1_000_000) else { return nil }
+            records = Int(read)
+        }
+        guard let removed = number(parts[2], upTo: 1_000_000), parts[3] == "0" || parts[3] == "1" else { return nil }
+        return SetAsideDeleted(setAsideAt: when, records: records, mediaRemoved: Int(removed), mediaLeft: parts[3] == "1")
+    }
+
+    /// "A set-aside log from Nov 7, 1:25 PM was deleted: 37 records, 4 photos and clips", or, where its photos and
+    /// clips were left, "... was deleted: 37 records; its photos and clips were left on this iPhone" (the owner's
+    /// approved words, 2026-11-11). Claude's, for what those two do not cover: "; others were left on this iPhone"
+    /// after the count of those that went, when a removal failed part of the way; no count of records when the log's
+    /// bytes could not be read; "A set-aside log was deleted" for a name without a time; "1 record", "1 photo or
+    /// clip". nil unless `kind` is one.
+    static func setAsideDeletedSummary(kind: String) -> String? {
+        guard let deleted = setAsideDeleted(kind: kind) else { return nil }
+        let lead = deleted.setAsideAt.map { "A set-aside log from \(goneTime($0)) was deleted" } ?? "A set-aside log was deleted"
+        let records = deleted.records.map { $0 == 1 ? "1 record" : "\($0) records" }
+        let media = deleted.mediaRemoved == 1 ? "1 photo or clip" : "\(deleted.mediaRemoved) photos and clips"
+        let counted = lead + ": " + [records, media].compactMap { $0 }.joined(separator: ", ")
+        guard deleted.mediaLeft else { return counted }
+        if deleted.mediaRemoved > 0 { return counted + "; others were left on this iPhone" }
+        return lead + (records.map { ": " + $0 } ?? "") + "; its photos and clips were left on this iPhone"
     }
 
     /// A time as the watch's alerts show one ("Oct 14, 9:03 PM", in the phone's own format).

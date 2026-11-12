@@ -498,6 +498,33 @@ final class Item90ExportTests: XCTestCase {
                        [found("primary", .matches), found("thumbnail", .matches), found("motionTrace", .matches)])
     }
 
+    /// Item 234's A2 (Codex-2 of the third full review; the owner, 2026-11-11: "1"): a bundle shows only the facts its
+    /// record's latest revision signed, as it holds only the bytes that revision signed. The record changed since the
+    /// last signature (the owner's mark, set after the right PIN at the disarm): no bundle while no revision has signed
+    /// it, and none after the signature of that revision failed, where the ZIP went out with the earlier facts and
+    /// checked out; once the change is signed, the bundle has it.
+    func testABundleIsMadeOnlyWithTheFactsItsLatestRevisionSigned() async throws {
+        let (signer, keys, chain) = try makeSigner()
+        await signer.certifyIfNeeded(records: [])
+        let record = trip(1)
+        await signer.logWritten(generation: 1, events: [record])
+        var marked = record
+        marked.ownerAttributed = true
+        let early = try await exporter(signer).folder(of: marked, log: [marked], in: out.appendingPathComponent("early"))
+        XCTAssertNil(early, "a fact no revision has signed yet")
+        await keys.failNextAssertions([DCError(.unknownSystemFailure)])
+        await signer.logWritten(generation: 2, events: [marked])
+        let failed = try await exporter(signer).folder(of: marked, log: [marked], in: out.appendingPathComponent("failed"))
+        XCTAssertNil(failed, "the revision's signature failed: the earlier facts are not sent as the event's")
+        await signer.logWritten(generation: 3, events: [marked])
+        let made = try await exporter(signer).folder(of: marked, log: [marked], in: out.appendingPathComponent("signed"))
+        let report = try check(try XCTUnwrap(made, "no bundle once the change is signed"), chain)
+        XCTAssertEqual(report.revisions.last?.facts, marked.evidenceFacts, "the bundle's latest revision has the mark")
+        // The control: the record as its latest revision signed it still makes its bundle.
+        let same = try await exporter(signer).folder(of: marked, log: [marked], in: out.appendingPathComponent("same"))
+        XCTAssertNotNil(same)
+    }
+
     func testTheBundleIsZippedInAFolderOfItsOwnForShare() async throws {
         let (signer, _, _) = try makeSigner()
         await signer.certifyIfNeeded(records: [])

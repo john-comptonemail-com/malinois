@@ -190,4 +190,25 @@ enum CloudSyncState: String, Codable {
         case .localOnly: return "Local only"
         }
     }
+
+    /// A set-aside record's badge when it was backed up before its log was set aside (item 227's DS-2): what the file
+    /// recorded, in the past tense. The screens never ask iCloud about a set-aside record, so they do not say "iCloud
+    /// synced", which reads as checked now.
+    static let syncedWhenSetAside = "Synced when set aside"
+
+    /// The words of a record's iCloud badge, in the Event Log and on its screen: `displayName`, or "Local only" while its
+    /// upload is held. A record of a set-aside log never uploads and no hold applies to it (item 213): "Synced when set
+    /// aside" if it was backed up before the log was set aside, "Local only" otherwise, never "Syncing…".
+    func badge(held: Bool, setAside: Bool) -> String {
+        if setAside { return self == .synced ? Self.syncedWhenSetAside : CloudSyncState.localOnly.displayName }
+        return held ? CloudSyncState.localOnly.displayName : displayName
+    }
+
+    /// Whether a record's iCloud badge shows: always in the event log; on a set-aside log's screens, not for a record the
+    /// event log also has (item 214's fable-4). Its copy in the set-aside log keeps the state the file froze, often
+    /// "waiting to upload" for a record the journal brought back, while the event log's row for the same record, which
+    /// the mark "Also in your event log" points to, has the badge that is true now.
+    static func showsBadge(setAside: Bool, alsoInLog: Bool) -> Bool {
+        !(setAside && alsoInLog)
+    }
 }
