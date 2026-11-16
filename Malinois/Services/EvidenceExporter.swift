@@ -190,17 +190,28 @@ struct EvidenceExporter: Sendable {
         return Set(window.filter { $0.id != record.id && ($0.isStateChange || $0.interrupted == true) }.map(\.id))
     }
 
-    /// Removes the folders bundles were made in that a share left behind (the app ended with its sheet open): at launch,
-    /// when no sheet is open.
-    static func removeLeftovers(in temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
-        let manager = FileManager.default
-        guard let names = try? manager.contentsOfDirectory(atPath: temporaryDirectory.path) else { return }
-        for name in names where name.hasPrefix(folderPrefix) {
-            // Only a folder named as a bundle's: the prefix, then a UUID as this code writes one.
+    /// The folders bundles were made in that a share left behind (the app ended with its sheet open), listed at launch
+    /// before any share can begin (item 243's gpt6-astra-3): the launch's background task removes only these, so a share
+    /// made before that task runs keeps its ZIP. Only a folder named as a bundle's: the prefix, then a UUID as this code
+    /// writes one.
+    static func leftoverFolders(in temporaryDirectory: URL = FileManager.default.temporaryDirectory) -> [URL] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path) else { return [] }
+        return names.filter { name in
+            guard name.hasPrefix(folderPrefix) else { return false }
             let identifier = String(name.dropFirst(folderPrefix.count))
-            guard UUID(uuidString: identifier)?.uuidString == identifier else { continue }
-            try? manager.removeItem(at: temporaryDirectory.appendingPathComponent(name, isDirectory: true))
-        }
+            return UUID(uuidString: identifier)?.uuidString == identifier
+        }.map { temporaryDirectory.appendingPathComponent($0, isDirectory: true) }
+    }
+
+    /// Removes the folders `leftoverFolders` listed.
+    static func remove(_ folders: [URL]) {
+        for folder in folders { try? FileManager.default.removeItem(at: folder) }
+    }
+
+    /// Lists the leftover folders and removes them at once: for a folder no share can be using (the tests'; the launch
+    /// lists first and removes later).
+    static func removeLeftovers(in temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
+        remove(leftoverFolders(in: temporaryDirectory))
     }
 
     /// The start of the name of the folder each bundle is made in.
@@ -223,6 +234,7 @@ struct EvidenceExporter: Sendable {
         switch name {
         case "primary": return mediaFile(record.mediaFilename, as: name, in: mediaDirectory)
         case "secondary": return mediaFile(record.secondaryMediaFilename, as: name, in: mediaDirectory)
+        case "visionReference": return mediaFile(record.visionReferenceFilename, as: name, in: mediaDirectory)   // item 239
         case "thumbnail": return record.thumbnailData.map { EvidenceBundle.Attachment(name: name, file: "thumbnail.jpg", source: .bytes($0)) }
         case "motionTrace": return trace(record.motionTrace, as: name)
         case "audioTrace": return trace(record.audioTrace, as: name)
@@ -232,11 +244,11 @@ struct EvidenceExporter: Sendable {
     }
 
     /// The record's attachments as the signer would sign them now (`Event.evidenceAttachments`): its photo and clip files'
-    /// digests, read by the signer's rule, a plain file in the media folder or none; nil when one is there and is not a
-    /// plain file, or cannot be read (item 190, deepseek-2).
+    /// and its Vision reference still's digests (item 239), read by the signer's rule, a plain file in the media folder
+    /// or none; nil when one is there and is not a plain file, or cannot be read (item 190, deepseek-2).
     private static func attachmentsAsSigned(of record: Event, mediaDirectory: URL) -> [EvidenceForm.Attachment]? {
         var digests: [EvidenceForm.Digest?] = []
-        for filename in [record.mediaFilename, record.secondaryMediaFilename] {
+        for filename in [record.mediaFilename, record.secondaryMediaFilename, record.visionReferenceFilename] {
             guard let filename, let url = EvidenceSigner.mediaFile(named: filename, in: mediaDirectory),
                   let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType else {
                 digests.append(nil)
@@ -245,7 +257,7 @@ struct EvidenceExporter: Sendable {
             guard type == .typeRegular, let digest = try? EvidenceHash.digest(ofFileAt: url) else { return nil }
             digests.append(digest)
         }
-        return record.evidenceAttachments(primary: digests[0], secondary: digests[1])
+        return record.evidenceAttachments(primary: digests[0], secondary: digests[1], visionReference: digests[2])
     }
 
     /// A photo or clip as the bundle holds it: named for its attachment, with its file's extension when that is a plain one.

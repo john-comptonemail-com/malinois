@@ -170,7 +170,7 @@ final class Item148ReinstallRecordTests: XCTestCase {
     /// The record reads as a plain sentence in the log.
     func testTheRecordReadsAsAPlainSentence() {
         XCTAssertEqual(stateEvent("reinstalled").sensorSummary,
-                       "Malinois was reinstalled on this iPhone: the log it kept before is gone")
+                       "Malinois was reinstalled: its earlier event log was deleted with the app")   // item 242's round q
     }
 
     /// The record has its own icon in the log, one iOS has.

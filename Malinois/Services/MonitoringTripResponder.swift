@@ -16,6 +16,8 @@ protocol MonitoringTripHost: AnyObject {
     func tripConsumeDryRun(_ sensor: SensorType) -> Bool
     func tripNoteMotion(at date: Date)
     func tripRecentTrace(for sensor: SensorType) -> [Double]?
+    /// The still of the reference a slow Vision trip compared against, handed over once (item 239).
+    func tripTakeVisionReferenceStill() -> VisionStill?
     func tripRearmSensor(_ sensor: SensorType)
     func tripRebaselineEnabledSensors()
 

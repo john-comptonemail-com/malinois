@@ -32,16 +32,49 @@ extension MonitoringEngine {
     /// record are one step, as a PIN change and its record are, so the app has no Delete that leaves none. The entry
     /// says when the log was set aside, how many records it could read, and how many photos and clips went with it or
     /// that they were left; it is a status entry like the others, uploaded on Pro and signed with the log. Nothing is
-    /// written when nothing was deleted, nor for a log that was gone already.
+    /// written when nothing was deleted, nor for a log that was gone already. Since 1.13 a note comes first (item 235's
+    /// A11): should Malinois be stopped between the delete and its entry, the next launch writes the entry the note owes
+    /// (`watchSetAsideDeletesOwed`). The entry is written under the note's ID, and the note goes only once a saved log
+    /// holds it (item 243's gpt6-astra-1: retired as the entry was written, stored or not, a note could go while no save
+    /// had kept its entry); a Delete that removed nothing owes no entry, and its note goes at once.
     @discardableResult
     func deleteSetAsideLog(_ log: SetAsideLog) async -> SetAsideLogDeletion {
+        let owed = eventStore.oweSetAsideDeleteEntry(for: log)
         let report = await eventStore.deleteSetAsideLogReporting(log)
         if report.removedLog {
             logStateChange(Event.setAsideDeletedKind(Event.SetAsideDeleted(
                 setAsideAt: log.setAsideAt, records: report.records, mediaRemoved: report.mediaRemoved,
-                mediaLeft: report.outcome == .deletedMediaLeft)))
+                mediaLeft: report.outcome == .deletedMediaLeft)), id: owed.id)   // its note goes with the save that keeps it
+        } else {
+            eventStore.retireSetAsideDeleteOwed(owed.id)   // nothing deleted, no entry owed
         }
         return report.outcome
+    }
+
+    /// Writes the entries owed by Deletes a launch before was stopped in (item 235's A11), which the store hands over at
+    /// launch and at the unlock's reload: each at the moment of its Delete, under its note's ID, with no counts ("...
+    /// was deleted; Malinois was stopped before it could count what went with it", the owner's W3).
+    func watchSetAsideDeletesOwed() {
+        eventStore.onSetAsideDeleteOwed = { [weak self] owed in
+            self?.logStateChange(Event.setAsideDeletedKind(Event.SetAsideDeleted(
+                setAsideAt: owed.setAsideAt, records: nil, mediaRemoved: nil, mediaLeft: nil)), id: owed.id, at: owed.at)
+        }
+    }
+
+    /// Settings' "Free up iCloud space..." (the Manual retention mode, Pro): iCloud's full photos and clips of the events
+    /// older than `months` are deleted, never newer than 30 days, and since 1.13 the Event Log records it, as it records a
+    /// set-aside log's Delete (item 235's A10; the owner's W4): a quiet status entry with the period and how many events'
+    /// full media iCloud was asked to delete, and "some couldn't be deleted" when part of it failed. Written once the
+    /// purge has sent its deletions; a name with nothing under it counts as deleted there, so the entry counts events, not
+    /// files. The daily automatic retention writes none: it follows a setting whose every change is recorded (D4).
+    @discardableResult
+    func freeUpICloudSpace(monthsOld months: Int) async -> CloudExfiltrator.CloudPurgeResult {
+        let result = await cloud.purgeFullMedia(monthsOld: months)
+        if result.recordsDeleted > 0 {
+            logStateChange(Event.iCloudMediaPurgedKind(Event.ICloudMediaPurged(
+                months: months, events: result.eventsExamined, failed: result.failed)))
+        }
+        return result
     }
 
     /// Guided Access went from on to off while the watch was live (armed, triggered, or the calibration review, when

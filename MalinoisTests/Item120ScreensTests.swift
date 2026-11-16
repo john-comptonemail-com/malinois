@@ -250,7 +250,7 @@ final class Item120ScreensTests: XCTestCase {
                                        "\(screen) shows no passcode advice: \(shown)")
             XCTAssertFalse(advice.contains("still can't exit"), "\(screen): \(advice)")
             XCTAssertTrue(advice.contains("can't end Guided Access"), "\(screen): \(advice)")
-            XCTAssertTrue(advice.contains("A forced restart still ends the watch"), "\(screen): \(advice)")
+            XCTAssertTrue(advice.contains("A forced restart still ends the armed session"), "\(screen): \(advice)")   // item 240
         }
     }
 

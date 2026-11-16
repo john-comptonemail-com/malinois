@@ -9,10 +9,43 @@
 import SwiftUI
 
 struct ArmingView: View {
+    /// Texts item 240 tests: "the armed session" for "the watch" (the owner, 2026-11-12: "(a), (i), 1 to 4 approved"),
+    /// and what to do when iOS says Guided Access is unavailable (from the support page; "wording approved").
+    static let guidedAccessOnSubtitle = "The device is locked to Malinois - a snoop can't switch apps or use the power-off slider. A forced restart still ends the armed session."
+    static let passcodeStep = "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, and turn OFF the Face ID (or Touch ID) switch there, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the armed session, and that code then unlocks the phone."
+    static let guidedAccessUnavailable = "If iOS says Guided Access is unavailable, wait 3 to 5 minutes or restart the iPhone. This is an iOS bug, not Malinois."
+    /// The setup steps folded into one line after the first armed session under Guided Access (item 240's D3 (a), the
+    /// owner's words of 2026-11-12), with a button that opens them again.
+    static let foldedSteps = "Triple-click the side (or Home) button, then tap Start."
+    static let showSetupSteps = "Show the setup steps"
+
+    /// Pure (unit-tested): the steps fold once an armed session has gone live under Guided Access on this install.
+    static func foldsSetupSteps(hasArmedUnderGuidedAccess: Bool) -> Bool { hasArmedUnderGuidedAccess }
+
+    /// Pure (unit-tested): the Guided Access setup steps, in order. The Volume Buttons step only in Siren mode (item 221's
+    /// ruling 3); without it, the Side Button step no longer opens with "Also", which pointed back at it.
+    static func guidedAccessSteps(siren: Bool) -> [String] {
+        let sideButton = "in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile. With it off, a press only shows the iOS banner that Guided Access is on, and the tripwires keep running."
+        var steps = ["Open Settings → Accessibility → Guided Access and turn it on (one-time setup).",
+                     passcodeStep,
+                     "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.",
+                     "Tap Start (top-right) to lock the device to Malinois.",
+                     FirstArmBriefing.voiceControlText]   // one wording with "Before you arm" (item 242's round q)
+        if siren {
+            steps.append("For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise whoever picks up the phone can turn the siren down.")
+            steps.append("Also " + sideButton)
+        } else {
+            steps.append("In " + sideButton.dropFirst(3))
+        }
+        return steps
+    }
+
     @EnvironmentObject private var engine: MonitoringEngine
     @EnvironmentObject private var entitlements: ProEntitlements
     @EnvironmentObject private var settings: AppSettings
     @State private var showCancelPIN = false
+    /// "Show the setup steps" was tapped on the folded line (item 240's D3).
+    @State private var showAllSetupSteps = false
     /// A finger down on the Calibrated card (item 124), so the Touch trip is reported once per press.
     @GestureState private var reviewPress = false
 
@@ -261,7 +294,7 @@ struct ArmingView: View {
     private var guidedAccessRecommendation: some View {
         if engine.guidedAccessEnabled {
             header("Guided Access is on",
-                   subtitle: "The device is locked to Malinois - a snoop can't switch apps or use the power-off slider. A forced restart still ends the watch.")
+                   subtitle: Self.guidedAccessOnSubtitle)
             guidedAccessIndicator
         } else {
             header("Recommended: turn on Guided Access",
@@ -269,17 +302,33 @@ struct ArmingView: View {
 
             guidedAccessIndicator
 
-            VStack(alignment: .leading, spacing: 12) {
-                instruction(1, "Open Settings → Accessibility → Guided Access and turn it on (one-time setup).")
-                instruction(2, "In Guided Access → Passcode Settings, set a Guided Access passcode. Make it DIFFERENT from your device passcode, and turn OFF the Face ID (or Touch ID) switch there, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch, and that code then unlocks the phone.")
-                instruction(3, "Back in Malinois, triple-click the side (or Home) button to bring up Guided Access.")
-                instruction(4, "Tap Start (top-right) to lock the device to Malinois.")
-                instruction(5, "If you use Voice Control, turn it OFF (Settings → Accessibility → Voice Control) - it keeps working under Guided Access and can be told to close the app.")
-                instruction(6, "For Siren mode: in Guided Access → Options, turn OFF Volume Buttons - otherwise whoever picks up the phone can turn the siren down.")
-                instruction(7, "Also in Guided Access → Options, turn OFF Side Button (Sleep/Wake Button on older phones). One press of it would otherwise lock the screen and suspend monitoring until you unlock; the lapse is recorded, but nothing is watched meanwhile. With it off, a press only shows the iOS banner that Guided Access is on, and the tripwires keep running.")
+            if Self.foldsSetupSteps(hasArmedUnderGuidedAccess: OnboardingState.hasArmedUnderGuidedAccess), !showAllSetupSteps {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Self.foldedSteps)
+                        .font(.subheadline)
+                        .reportedOnScreen(Self.foldedSteps)
+                    Button(Self.showSetupSteps, action: unfoldSetupSteps)
+                        .font(.footnote)
+                        .reportedAction(Self.showSetupSteps) { unfoldSetupSteps() }   // for a test to press
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    MainActorForEach(Array(Self.guidedAccessSteps(siren: settings.responseMode == .siren).enumerated()),
+                                     id: \.offset) { item in
+                        instruction(item.offset + 1, item.element)
+                    }
+                }
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
             }
-            .padding()
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
+
+            Text(Self.guidedAccessUnavailable)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .reportedOnScreen(Self.guidedAccessUnavailable)
 
             Label("Without Guided Access, a snoop could switch away from Malinois or power it off before the evidence uploads.",
                   systemImage: "exclamationmark.triangle")
@@ -473,6 +522,9 @@ struct ArmingView: View {
                 .reportedOnScreen(subtitle)   // read as shown by item 168's tests
         }
     }
+
+    /// "Show the setup steps" on the folded line (item 240's D3): every step again, until the screen closes.
+    private func unfoldSetupSteps() { showAllSetupSteps = true }
 
     private func instruction(_ n: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {

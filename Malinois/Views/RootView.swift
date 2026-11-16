@@ -31,23 +31,33 @@ struct RootView: View {
     /// One-time Guided Access nudge, evaluated when a session ends (see `maybePromptGuidedAccess`).
     @State private var showGuidedAccessPrompt = false
 
+    /// The welcome screen's "Set a PIN" was tapped, and its "See it work" (Test sensors before any PIN) is open
+    /// (item 240; `Welcome.launchScreen`).
+    @State private var pinSetupChosen = false
+    @State private var showWelcomeTest = false
+
     var body: some View {
         Group {
-            if pinStateUnresolved, engine.state == .disarmed {
+            switch Welcome.launchScreen(pinUnresolved: pinStateUnresolved, disarmed: engine.state == .disarmed,
+                                        recovery: recovery != nil, needsPINSetup: needsPINSetup,
+                                        pinSetupChosen: pinSetupChosen) {
+            case .pinStorageUnavailable:
                 VStack(spacing: 20) {
                     Text("PIN storage unavailable").font(.headline)
                     Text("Unlock this device, then retry. Your PIN and evidence have not been reset.")
                         .multilineTextAlignment(.center)
                     Button("Retry", action: refreshPINStateIfUnresolved)
                 }.padding(32)
-            } else if let recovery {
-                PINContinuityView(kind: recovery) { finishRecovery() }
-            } else if needsPINSetup {
+            case .recovery:
+                if let recovery { PINContinuityView(kind: recovery) { finishRecovery() } }
+            case .welcome:
+                WelcomeView(onSeeItWork: { showWelcomeTest = true }, onSetAPIN: { pinSetupChosen = true })
+            case .pinSetup:
                 PINSetupView {
                     needsPINSetup = false
                     showTrialWelcome = !OnboardingState.hasSeenTrialWelcome && entitlements.status == .trial
                 }
-            } else {
+            case .app:
                 switch engine.state {
                 case .disarmed:
                     HomeView()
@@ -58,6 +68,9 @@ struct RootView: View {
                 }
             }
         }
+        // "See it work" (item 240): Test sensors before any PIN exists, from the welcome screen only. Nothing is
+        // recorded, and with no PIN there is nothing to hide; once a PIN exists Home's button asks for it, as before.
+        .sheet(isPresented: $showWelcomeTest) { DryRunView() }
         .animation(.easeInOut, value: engine.state)
         // Don't leave the whole system dimmed if the app is backgrounded while
         // armed; re-apply the covert/alert brightness when it returns.

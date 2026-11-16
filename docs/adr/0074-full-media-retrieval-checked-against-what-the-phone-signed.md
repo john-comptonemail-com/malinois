@@ -2,7 +2,8 @@
 
 - **Status:** accepted (the owner, 2026-11-04: "a, approved"; BACKLOG item 190's A4, its download half, item 192's
   step 2). Supersedes ADR 0002, whose decision and three amendments it restates with the check decision 5 adds (the
-  owner's rule of 2026-11-01: a further change to a record amended three times is a new record).
+  owner's rule of 2026-11-01: a further change to a record amended three times is a new record). Decision 6 added for
+  1.13 (BACKLOG item 233's (b); the owner, 2026-11-12: "as you recommend, wording approved", D3 (a)).
 - **Date:** 2026-11-04
 
 ## Context
@@ -42,6 +43,16 @@ in 1.10, the download's later).
    unchanged." A slot no revision of this phone's names (a copy from another device, a record from before 1.10, or one
    signed without it) takes the capture as before. While the signer cannot read its file, a capture is never added
    unchecked: it waits, and the download is left to try again.
+6. **A download never removes others to make room** (1.13). A capture is added only if it fits within the size limit
+   with the photos and clips the event log names (every event's, an upload's under way included, each file's size as the
+   limit measures it: `EventStore.measureStoredMedia`), measured off the main actor, and measured again while a capture
+   was saved meanwhile, so that the answer holds for the turn that adds it (`MonitoringCloudCoordinator.room(for:)`).
+   One that does not fit is not added, its file removed at once, and the rest of the download goes on; the event's
+   screen says, in the owner's words: "A capture wasn't downloaded: there isn't room for it on this iPhone. Malinois
+   stores up to 2 GB of photos and clips here, and a download never deletes others to make room." After three changes in
+   a row the room is not known, and the capture waits for another try, as an unchecked slot does. Before, the limit ran
+   after the download and could remove older photos and clips, the last copies wherever iCloud's retention had since
+   removed its own; a face or finger can start a download (item 233).
 
 ## Consequences
 
@@ -61,9 +72,15 @@ in 1.10, the download's later).
   refused captures never pile up outside the storage limit (item 194's codex-2).
 - The latest revision naming the slot is the reference (Claude's choice, noted to the owner): a file that changed in
   place and was signed again is compared with its later bytes, and an earlier revision's photo is refused.
+- Decision 6: a download can be refused while the phone is at its limit; the owner downloads again once there is room.
+  A capture saved after a downloaded file is added sets off the limit in the usual order, as any capture does. The
+  check runs after the store has written the file, so a clip is never staged twice, and a file that does not fit is
+  removed as a refused one is. Not taken (the owner's D3): a limit after a download that takes only downloaded copies,
+  or downloaded copies first at every pass; both still remove older downloads, which can be the last copies.
 - What ADR 0002's amendments left stands: a file a record names that never reaches iCloud, or was since removed from it,
   keeps the offer up, and a tap says nothing came back; a capture uploaded before 1.8.2 has no record of what landed;
   the list repairs a record at its next push only.
 
 Tests: `Item190DownloadCheckTests` (decision 5, through the engine's own download, the signer's own file and the screen
-laid out for real), `Item163RecordCapsTests` and `Item167ReviewTests` (decisions 2 to 4).
+laid out for real), `Item163RecordCapsTests` and `Item167ReviewTests` (decisions 2 to 4), `Item233DownloadRoomTests`
+(decision 6, through the engine's own download and the screen laid out for real).

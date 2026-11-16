@@ -41,7 +41,7 @@ Once armed, if the phone is moved, tilted, unplugged, handled, touched, or appro
 | switches the phone off or destroys it straight away | With Pro and a connection, the event's record goes up before the photo, so it can reach your iCloud first. Without a connection, nothing leaves the phone. |
 | blocks its signal | If the phone had a connection when you armed it and hasn't moved, losing every connection for about 30 seconds sounds the siren and leaves a signal-loss entry. |
 
-**When you come back:** before typing your PIN, look at "Armed for" above the pad: it should match how long ago you armed. After disarming, Home's "Last armed" line should start at the time you armed; if it starts later, your session ended and another began. Then open the Event Log and read every entry since you armed, not just the newest: a disarm you didn't make, "Monitoring interrupted" or a wrong PIN means someone tried, even if the phone looks untouched.
+**When you come back:** before typing your PIN, look at "Armed for" above the pad: it should match how long ago you armed. After disarming, Home's "Last armed" line should start at the time you armed; if it starts later, your armed session ended and another began. Then open the Event Log and read every entry since you armed, not just the newest: a disarm you didn't make, "Monitoring interrupted" or a wrong PIN means someone tried, even if the phone looks untouched.
 
 Without Pro (free for every install during Early-Access), Malinois sends none of your events off the phone (it only asks Apple to certify the key it signs them with, which carries none of them), so a wiped or destroyed phone takes its record with it; only an earlier iOS backup might hold a copy. Sensors have thresholds and iOS can stop any app: [SECURITY.md](SECURITY.md) lists the known gaps. You can check all of this against the code: this repository holds the source of every release since 1.2, with no third-party code ([what this repository is](#what-this-repository-is), and what it can't prove).
 
@@ -65,7 +65,7 @@ CloudKit carries Pro's iCloud copies and alerts (the alert extension and the wat
 
 To see the sensors react before you arm anything, tap **Test sensors** on the home screen: nothing is recorded and no events are logged.
 
-1. **First run** — set a 4-digit PIN (or 6).
+1. **First run** — a new install opens on a welcome screen: **See it work** tries the sensors with nothing recorded, before any PIN. Then **Set a PIN**, 4 digits (or 6).
 2. Tap **ARM**. The camera prompt appears the first time; allow it.
 3. On the arming screen, **triple-click the side button** to start **Guided Access** (one-time iOS setup: Settings → Accessibility → Guided Access).
 4. Tap **Start countdown**, set the device down, screen up, and go about your business. The countdown ends, sensors calibrate, and the screen goes dark.
@@ -75,7 +75,7 @@ To see the sensors react before you arm anything, tap **Test sensors** on the ho
 
 ## AI Disclosure
 
-**I am a data engineer who wanted an app that didn't exist, but I am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable 5, with Opus 5.5 and Fable 5.1 currently used. Rounds of adversarial reviews are performed with multiple passes from different models (currently GPT-6, Fable 5.1, GLM-5.3, DeepSeek V4.1 Flash, MiniMax M3.1 Flash, Nemotron 3.5 Super VL, etc.) until a release-ready consensus is reached, and I test on an iPhone 17 Pro, an iPhone Air and an Apple Watch Ultra 3. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
+**I am a data engineer who wanted an app that didn't exist, but I am in no way an iOS developer.** Malinois was developed in its entirety using AI tools; primarily Fable 5, with Opus 5.5 currently used. Rounds of adversarial reviews are performed with multiple passes from different models (currently GPT-6 Astra, Fable 5.2, GLM-5.3 and DeepSeek V4 Pro) until a release-ready consensus is reached, and I test on an iPhone 17 Pro, an iPhone Air and an Apple Watch Ultra 3. The majority of the documentation is also AI-generated. As with most docs these days, I find it frustrating to read at times, but I also feel it would be deceptive on my part to try and conceal it by rewriting, so I've reviewed it for obvious errors and largely left it as-is.
 
 This is ultimately a personal project, but it's a project I think others might find a use for, and it would not have happened without AI. As such, please poke holes in the code, the assumptions and decisions I made, threat model thinking, anything and everything: I'm relying on it too.
 
@@ -83,10 +83,10 @@ This is ultimately a personal project, but it's a project I think others might f
 
 ## How this is engineered
 
-- About 39,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
-- 2,342 unit tests in 153 files, 58,451 lines of tests. Most rules in SECURITY.md are pinned by one.
-- The decisions that matter are pure functions, 283 of them, each tested on its own.
-- 71 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
+- About 40,000 lines of Swift across the app, its watch app and two extensions, and no third-party code: what you see is everything that runs.
+- 2,543 unit tests in 172 files, 64,163 lines of tests. Most rules in SECURITY.md are pinned by one.
+- The decisions that matter are pure functions, 290 of them, each tested on its own.
+- 79 design decisions are written up as records in `docs/adr`, which the code cites ("ADR 0039").
 - Fixes cite a numbered findings ledger by item number, which stays private.
 
 ## Pro
@@ -97,12 +97,14 @@ A Pro in-app purchase is available, but **Pro is not required to meet Malinois' 
 
 With Pro, turn on iCloud's Advanced Data Protection if you want your iCloud copies readable only on your own devices.
 
-## What's new in 1.12
+## What's new in 1.13
 
-- If Malinois ever has to set aside an event log it can't read in full, that log now appears at the top of the Event Log, and Home reminds you about it until it's deleted. You can view the records that can still be read, share an exact copy of the file (not signed evidence) along with its photos and clips still on your iPhone, or delete it with your PIN, together with the photos and clips only it uses; the deletion is noted in the Event Log.
-- Settings now shows your iPhone's current signing key: its first eight characters, as the Mac verifier prints them, and the whole ID to copy. Give someone the ID before you send them an evidence ZIP, and they can tell it was signed on your iPhone.
-- If you share a signed event and its evidence ZIP can't be included, the event's screen now tells you so, and why when it can.
-- Also: a photo downloaded from another of your devices no longer shows under the wrong camera after that device updates the event; the Event Log's note that events not fully backed up to iCloud were removed to make room now appears only once per watch; and the Apple Watch app now hands back each background wake from your iPhone within 10 seconds, inside watchOS's time limit.
+- Fixes a crash on some iPhones that could close Malinois while you set up your PIN, so a new install couldn't get past setup.
+- On a new install, Malinois now opens on a welcome screen that says what it does. Tap "See it work" to try the sensors before you set a PIN: nothing is recorded. After the first armed session, Home points to the Event Log, which has what it recorded.
+- The arming screen is shorter: once you have armed under Guided Access, it folds its setup steps into one line, the Volume Buttons step shows only in Siren mode, and it says what to do if iOS reports Guided Access unavailable.
+- When Vision trips on a slow change, the event now shows the view it compared against, so you can see what changed.
+- Downloading a photo or clip from iCloud no longer deletes older ones to make room: one that doesn't fit in the 2 GB of photos and clips Malinois stores on your iPhone isn't saved, and the event's screen says so.
+- Also: if Malinois can't read all of your event log from iCloud, Home and the Event Log now say so, and how many records this version can't read; on Apple Watch, an alert from your iPhone is now saved until it appears, so one cut short by the app's background time limit appears the next time the app runs; "Free up iCloud space…" now leaves an entry in the Event Log when it deletes something; the siren now starts again by itself when iOS pauses it for an interruption and never says the interruption ended; and Malinois now says "armed session" where it said "watch".
 
 Earlier releases are listed in [CHANGELOG.md](CHANGELOG.md).
 

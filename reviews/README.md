@@ -18,3 +18,4 @@ in its report, and the release's page says why nothing was done about it. A find
 against a phone is left out of its report until its fix ships, and the release's page says where one was left out.
 
 - [1.12](1.12/README.md): four full reviews, eleven reports.
+- [1.13](1.13/README.md): three full reviews, eight reports.

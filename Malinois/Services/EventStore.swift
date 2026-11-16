@@ -61,6 +61,11 @@ final class EventStore: ObservableObject {
     /// The log could not be decoded and was set aside as a timestamped backup; a fresh log has
     /// started (item 73, review 2 R2.2). Cleared by the next clean load.
     @Published private(set) var logWasQuarantined = false
+    /// The log set aside at this launch is not one the list of set-aside logs shows: a folder or a link in the log's place,
+    /// which only an edited backup restored to the phone can put there, the list taking plain files only since 1.12
+    /// (item 218). Home says so at that launch, in 1.11's words (item 224's point 1). The thing set aside stays where it
+    /// was moved, holding the media sweep and the limits' removals, as item 218 decided.
+    @Published private(set) var setAsideNotListed = false
     /// The event logs set aside because they could not be read as a whole (item 122), newest first: listed after each load
     /// (at launch, and after the unlock when the launch could not read the log), once it has set one aside, and kept until
     /// the owner deletes one. Home says so while any is kept; the Event Log lists them at its top.
@@ -70,6 +75,16 @@ final class EventStore: ObservableObject {
     /// clips. The Event Log, where Delete's screen leaves for, shows each until the owner dismisses it there
     /// (`setAsideDeletionWasTold`). A whole delete adds nothing and takes nothing away. Kept in memory only.
     @Published private(set) var setAsideDeletionsToTell: [SetAsideLogDeletion] = []
+    /// The notes of set-aside logs' Deletes whose status entries are not yet written, as written beside the log (item
+    /// 235's A11; `SetAsideDeleteOwed`).
+    private var setAsideDeletesOwed: [SetAsideDeleteOwed] = []
+    /// The entries a load found owed, by Deletes a launch before was stopped in, until the engine listens.
+    private var setAsideDeleteEntriesOwed: [SetAsideDeleteOwed] = []
+    /// Writes the entry a Delete's note owes (the engine's), handed each one found at launch or at the unlock's reload,
+    /// a turn of the main actor later, and once it is set.
+    var onSetAsideDeleteOwed: ((SetAsideDeleteOwed) -> Void)? {
+        didSet { handOverSetAsideDeletesOwed() }
+    }
     /// A birth-journal append or full sync failed, so the crash-durability promise does not
     /// hold for recent events (item 73, review 1 R6). The full log write still lands them.
     @Published private(set) var journalDegraded = false
@@ -91,9 +106,14 @@ final class EventStore: ObservableObject {
     /// Independent count budgets: routine status history must not crowd out incidents,
     /// and a stream of incidents must not erase the separate status history (ADR 0035).
     static let maxIncidentEvents = 500
+    /// This phone's own status entries.
     static let maxAuditEvents = 100
-    /// Combined bound, requested per record type from iCloud. Neither pool borrows
-    /// unused capacity from the other; media remains subject to its separate byte cap.
+    /// Other devices' status entries, all of them together: a budget of their own (ADR 0088; item 242's round q), so they
+    /// no longer compete with this phone's own status history, which they still cannot push out. Before, they shared it
+    /// and went first, so a phone whose status history was full dropped each one as it arrived (TestFlight 88's step 8).
+    nonisolated static let maxMirroredAuditEvents = 100
+    /// Combined bound, requested per record type from iCloud: more than both status budgets need of the status type.
+    /// No pool borrows unused capacity from another; media remains subject to its separate byte cap.
     static let maxEvents = maxIncidentEvents + maxAuditEvents
 
     /// Media-size cap. With video the default, 500 clips could be ~15 GB, so the
@@ -117,9 +137,9 @@ final class EventStore: ObservableObject {
     // state, so the resolvers are `nonisolated static` — usable from `ioQueue`.
 
     /// Whether any prior local evidence survives, including journal, media and attachment
-    /// intents when the primary log is missing. Empty directories and freshly generated
-    /// seen/restore bookkeeping are not evidence. Inspection errors require recovery.
-    /// Observation only: never creates, deletes or decrypts files.
+    /// intents when the primary log is missing. Empty directories, freshly generated
+    /// seen/restore bookkeeping and the evidence signer's key lines are not evidence (item 242).
+    /// Inspection errors require recovery. Observation only: never creates, deletes or decrypts files.
     nonisolated static var containerHasPriorEvents: Bool {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return KeychainService.hasPriorLocalEvidence(in: docs.appendingPathComponent("MalinoisEvents", isDirectory: true))
@@ -156,11 +176,17 @@ final class EventStore: ObservableObject {
     var mediaBudgetForTesting: Int64?
     /// Awaited after the clean-up has measured the files, before it decides (item 116).
     var mediaMeasuredForTesting: (@MainActor () async -> Void)?
+    /// Awaited after a download's measure of the photos and clips, before it is compared (BACKLOG 233 (b)): a test saves
+    /// a capture there, as one can be saved while the files are measured.
+    var downloadMeasuredForTesting: (@MainActor () async -> Void)?
     /// Whether no byte-limit pass is running or owed: a test waits on it before a step that must not race one.
     var byteCapPruneIdleForTesting: Bool { !byteCapPruneRunning }
     /// Called on the I/O queue with the staged copy, before its size is checked against the
     /// record: a test shortens it there, as a short write would.
     nonisolated(unsafe) static var stagedCopyForTesting: ((URL) -> Void)?
+    /// Called on the I/O queue with the store's folder as a set-aside log's delete begins there (item 235's A11): a test
+    /// reads the Deletes' notes as they are on disk then.
+    nonisolated(unsafe) static var setAsideDeleteBeginsForTesting: ((URL) -> Void)?
     /// Stands in for a phone locked past its grace period (1.8.2's step 63, the audit's lead 7), which the Simulator does
     /// not enforce: a file of the store's under "complete unless open" cannot be reopened by its path.
     nonisolated(unsafe) static var sealedForTesting = false
@@ -175,6 +201,8 @@ final class EventStore: ObservableObject {
     nonisolated(unsafe) static var fullSyncFailsForTesting = false
     /// The journal's open for an append fails, as a refused open would (item 187's round B, qwen-5).
     nonisolated(unsafe) static var journalOpenFailsForTesting = false
+    /// Item 243's round s (gpt6-astra-1): every save of the log fails, as a disk refusing it would.
+    nonisolated(unsafe) static var logSaveFailsForTesting = false
     #endif
 
     /// The folder this store keeps its log, journal and media in: ~/Documents/MalinoisEvents/,
@@ -252,6 +280,7 @@ final class EventStore: ObservableObject {
         recoverFromJournal()
         dropReportsOwedForEventsHeld()   // the journal may have brought one back
         dropLimitRemovalsHeld()          // or a removal's record
+        loadSetAsideDeletesOwed()        // item 235's A11: the Deletes' notes, once their entries could be back
         enforceCountCapsAfterLoad()
         recoverMediaAttachments()
         attachWaitingClips()   // a clip a sealed phone kept waiting before the app ended (step 63)
@@ -402,6 +431,9 @@ final class EventStore: ObservableObject {
     nonisolated static func inheritingLocalEnrichment(existing: Event, incoming: Event) -> Event {
         var out = carryingFiles(of: existing, into: incoming)
         if existing.mediaDiscarded == true { out.mediaDiscarded = true }   // never taken back (item 166's A2)
+        // A thumbnail whose camera is not known stays so while the newer copy names no camera for the first place either
+        // (item 237): the place's name is still the downloaded file's.
+        if existing.thumbnailCameraUnknown == true, incoming.primaryCamera == nil { out.thumbnailCameraUnknown = true }
         // Never a thumbnail the decoder would refuse (codex-13 on 1.8.2: one an older version saved).
         if out.thumbnailData == nil, let kept = existing.thumbnailData, kept.count <= CloudExfiltrator.maxThumbnailBytes {
             out.thumbnailData = kept
@@ -440,7 +472,12 @@ final class EventStore: ObservableObject {
         for (item, primary) in zip(held, slots) {
             if primary {
                 out.mediaFilename = item.file
-                if out.primaryCamera == nil { out.primaryCamera = item.camera }
+                if out.primaryCamera == nil, let camera = item.camera {
+                    out.primaryCamera = camera
+                    // Named after the downloaded file while the copy has a thumbnail, which came with no camera named
+                    // (item 237).
+                    if out.thumbnailData != nil { out.thumbnailCameraUnknown = true }
+                }
             } else {
                 out.secondaryMediaFilename = item.file
                 if out.secondaryCamera == nil { out.secondaryCamera = item.camera }
@@ -659,7 +696,7 @@ final class EventStore: ObservableObject {
                                              isMirrored: $0.isMirrored,
                                              inFlight: uploadsInFlight[$0.id] != nil || linesHeldForTheSigner.contains($0.id)
                                                  || $0.id == spared) },
-            incidentCap: Self.maxIncidentEvents, auditCap: Self.maxAuditEvents))
+            incidentCap: Self.maxIncidentEvents, auditCap: Self.maxAuditEvents, mirroredAuditCap: Self.maxMirroredAuditEvents))
         // Item 114: a budget still over after this pass waited for an upload, or for a line the evidence signer holds;
         // check again when it ends or is let go.
         defer {
@@ -670,7 +707,7 @@ final class EventStore: ObservableObject {
         var removed: [Event] = []
         events.removeAll { e in
             guard victims.contains(e.id) else { return false }
-            removedNames.append(contentsOf: [e.mediaFilename, e.secondaryMediaFilename].compactMap { $0 })
+            removedNames.append(contentsOf: e.storedMediaNames)
             removed.append(e)
             return true
         }
@@ -701,10 +738,13 @@ final class EventStore: ObservableObject {
         return removedNames
     }
 
-    /// Whether either count budget is still over, which only an upload in flight leaves it (item 114).
+    /// Whether a count budget is still over, which only an upload in flight leaves it (item 114): the incidents, this
+    /// phone's own status entries, or other devices' (ADR 0088).
     private var overACountBudget: Bool {
-        let status = events.filter { $0.isStateChange || $0.interrupted == true }.count
-        return events.count - status > Self.maxIncidentEvents || status > Self.maxAuditEvents
+        let status = events.filter { $0.isStateChange || $0.interrupted == true }
+        let copies = status.lazy.filter(\.isMirrored).count
+        return events.count - status.count > Self.maxIncidentEvents || status.count - copies > Self.maxAuditEvents
+            || copies > Self.maxMirroredAuditEvents
     }
 
     /// Migrates a readable legacy log without waiting for another incident. A sealed or
@@ -734,18 +774,20 @@ final class EventStore: ObservableObject {
         var inFlight = false
     }
 
-    /// Pure retention policy, with newest-first input. Each pool first discards mirrored
-    /// copies, including its newest mirror, so cloud input cannot displace owned evidence.
-    /// Incidents then discard floods, synced evidence and finally pending evidence, oldest
-    /// first within each class. Status entries discard the oldest owned status entries.
+    /// Pure retention policy, with newest-first input, in three pools: incidents, this phone's own status entries, and
+    /// other devices' status entries (ADR 0088; item 242's round q). The incident pool first discards mirrored copies,
+    /// including its newest mirror, so cloud input cannot displace owned evidence, then floods, synced evidence and
+    /// finally pending evidence, oldest first within each class. Each status pool discards its oldest entries: other
+    /// devices' have a pool of their own, so they never displace this phone's own, and no longer go first when this
+    /// phone's own history is full (they did, and so dropped as they arrived: TestFlight 88's step 8).
     /// The newest first-hand row in EACH pool is protected from eviction, including an
     /// in-flight flood anchor. A first-hand pool therefore retains at least one row even
-    /// if a caller supplies a zero cap; production budgets are 500 incidents / 100 status.
+    /// if a caller supplies a zero cap; production budgets are 500 incidents / 100 status / 100 other devices' status.
     /// A row whose upload is running is never taken and no newer row is taken in its place: it
     /// counts as already going, and the store applies the limit again when the upload ends, by
     /// when the row is usually synced and goes without loss (item 114, from item 108's F5).
-    nonisolated static func countEvictionOrder(events: [EvictionRow], incidentCap: Int,
-                                               auditCap: Int) -> [UUID] {
+    nonisolated static func countEvictionOrder(events: [EvictionRow], incidentCap: Int, auditCap: Int,
+                                               mirroredAuditCap: Int = maxMirroredAuditEvents) -> [UUID] {
         func evict(_ rows: [EvictionRow], cap: Int, incidents: Bool) -> [UUID] {
             let protected = rows.first { !$0.isMirrored }?.id
             var overflow = rows.count - max(0, cap) - rows.filter { $0.inFlight && $0.id != protected }.count
@@ -770,7 +812,8 @@ final class EventStore: ObservableObject {
             return result
         }
         return evict(events.filter { !$0.isAudit }, cap: incidentCap, incidents: true)
-            + evict(events.filter(\.isAudit), cap: auditCap, incidents: false)
+            + evict(events.filter { $0.isAudit && !$0.isMirrored }, cap: auditCap, incidents: false)
+            + evict(events.filter { $0.isAudit && $0.isMirrored }, cap: mirroredAuditCap, incidents: false)
     }
 
     // MARK: - Uploads in flight (item 114, from item 108's F5)
@@ -1232,7 +1275,7 @@ final class EventStore: ObservableObject {
         let snapshot = events.map { (id: $0.id,
                                      isFlood: $0.sustainedCount != nil,
                                      isSynced: $0.cloudSyncState == .synced,
-                                     media: [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 }) }
+                                     media: $0.storedMediaNames) }
         var budget = Self.maxMediaBytes
         #if DEBUG
         if let mediaBudgetForTesting { budget = mediaBudgetForTesting }
@@ -1272,16 +1315,16 @@ final class EventStore: ObservableObject {
             // evidence that never uploaded, unmarked; the next pass judges it as it is (item 140, A1).
             let now = events[idx]
             guard let was = measured[now.id],
-                  was.media == [now.mediaFilename, now.secondaryMediaFilename].compactMap({ $0 }),
+                  was.media == now.storedMediaNames,
                   was.isSynced == (now.cloudSyncState == .synced),
                   was.isFlood == (now.sustainedCount != nil) else {
                 byteCapPruneRepeat = true
                 continue
             }
-            if let n = events[idx].mediaFilename { names.append(n) }
-            if let n = events[idx].secondaryMediaFilename { names.append(n) }
+            names.append(contentsOf: events[idx].storedMediaNames)   // the Vision reference still with them (item 239)
             events[idx].mediaFilename = nil
             events[idx].secondaryMediaFilename = nil
+            events[idx].visionReferenceFilename = nil
             // The badge and detail view must not read a later meta-only retry as everything
             // having made it (34.H5): a capture none of whose files is known to have reached iCloud
             // (item 166's codex-23: part of a capture there keeps its download) is marked lost
@@ -1335,8 +1378,42 @@ final class EventStore: ObservableObject {
         return (evict, discarded)
     }
 
+    /// The size limit's budget for the photos and clips the log names: 2 GB, or a test's own.
+    var mediaBudget: Int64 {
+        #if DEBUG
+        if let mediaBudgetForTesting { return mediaBudgetForTesting }
+        #endif
+        return Self.maxMediaBytes
+    }
+
+    /// The names of the photos and clips the event log names now, every event's.
+    var storedMediaNamesNow: [String] { events.flatMap(\.storedMediaNames) }
+
+    /// The photos and clips the event log names, in bytes, each file's size as the size limit measures it, every event's
+    /// included, an upload's under way too; with the names measured, so a caller can tell whether a capture was saved
+    /// while the files were measured (BACKLOG 233 (b): a download is added only if it fits with them). The files are
+    /// measured off the main actor.
+    func measureStoredMedia() async -> (names: [String], bytes: Int64) {
+        let dir = mediaDirectory
+        let names = storedMediaNamesNow
+        let bytes = await Task.detached { () -> Int64 in
+            names.reduce(Int64(0)) { total, name in total + EventStore.mediaFileSize(named: name, in: dir) }
+        }.value
+        #if DEBUG
+        if let downloadMeasuredForTesting { await downloadMeasuredForTesting() }
+        #endif
+        return (names, bytes)
+    }
+
+    /// The size of the file the log names `name`, as the size limit reads it; 0 for none.
+    nonisolated static func mediaFileSize(named name: String, in dir: URL) -> Int64 {
+        guard let file = mediaFile(named: name, in: dir),
+              let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int64 else { return 0 }
+        return max(0, size)
+    }
+
     private func deleteMedia(for events: [Event]) {
-        deleteMediaNames(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        deleteMediaNames(events.flatMap(\.storedMediaNames))
     }
 
     /// Deletes media files on the ioQueue — off the main actor, consistent with the
@@ -1392,7 +1469,7 @@ final class EventStore: ObservableObject {
     nonisolated private func removeMediaOwedDeletion(notNamedIn snapshot: [Event]) {
         let waiting = mediaOwedDeletion.get()
         guard !waiting.isEmpty else { return }
-        let named = Set(snapshot.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        let named = Set(snapshot.flatMap(\.storedMediaNames))
         let owed = waiting.subtracting(named)
         mediaOwedDeletion.set([])
         removeMediaOnQueue(Array(owed))
@@ -1452,7 +1529,7 @@ final class EventStore: ObservableObject {
     /// (`orphanedMediaNames`).
     private func sweepOrphanedMedia() {
         guard loadedCleanly, !loadFailed, !awaitingUnlock else { return }
-        let inMemoryReferences = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        let inMemoryReferences = Set(events.flatMap(\.storedMediaNames))
         ioQueue.async { [self, storeRoot = root] in
             // Recovery may have changed memory while its atomic log replacement failed.
             // Only the snapshot actually on disk can authorize retirement. This read and
@@ -1462,9 +1539,7 @@ final class EventStore: ObservableObject {
                   let persisted = try? StoredJSON.decode([Event].self, from: data) else { return }
             checkpointAttachments(persistedSnapshot: persisted, cleanLoad: true, logURL: logURL,
                                   protectedReferences: inMemoryReferences)
-            let referenced = inMemoryReferences.union(persisted.flatMap {
-                [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 }
-            })
+            let referenced = inMemoryReferences.union(persisted.flatMap(\.storedMediaNames))
             let pending = storeRoot.appendingPathComponent("MediaAttachments")
             if FileManager.default.fileExists(atPath: pending.path) {
                 guard let files = attachmentFiles(), files.isEmpty else { return }
@@ -1905,6 +1980,12 @@ final class EventStore: ObservableObject {
         if !mayTransitionSyncState(from: current.cloudSyncState, to: incoming.cloudSyncState) {
             out.cloudSyncState = current.cloudSyncState
         }
+        // A Vision reference still the storage limit took is not named again by a copy from before (item 239): every
+        // copy names it from the record's birth, so its going is the only change, and the trip response's own copy is
+        // written back when its capture ends.
+        if current.visionReferenceFilename == nil { out.visionReferenceFilename = nil }
+        // A thumbnail's camera, once not known, is not known again by a copy from before the note (item 237).
+        if current.thumbnailCameraUnknown == true { out.thumbnailCameraUnknown = true }
         return out
     }
 
@@ -2095,6 +2176,44 @@ final class EventStore: ObservableObject {
     func secondaryMediaURL(for event: Event) -> URL? {
         guard let name = event.secondaryMediaFilename, let url = Self.mediaFile(named: name, in: mediaDirectory) else { return nil }
         return Self.isPlainFileOrNothing(url) ? url : nil
+    }
+
+    /// The event's Vision reference still (item 239), for its screen, as `mediaURL(for:)`.
+    func visionReferenceURL(for event: Event) -> URL? {
+        guard let name = event.visionReferenceFilename, let url = Self.mediaFile(named: name, in: mediaDirectory) else { return nil }
+        return Self.isPlainFileOrNothing(url) ? url : nil
+    }
+
+    /// A set-aside record's Vision reference still, as `setAsideMediaURL(for:)`.
+    func setAsideVisionReferenceURL(for event: Event) -> URL? {
+        guard Self.realDirectory(mediaDirectory), let name = event.visionReferenceFilename, Self.isStoredMediaName(name) else {
+            return nil
+        }
+        return visionReferenceURL(for: event)
+    }
+
+    /// Saves a slow Vision trip's still (item 239, ADR 0081) under the name its record was born with, in the media folder,
+    /// on the file queue, after the log write that names it: only for a record the log has under that name, only under a
+    /// name of the store's own form, and never over a file already there. A kill before it leaves a record naming a file
+    /// not on the phone, which the signer leaves out and the screen shows no still for, as for a photo. Sealed as every
+    /// file of the store's is.
+    func saveVisionReference(_ jpeg: Data, for event: Event) {
+        guard let name = event.visionReferenceFilename, Self.isStoredMediaName(name),
+              events.contains(where: { $0.id == event.id && $0.visionReferenceFilename == name }) else { return }
+        ioQueue.async { [root] in
+            let media = Self.mediaDirectoryURL(in: root)
+            guard Self.realDirectory(media) else { return }
+            let file = media.appendingPathComponent(name)
+            guard Self.look(at: file) == .nothing else {
+                Log.store.error("The Vision reference still was not saved: a file is already under its name")
+                return
+            }
+            do {
+                try Self.writeSealed(jpeg, to: file)
+            } catch {
+                Log.store.error("The Vision reference still could not be saved: \(Log.ref(error), privacy: .public)")
+            }
+        }
     }
 
     /// A set-aside record's photo or clip file, for its screen (item 122): as `mediaURL(for:)`, and nil while the media
@@ -2809,6 +2928,9 @@ final class EventStore: ObservableObject {
                         throw CocoaError(.fileWriteUnknown)
                     }
                 }
+                #if DEBUG
+                if Self.logSaveFailsForTesting { throw CocoaError(.fileWriteUnknown) }
+                #endif
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: url, options: options)
                 self.checkpointAttachments(persistedSnapshot: snapshot, cleanLoad: cleanLoad, logURL: url)
@@ -2824,6 +2946,9 @@ final class EventStore: ObservableObject {
                 // redundant and can be retired (on the main actor, the journal's one writer).
                 let persistedIDs = Set(snapshot.map(\.id)).union(retiring)
                 Task { @MainActor in self.scheduleJournalCheckpoint(persistedIDs: persistedIDs) }
+                // A Delete's note goes once a saved log holds its entry, never before (item 243's gpt6-astra-1).
+                let stored = Set(snapshot.map(\.id))
+                Task { @MainActor in self.retireSetAsideDeletesOwed(storedIn: stored) }
                 // On disk: the signer may sign what it holds (item 90), on the main actor, never on the write's queue.
                 Task { @MainActor in self.onDurableWrite?(writeNumber, snapshot) }
             } catch {
@@ -2901,6 +3026,20 @@ final class EventStore: ObservableObject {
         setAsideLogs = SetAsideLog.all(in: Self.ensured(root))
     }
 
+    /// The photos and clips Share of a set-aside log leaves out (ADR 0087; item 241's A4, gpt6-astra-r1 and -m1): those a
+    /// capture still being saved names, by its attachment intent, and those the log names. What is being saved is read
+    /// first, off the main actor, and the log's names after: an intent goes only once a log that names its photo or clip
+    /// has been written, which is after the log here took it, so a capture whose intent goes between the two reads is in
+    /// the log by the second. A clip the launch's retry saves (`attachWaitingClips`) is published before the log names it
+    /// (gpt6-astra-m1); its intent names it all along. Nil when what is being saved cannot be read: Share then makes no ZIP.
+    /// Share's own reader (`mediaNamedByCapturesBeingSavedForShare`), which passes over what recovery never acts on
+    /// (gpt6-astra-n1), not Delete's.
+    func mediaSetAsideShareLeavesOut() async -> Set<String>? {
+        let saving = await Task.detached { [self] in mediaNamedByCapturesBeingSavedForShare() }.value
+        guard let saving else { return nil }
+        return saving.union(SetAsideLogShare.liveMedia(of: events))
+    }
+
     /// Deletes a set-aside log at the owner's word, from its screen (item 122's decision 3 (a); the owner, 2026-11-07: the
     /// photos and clips only it names go at once), then lists the set-aside logs again. Only a plain file named
     /// `events.corrupt-…` in the store's own folder is deleted: not a folder or a link under such a name, which only an
@@ -2933,7 +3072,7 @@ final class EventStore: ObservableObject {
             keepToTell(.notDeleted)
             return SetAsideLogDeletionReport(outcome: .notDeleted, removedLog: false, records: nil, mediaRemoved: 0)
         }
-        let inMemory = Set(events.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        let inMemory = Set(events.flatMap(\.storedMediaNames))
         let report = await withCheckedContinuation { (done: CheckedContinuation<SetAsideLogDeletionReport, Never>) in
             ioQueue.async { [self] in
                 done.resume(returning: deleteSetAsideLogOnQueue(log.url, root: storeRoot, inMemory: inMemory))
@@ -2972,6 +3111,9 @@ final class EventStore: ObservableObject {
     /// 229's Codex-9: nothing is asked through a link), or a removal failed. Each of these left the photos and clips
     /// without a word.
     nonisolated private func deleteSetAsideLogOnQueue(_ file: URL, root: URL, inMemory: Set<String>) -> SetAsideLogDeletionReport {
+        #if DEBUG
+        Self.setAsideDeleteBeginsForTesting?(root)
+        #endif
         let manager = FileManager.default
         // What the Delete's status entry says (item 234's A1), as far as this call got.
         var removedLog = false
@@ -3055,7 +3197,7 @@ final class EventStore: ObservableObject {
         case .plainFile: break
         }
         guard let data = try? Data(contentsOf: url), let logged = try? StoredJSON.decode([Event].self, from: data) else { return nil }
-        return Set(logged.flatMap { [$0.mediaFilename, $0.secondaryMediaFilename].compactMap { $0 } })
+        return Set(logged.flatMap(\.storedMediaNames))
     }
 
     /// The photos and clips a capture still being saved names, by its attachment intent: none when nothing is under
@@ -3069,6 +3211,25 @@ final class EventStore: ObservableObject {
         for url in files where url.pathExtension == "json" {
             guard let intent = readIntent(url) else { return nil }
             names.insert(intent.filename)
+        }
+        return names
+    }
+
+    /// Share's reading of the same folder (item 241's gpt6-astra-n1; ADR 0087): the photo or clip of each intent recovery
+    /// would act on. A file recovery never acts on names nothing: one it never reads (`mayBeIntent`: not a plain file
+    /// under an intent's kind of name and size), and one that reads but is no intent under its name (`validIntent`), as
+    /// the writer's temporary is, which a stop between a manifest's write and its rename leaves (`writeSealed`) until the
+    /// 30-day clean-up: Delete's reader takes it for unknown, and Share then made no ZIP for that long. Nil when the
+    /// folder cannot be listed or a file there cannot be read: what it names is not known. Delete keeps its own reader,
+    /// whose "unknown" leaves photos and clips and says so.
+    nonisolated private func mediaNamedByCapturesBeingSavedForShare() -> Set<String>? {
+        guard Self.look(at: root.appendingPathComponent("MediaAttachments")) != .nothing else { return [] }
+        guard let files = attachmentFiles() else { return nil }
+        var names: Set<String> = []
+        for url in files where url.pathExtension == "json" {
+            guard Self.mayBeIntent(url) else { continue }   // recovery never reads it
+            guard let data = try? Data(contentsOf: url) else { return nil }   // there, but not readable: not known
+            if let intent = Self.validIntent(data, at: url) { names.insert(intent.filename) }   // else no intent under its name
         }
         return names
     }
@@ -3093,6 +3254,9 @@ final class EventStore: ObservableObject {
         } else {
             Log.store.error("events.json unreadable or corrupt; preserved as \(backup.lastPathComponent, privacy: .public)")
             logWasQuarantined = true   // Home says so (item 73, review 2 R2.2); the backup is kept (item 120, F5)
+            // The list takes plain files only (item 218): a folder or a link set aside is not listed, and Home says so
+            // itself (item 224's point 1).
+            if !Self.isPlainFile(backup) { setAsideNotListed = true }
         }
     }
 
@@ -3147,6 +3311,7 @@ final class EventStore: ObservableObject {
         dropReportsOwedForEventsHeld()
         dropLimitRemovalsHeld()
         handOverUnreported()   // the reports still owed, now that the recovery has run (codex-26)
+        loadSetAsideDeletesOwed()   // item 235's A11
         recoverMediaAttachments()
         attachWaitingClips()   // step 63
         writeBackBoundedCopies()
@@ -3171,6 +3336,109 @@ final class EventStore: ObservableObject {
     }
 }
 
+// MARK: - A set-aside log's Delete: its entry owed until written (item 235's A11; ADR 0078's decision 7)
+
+extension EventStore {
+    /// The file beside the log that holds the Deletes' notes.
+    nonisolated static let setAsideDeletesOwedFileName = "set-aside-deletes-owed.json"
+
+    /// The note a set-aside log's Delete writes before it deletes anything (item 235's A11): which log, when it was set
+    /// aside, the moment of the Delete, and the ID its status entry is written under, which ties the note to its entry.
+    /// At the next launch a note whose entry is in the log is done, one whose log is still there deleted nothing, and
+    /// the others are owed their entry (`loadSetAsideDeletesOwed`). An edited backup could add a note, and so an entry
+    /// saying a log was deleted; it can never take an entry away.
+    struct SetAsideDeleteOwed: Codable, Equatable, Sendable {
+        /// The ID the Delete's status entry is written under.
+        let id: UUID
+        /// The log's file name.
+        let log: String
+        /// When the log was set aside, as its name has it.
+        let setAsideAt: Date?
+        /// The moment of the Delete.
+        let at: Date
+    }
+
+    private var setAsideDeletesOwedURL: URL { rootURL.appendingPathComponent(Self.setAsideDeletesOwedFileName) }
+
+    /// Before a Delete: its note, written on the store's queue, so before the delete's own turn there. The engine writes
+    /// the Delete's entry under the note's ID, then retires the note.
+    func oweSetAsideDeleteEntry(for log: SetAsideLog, at time: Date = Date()) -> SetAsideDeleteOwed {
+        let owed = SetAsideDeleteOwed(id: UUID(), log: log.id, setAsideAt: log.setAsideAt, at: time)
+        setAsideDeletesOwed.append(owed)
+        saveSetAsideDeletesOwed()
+        return owed
+    }
+
+    /// The notes whose entries a saved log now holds (item 243's gpt6-astra-1): each goes only then, so a Delete whose
+    /// entry no save has kept still owes it at the next launch, where it is written under the note's ID, once.
+    func retireSetAsideDeletesOwed(storedIn stored: Set<UUID>) {
+        guard setAsideDeletesOwed.contains(where: { stored.contains($0.id) }) else { return }
+        setAsideDeletesOwed.removeAll { stored.contains($0.id) }
+        saveSetAsideDeletesOwed()
+    }
+
+    /// A Delete that removed nothing: no entry is owed, and its note goes at once.
+    func retireSetAsideDeleteOwed(_ id: UUID) {
+        let before = setAsideDeletesOwed.count
+        setAsideDeletesOwed.removeAll { $0.id == id }
+        if setAsideDeletesOwed.count != before { saveSetAsideDeletesOwed() }
+    }
+
+    /// Writes the notes on the store's queue; the file goes once none is owed. Not while the log waits for the unlock or
+    /// could not be read: the log is not written then either. A write that fails is logged, and the Delete goes on, as it
+    /// did before notes.
+    private func saveSetAsideDeletesOwed() {
+        guard !loadFailed, !awaitingUnlock else { return }
+        let owed = setAsideDeletesOwed, url = setAsideDeletesOwedURL, options = writeProtection
+        ioQueue.async {
+            do {
+                if owed.isEmpty {
+                    if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                } else {
+                    try JSONEncoder().encode(owed).write(to: url, options: options)
+                }
+            } catch {
+                Log.store.error("Failed to save the Deletes' notes: \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
+            }
+        }
+    }
+
+    /// At launch and after the unlock's reload, once the set-aside logs are listed and the journal recovered (which can
+    /// bring an entry back): the notes a launch before left. A note whose log is still listed deleted nothing, and goes;
+    /// one whose entry is in the log was done, and goes; the others are owed their entry, handed to the engine. A file
+    /// that cannot be read is removed, with a log line: its entries are lost, as every such entry was before 1.13.
+    func loadSetAsideDeletesOwed() {
+        guard !awaitingUnlock, !loadFailed else { return }
+        let url = setAsideDeletesOwedURL
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        guard let data = try? Data(contentsOf: url),
+              let notes = try? StoredJSON.decode([SetAsideDeleteOwed].self, from: data) else {
+            Log.store.error("The Deletes' notes could not be read and were removed")
+            try? fileManager.removeItem(at: url)
+            return
+        }
+        let listed = Set(setAsideLogs.map(\.id))
+        let written = Set(events.map(\.id))
+        let owed = notes.filter { !listed.contains($0.log) && !written.contains($0.id) }
+        setAsideDeletesOwed = owed
+        setAsideDeleteEntriesOwed = owed
+        if owed != notes { saveSetAsideDeletesOwed() }
+        handOverSetAsideDeletesOwed()
+    }
+
+    /// Hands the entries owed to the engine once it listens, a turn of the main actor later (as `handOverUnreported`
+    /// does), so an entry it writes cannot re-enter the load; each note goes once a saved log holds its entry
+    /// (`retireSetAsideDeletesOwed(storedIn:)`, item 243's gpt6-astra-1).
+    fileprivate func handOverSetAsideDeletesOwed() {
+        guard let write = onSetAsideDeleteOwed, !setAsideDeleteEntriesOwed.isEmpty else { return }
+        let owed = setAsideDeleteEntriesOwed
+        setAsideDeleteEntriesOwed = []
+        Task { @MainActor in
+            for note in owed { write(note) }
+        }
+    }
+}
+
 #if DEBUG
 // MARK: - A seeded backlog for item 79's device legs (Debug builds only)
 
@@ -3190,8 +3458,9 @@ extension EventStore {
     }
 
     /// Pure (unit-tested): how many seeded status records fit in the status pool. Free
-    /// status slots first, then mirrored status copies; neither owned status history nor
-    /// any incident is displaced for debug data.
+    /// status slots first, then `mirrored` copies counted in the same pool; neither owned status history nor
+    /// any incident is displaced for debug data. Since ADR 0088 the seed passes no copies: other devices' status
+    /// entries have a pool of their own.
     nonisolated static func seedRoom(requested: Int, current: Int, cap: Int, mirrored: Int) -> Int {
         max(0, min(requested, cap - current + max(0, mirrored)))
     }
@@ -3200,12 +3469,14 @@ extension EventStore {
     /// mirrored copies the log dropped to make room. Oldest first, so the log stays newest-first.
     /// Starts no upload: the natural triggers do that (a reconnect, the foreground, opening the
     /// Event Log), and those are what the legs exercise.
+    /// Since ADR 0088 (item 242's round q) other devices' status entries have a budget of their own: the seed fills this
+    /// phone's own status budget only, and no copy gives way to it.
     @discardableResult
     func seedUnsyncedBacklogForTesting(count: Int, now: Date = Date()) -> (added: Int, droppedCopies: Int) {
         let audits = events.filter { $0.isStateChange || $0.interrupted == true }
         let copiesBefore = audits.lazy.filter(\.isMirrored).count
-        let room = Self.seedRoom(requested: count, current: audits.count, cap: Self.maxAuditEvents,
-                                 mirrored: copiesBefore)
+        let room = Self.seedRoom(requested: count, current: audits.count - copiesBefore, cap: Self.maxAuditEvents,
+                                 mirrored: 0)
         for event in Self.seededBacklog(count: room, endingAt: now) { add(event) }
         let copiesAfter = events.lazy.filter {
             ($0.isStateChange || $0.interrupted == true) && $0.isMirrored

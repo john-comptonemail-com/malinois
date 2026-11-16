@@ -82,6 +82,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         UNUserNotificationCenter.current().delegate = self
         // Registration needs no permission; showing an alert does, asked for when the app opens.
         WKApplication.shared().registerForRemoteNotifications()
+        handOwedAlerts()   // before the link can hand new ones over (BACKLOG 219)
         activateLink()
     }
 
@@ -98,8 +99,10 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     /// held until nothing is left to deliver, or until the app's own deadline; other kinds of wake
     /// are finished at once.
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
+        var heldALinkWake = false
         for task in backgroundTasks {
             if let linkTask = task as? WKWatchConnectivityRefreshBackgroundTask {
+                heldALinkWake = true
                 activateLink()
                 // Out of time: give the wake back rather than be ended by watchOS, which can cost
                 // the app its background deliveries; an alert not yet posted is lost either way
@@ -113,7 +116,25 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 task.setTaskCompletedWithSnapshot(false)
             }
         }
+        // The alerts an earlier run was handed and did not handle, before the wake can end (BACKLOG 219).
+        if heldALinkWake { handOwedAlerts() }
         finishLinkTasksIfDone()
+    }
+
+    /// Hands the owed alerts to the inbox (BACKLOG 219, `WatchRelayOwed`): at launch, and at each wake for the link. Each
+    /// is counted in flight until handled, so a wake is held for them as for new ones, and given back at its deadline as
+    /// now; one the wake's end cuts off again stays owed for the next run.
+    private func handOwedAlerts() {
+        let tasks = relayInbox.receiveOwed()
+        guard !tasks.isEmpty else { return }
+        alertsInFlight.withLock { $0 += tasks.count }
+        Task { @MainActor in
+            for task in tasks {
+                if await task.value { recordAlert(source: .iPhoneLink) }
+                alertsInFlight.withLock { $0 -= 1 }
+            }
+            finishLinkTasksIfDone()
+        }
     }
 
     private func finishLinkTasksIfDone() {
@@ -141,6 +162,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
             await relayInbox.reconcile()   // iCloud's copies of alerts already shown (ADR 0052)
             await refreshLastAlert()
             await requestNotificationPermission()
+            if state.notifications == .allowed { handOwedAlerts() }   // refused while off, owed again (item 243's gpt6-astra-4)
             await refreshCloud()
         }
     }
@@ -250,12 +272,16 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         }
     }
 
-    /// A queued alert from the paired iPhone, delivered in the background or at launch. Counted
-    /// before this returns, since the link reports nothing pending once it has handed the alert
-    /// over, and uncounted once posted, so the wake lasts until the alert is shown.
+    /// A queued alert from the paired iPhone, delivered in the background or at launch. Written down and counted before
+    /// this returns, since the link hands a queued alert over once and reports nothing pending once it has: the count
+    /// holds the wake until the alert is shown, and the list (`WatchRelayOwed`, BACKLOG 219) keeps it owed should the
+    /// wake end first, for the next run to show.
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
         let message = WatchAlertMessage(userInfo: userInfo)
-        if message != nil { alertsInFlight.withLock { $0 += 1 } }
+        if let message {
+            WatchRelayOwed.note(message)
+            alertsInFlight.withLock { $0 += 1 }
+        }
         Task { @MainActor in
             if let message {
                 await self.showRelayed(message)

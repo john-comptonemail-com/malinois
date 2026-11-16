@@ -7,6 +7,11 @@
   sweep of the documents against the code): the event store's state for its file queue is held in a `QueueConfined`
   value, which checks its queue in Debug builds, and new state of that kind goes there; the camera controller's is left
   as it is for now (BACKLOG 222) (the last section).
+- **Amended 2026-11-15** (BACKLOG 246, a crash of the App Store's 1.12 (87); the owner's ruling on its release: "a, but
+  let's replace 1.13 if we get the fix in before it is approved"): SwiftUI calls some closures written in views on a
+  thread of its own, which decision 4's review took to run on the main thread; a builder SwiftUI stores and calls while
+  it renders is now `@Sendable` or built on the main thread through the app's own views (the second amendment, at the
+  end).
 
 ## Context
 
@@ -99,3 +104,37 @@ are kept to the main actor (`DeviceInfo.name`, `AppSettings.loadWasReset`).
 **What it does not give:** the compiler still does not prove the confinement, since the holder itself is
 `@unchecked Sendable`; the check is made as the app runs, in Debug builds only; and the queue is known by its name, so
 two queues of one name are not told apart.
+
+## Amendment (2026-11-15, 1.13's build 91): what SwiftUI calls on its own render thread
+
+Decision 4 found every runtime check of the September 29 build running on the main thread, SwiftUI's calls among them.
+One kind of SwiftUI call does not: while an animation runs, SwiftUI may build a loop's rows on its background render
+thread (Apple's FB20692404, open since October 2025, which Apple's staff describe as affecting some setups and not
+others). A `ForEach` builder written in a view's body is taken for main-actor code, and its entry check stops the app
+there. The App Store's 1.12 (87) stopped this way five times on 2026-11-14, on one iPhone 16 on iOS 26.6, in the PIN
+pad's row of keys, most likely as a new user's first PIN went on to "Confirm your PIN" (BACKLOG 246). The owner's
+phones have not shown it.
+
+**The rule from here:** a closure that SwiftUI stores and may call while it renders (the builder of a `ForEach`, a
+`GeometryReader`, a `TimelineView` or a `Canvas`) is marked `@Sendable`, so that it belongs to no actor and the
+compiler proves it uses nothing of the main actor's; or it goes through `MainActorForEach`, `MainActorGeometryReader`
+or `MainActorTimelineView` (`Malinois/Views/MainActorBuilders.swift`), whose own `@Sendable` builders only make a view
+carrying the item, whose body, evaluated by SwiftUI on the main thread, builds the content. A fixed list needs no loop
+(the PIN pad's dots and keys, the purge dialog's four choices). `Item246RoundUTests` reads the app's code for the rule,
+and calls the PIN pad's builders off the main thread as the render thread does.
+
+Considered (Claude's choice of means, within the owner's ruling on the release):
+
+- **(a) The rule above (taken):** 30 loops, 2 geometry readers and 2 timelines, in 13 files; the runtime checks stay
+  on.
+- (b) Turning the runtime checks off (`-disable-dynamic-actor-isolation`), which this record already declined: it
+  would hide the failures decision 4's review cannot rule out for code written later.
+- (c) The PIN pad alone: the other loops have the same shape, on screens that animate too (Test sensors redraws ten
+  times a second; the disarm pad shakes after a wrong PIN, inside a geometry reader).
+
+**What it does not give:** the rule covers the four kinds of closure SwiftUI is known to store and call while it
+renders; a button's action, a sheet's content and `onChange` still run on the main thread as decision 4 found. Content
+built in a `BuiltOnMain` body runs where SwiftUI evaluates view bodies, the main thread; were SwiftUI ever to evaluate
+one elsewhere, that content would run there without a check, as Swift 5 code did, rather than stop the app. And no
+phone of the owner's has failed: the fix is shown by the tests' calls off the main thread and by the compiler, not by
+a device that failed before.

@@ -25,7 +25,8 @@ final class Item153SideButtonBriefingTests: XCTestCase {
                                            "com.malinois.onboarding.acknowledgedGuidedAccessBriefing",
                                            "com.malinois.onboarding.acknowledgedVoiceControlBriefing",
                                            "com.malinois.onboarding.acknowledgedSideButtonBriefing",
-                                           "com.malinois.onboarding.hasArmedOnce"]
+                                           "com.malinois.onboarding.hasArmedOnce",
+                                           "com.malinois.onboarding.acknowledgedNoDeleteBriefing"]
     nonisolated private static let sideButtonKey = "com.malinois.onboarding.acknowledgedSideButtonBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
@@ -41,6 +42,7 @@ final class Item153SideButtonBriefingTests: XCTestCase {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem153Side")
         for key in Self.keys { saved[key] = UserDefaults.standard.object(forKey: key) }
+        OnboardingState.acknowledgedNoDeleteBriefing = true   // part 5 (item 240) has tests of its own
     }
 
     override func tearDown() {

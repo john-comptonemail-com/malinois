@@ -143,6 +143,24 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// on (the owner's ruling). Set by the store when the event is added; nil otherwise.
     var keptLocal: Bool?
 
+    /// After a slow Vision trip (item 239, ADR 0081): the name, in the media folder, of the still of the view the slow
+    /// check compared against, given with the record's birth; the storage limit takes it with the record's photos. Never
+    /// uploaded; nil on every other record, and on records from before 1.13.
+    var visionReferenceFilename: String?
+    /// When the camera took that still, by the phone's clock (item 239): a signed fact of the records that have one.
+    var visionReferenceTakenAt: Date?
+    /// Whether the thumbnail's camera is not known (item 237's second half): set where a downloaded file gave the first
+    /// place its camera's name while the record already had a thumbnail, which came with no camera named (another
+    /// device's record from before 1.2 (31)). The event's screen then names no camera over that thumbnail when it stands
+    /// in for a missing file. Kept on this phone only; nil on every other record.
+    var thumbnailCameraUnknown: Bool?
+
+    /// The names of the files of this record's in the media folder: its photo or clip, its second camera's, and its
+    /// Vision reference still (item 239). What the store reads wherever it gathers a record's files.
+    var storedMediaNames: [String] {
+        [mediaFilename, secondaryMediaFilename, visionReferenceFilename].compactMap { $0 }
+    }
+
     /// Whether this record could be a missed upload if the event limit removed it: a first-hand
     /// record not fully backed up and not kept on this device by choice, since 1.8.2 status entries
     /// and interruptions as well as incidents (item 169's codex-1). Flood records, other devices'
@@ -436,9 +454,9 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         case "soundUnavailable":  return "Sound tripwire unavailable while armed: the microphone could not be restarted"   // item 105, F-09
         case "soundRestored":     return "Sound tripwire working again"
         case "motionStalled":     return "Motion tripwire stalled and was restarted: a few seconds were not watched"   // item 144 (g)
-        case "reinstalled":       return "Malinois was reinstalled on this iPhone: the log it kept before is gone"   // item 148's 5
+        case "reinstalled":       return "Malinois was reinstalled: its earlier event log was deleted with the app"   // item 148's 5; the owner's words, item 242's round q
         case "pinChanged":        return "Malinois PIN changed in Settings; the current PIN was entered first"   // item 153's MAL-03
-        case "guidedAccessEnded": return "Guided Access ended while armed; the watch kept running"   // item 153's MAL-05; item 155's A7
+        case "guidedAccessEnded": return "Guided Access ended while armed; monitoring went on"   // item 153's MAL-05; item 155's A7; item 240's words
         case "unsyncedRemoved":   return "Events not fully backed up to iCloud were removed to make room (log full)"   // items 114, 116
         case "reArmSkipped":      return "Not re-armed automatically: Malinois was closed again within 90 seconds of re-arming itself"   // item 153's MAL-10
         case "settingsReset":     return "Settings couldn't be read and were reset to their defaults"   // codex-10
@@ -454,6 +472,7 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         if let kind = stateChange, let words = Self.sirenElsewhereSummary(kind: kind) { return words }   // 1.8.2's step 26
         if let kind = stateChange, let words = Self.signedRecordsGoneSummary(kind: kind) { return words }   // item 182
         if let kind = stateChange, let words = Self.setAsideDeletedSummary(kind: kind) { return words }   // item 234
+        if let kind = stateChange, let words = Self.iCloudMediaPurgedSummary(kind: kind) { return words }   // item 235's A10
         // A status entry this build does not know (a newer build's kind, or a damaged log) is
         // never "Signal loss", which asserts an attack. The cloud decoder already drops unknown
         // kinds; this covers the local log (item 105, F-09).
@@ -549,26 +568,31 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
         var setAsideAt: Date?
         /// How many records it could read; nil when its bytes could not be read.
         var records: Int?
-        /// How many of the photos and clips only it named went with it.
-        var mediaRemoved: Int
+        /// How many of the photos and clips only it named went with it; nil when not known (an entry owed by a Delete
+        /// Malinois was stopped in, item 235).
+        var mediaRemoved: Int?
         /// Whether photos and clips it names were left on the iPhone: Malinois could not tell which were only its own,
-        /// or could not remove one.
-        var mediaLeft: Bool
+        /// or could not remove one; nil when not known.
+        var mediaLeft: Bool?
     }
 
     /// The status kind for a set-aside log deleted at the owner's word: "setAsideDeleted.<when>.<records>.<removed>.<left>":
     /// when it was set aside in whole seconds since 1970 ("-" without a time), the records it could read ("-" when
-    /// they are not known), the photos and clips that went with it, and 1 when any were left, else 0. The numbers ride
-    /// in the kind, so the cloud record needs no new field, and an older version drops a kind it does not know.
+    /// they are not known), the photos and clips that went with it, and 1 when any were left, else 0; since 1.13 all three
+    /// counts "-" for an entry a Delete owed when Malinois was stopped before it (item 235's A11). The numbers ride in the
+    /// kind, so the cloud record needs no new field, and an older version drops a kind it does not know.
     static func setAsideDeletedKind(_ deleted: SetAsideDeleted) -> String {
         func count(_ value: Int) -> String { String(min(max(value, 0), 1_000_000)) }
         let when = deleted.setAsideAt.flatMap(wholeSeconds).map { String($0) } ?? "-"
         let records = deleted.records.map(count) ?? "-"
-        return setAsideDeletedPrefix + [when, records, count(deleted.mediaRemoved), deleted.mediaLeft ? "1" : "0"].joined(separator: ".")
+        // Counts not known (item 235's A11: an entry owed by a Delete Malinois was stopped in): "-".
+        let removed = deleted.mediaRemoved.map(count) ?? "-"
+        let left = deleted.mediaLeft.map { $0 ? "1" : "0" } ?? "-"
+        return setAsideDeletedPrefix + [when, records, removed, left].joined(separator: ".")
     }
 
     /// What a set-aside-deleted kind records; nil for any other kind or a malformed one: only the numbers as
-    /// `setAsideDeletedKind` writes them, a time from 1970 to 3000, counts up to a million.
+    /// `setAsideDeletedKind` writes them, a time from 1970 to 3000, counts up to a million, or all three counts "-".
     static func setAsideDeleted(kind: String) -> SetAsideDeleted? {
         guard kind.hasPrefix(setAsideDeletedPrefix) else { return nil }
         let parts = kind.dropFirst(setAsideDeletedPrefix.count).split(separator: ".", omittingEmptySubsequences: false)
@@ -587,6 +611,11 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
             guard let read = number(parts[1], upTo: 1_000_000) else { return nil }
             records = Int(read)
         }
+        // Counts not known (item 235's A11): all three together, as an owed entry writes them.
+        if parts[2] == "-" || parts[3] == "-" {
+            guard parts[2] == "-", parts[3] == "-", records == nil else { return nil }
+            return SetAsideDeleted(setAsideAt: when, records: nil, mediaRemoved: nil, mediaLeft: nil)
+        }
         guard let removed = number(parts[2], upTo: 1_000_000), parts[3] == "0" || parts[3] == "1" else { return nil }
         return SetAsideDeleted(setAsideAt: when, records: records, mediaRemoved: Int(removed), mediaLeft: parts[3] == "1")
     }
@@ -596,16 +625,61 @@ struct Event: Identifiable, Codable, Equatable, Hashable {
     /// approved words, 2026-11-11). Claude's, for what those two do not cover: "; others were left on this iPhone"
     /// after the count of those that went, when a removal failed part of the way; no count of records when the log's
     /// bytes could not be read; "A set-aside log was deleted" for a name without a time; "1 record", "1 photo or
-    /// clip". nil unless `kind` is one.
+    /// clip". Since 1.13, an entry a Delete owed when Malinois was stopped before it (item 235's A11): "... was deleted;
+    /// Malinois was stopped before it could count what went with it" (the owner's approved words, 2026-11-12, W3). nil
+    /// unless `kind` is one.
     static func setAsideDeletedSummary(kind: String) -> String? {
         guard let deleted = setAsideDeleted(kind: kind) else { return nil }
         let lead = deleted.setAsideAt.map { "A set-aside log from \(goneTime($0)) was deleted" } ?? "A set-aside log was deleted"
         let records = deleted.records.map { $0 == 1 ? "1 record" : "\($0) records" }
-        let media = deleted.mediaRemoved == 1 ? "1 photo or clip" : "\(deleted.mediaRemoved) photos and clips"
+        // An entry owed by a Delete Malinois was stopped in (item 235's A11; the owner's "wording approved", W3).
+        guard let removed = deleted.mediaRemoved, let left = deleted.mediaLeft else {
+            return lead + "; Malinois was stopped before it could count what went with it"
+        }
+        let media = removed == 1 ? "1 photo or clip" : "\(removed) photos and clips"
         let counted = lead + ": " + [records, media].compactMap { $0 }.joined(separator: ", ")
-        guard deleted.mediaLeft else { return counted }
-        if deleted.mediaRemoved > 0 { return counted + "; others were left on this iPhone" }
+        guard left else { return counted }
+        if removed > 0 { return counted + "; others were left on this iPhone" }
         return lead + (records.map { ": " + $0 } ?? "") + "; its photos and clips were left on this iPhone"
+    }
+
+    // MARK: - "Free up iCloud space..." (item 235's A10; the owner, 2026-11-12: "as you recommend, wording approved", W4)
+
+    private static let iCloudMediaPurgedPrefix = "iCloudMediaPurged."
+
+    /// What the status entry of the owner's "Free up iCloud space..." records (item 235's A10): the period chosen, in
+    /// months, how many events' full photos and clips iCloud was asked to delete, and whether part of it failed.
+    struct ICloudMediaPurged: Equatable, Sendable {
+        var months: Int
+        var events: Int
+        var failed: Bool
+    }
+
+    /// The status kind for it: "iCloudMediaPurged.<months>.<events>.<failed>", 1 when part failed, else 0.
+    static func iCloudMediaPurgedKind(_ purged: ICloudMediaPurged) -> String {
+        iCloudMediaPurgedPrefix + "\(min(max(purged.months, 0), 12)).\(min(max(purged.events, 0), 1_000_000))."
+            + (purged.failed ? "1" : "0")
+    }
+
+    /// What such a kind records; nil for any other kind or a malformed one: only the numbers as `iCloudMediaPurgedKind`
+    /// writes them for an entry it writes, a period of 1 to 12 months and 1 to a million events.
+    static func iCloudMediaPurged(kind: String) -> ICloudMediaPurged? {
+        guard kind.hasPrefix(iCloudMediaPurgedPrefix) else { return nil }
+        let parts = kind.dropFirst(iCloudMediaPurgedPrefix.count).split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3, let months = Int(parts[0]), String(months) == parts[0], (1...12).contains(months),
+              let events = Int(parts[1]), String(events) == parts[1], (1...1_000_000).contains(events),
+              parts[2] == "0" || parts[2] == "1" else { return nil }
+        return ICloudMediaPurged(months: months, events: events, failed: parts[2] == "1")
+    }
+
+    /// "Full photos and clips of 37 events older than 6 months were deleted from iCloud", with "; some couldn't be deleted"
+    /// when part of it failed ("1 event", "1 month"; the owner's approved words, 2026-11-12, W4). nil unless `kind` is one.
+    static func iCloudMediaPurgedSummary(kind: String) -> String? {
+        guard let purged = iCloudMediaPurged(kind: kind) else { return nil }
+        let events = purged.events == 1 ? "1 event" : "\(purged.events) events"
+        let months = purged.months == 1 ? "1 month" : "\(purged.months) months"
+        let words = "Full photos and clips of \(events) older than \(months) were deleted from iCloud"
+        return purged.failed ? words + "; some couldn't be deleted" : words
     }
 
     /// A time as the watch's alerts show one ("Oct 14, 9:03 PM", in the phone's own format).

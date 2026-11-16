@@ -88,6 +88,7 @@
 		B1B2C3D4E5F6000000000010 /* PINViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000010 /* PINViews.swift */; };
 		B1B2C3D4E5F6000000000011 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000011 /* HomeView.swift */; };
 		C18200000000000000000011 /* ScrollingIfNeeded.swift in Sources */ = {isa = PBXBuildFile; fileRef = C18200000000000000000001 /* ScrollingIfNeeded.swift */; };
+		C24600000000000000000011 /* MainActorBuilders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24600000000000000000001 /* MainActorBuilders.swift */; };
 		C12000000000000000000011 /* OnScreenText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12000000000000000000001 /* OnScreenText.swift */; };
 		B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000012 /* ArmingView.swift */; };
 		B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000013 /* ArmedView.swift */; };
@@ -149,6 +150,25 @@
 		E1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */; };
 		E1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */; };
 		E1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */; };
+		C24000000000000000000014 /* Item240OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24000000000000000000004 /* Item240OnboardingTests.swift */; };
+		C24200000000000000000014 /* Item242LaunchEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24200000000000000000004 /* Item242LaunchEvidenceTests.swift */; };
+		C24200000000000000000015 /* Item242RoundQTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24200000000000000000005 /* Item242RoundQTests.swift */; };
+		C24200000000000000000016 /* Item242RoundRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24200000000000000000006 /* Item242RoundRTests.swift */; };
+		C24300000000000000000011 /* Item243RoundSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24300000000000000000001 /* Item243RoundSTests.swift */; };
+		C24300000000000000000012 /* Item243RoundTTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24300000000000000000002 /* Item243RoundTTests.swift */; };
+		C24600000000000000000012 /* Item246RoundUTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24600000000000000000002 /* Item246RoundUTests.swift */; };
+		C23900000000000000001001 /* Item239ReferenceStillTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23900000000000000000001 /* Item239ReferenceStillTests.swift */; };
+		C23900000000000000001002 /* Item239StillStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23900000000000000000002 /* Item239StillStorageTests.swift */; };
+		C23900000000000000001003 /* Item239VerifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23900000000000000000003 /* Item239VerifierTests.swift */; };
+		C23700000000000000001001 /* Item237PictureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23700000000000000000001 /* Item237PictureTests.swift */; };
+		C23700000000000000001002 /* Item237ThumbnailCameraTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23700000000000000000002 /* Item237ThumbnailCameraTests.swift */; };
+		C21900000000000000001001 /* Item219WatchOwedAlertsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21900000000000000000001 /* Item219WatchOwedAlertsTests.swift */; };
+		C22300000000000000001001 /* Item223ShareDiagnosticTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22300000000000000000001 /* Item223ShareDiagnosticTests.swift */; };
+		C22400000000000000001001 /* Item224FailureNoticeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22400000000000000000001 /* Item224FailureNoticeTests.swift */; };
+		C22700000000000000001001 /* Item227RestoreNoticeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22700000000000000000001 /* Item227RestoreNoticeTests.swift */; };
+		C23300000000000000001001 /* Item233DownloadRoomTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23300000000000000000001 /* Item233DownloadRoomTests.swift */; };
+		C23500000000000000001001 /* Item235DeleteOwedEntryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23500000000000000000001 /* Item235DeleteOwedEntryTests.swift */; };
+		C23500000000000000001002 /* Item235PurgeEntryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23500000000000000000002 /* Item235PurgeEntryTests.swift */; };
 		E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */; };
 		E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */; };
 		E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */; };
@@ -456,6 +476,7 @@
 		A1B2C3D4E5F6000000000010 /* PINViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINViews.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000011 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		C18200000000000000000001 /* ScrollingIfNeeded.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollingIfNeeded.swift; sourceTree = "<group>"; };
+		C24600000000000000000001 /* MainActorBuilders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainActorBuilders.swift; sourceTree = "<group>"; };
 		C12000000000000000000001 /* OnScreenText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnScreenText.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000012 /* ArmingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmingView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000013 /* ArmedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArmedView.swift; sourceTree = "<group>"; };
@@ -522,6 +543,25 @@
 		D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item199SigningKeyRowTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item200ShareNoteTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item122SetAsideLogTests.swift; sourceTree = "<group>"; };
+		C24000000000000000000004 /* Item240OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item240OnboardingTests.swift; sourceTree = "<group>"; };
+		C24200000000000000000004 /* Item242LaunchEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item242LaunchEvidenceTests.swift; sourceTree = "<group>"; };
+		C24200000000000000000005 /* Item242RoundQTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item242RoundQTests.swift; sourceTree = "<group>"; };
+		C24200000000000000000006 /* Item242RoundRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item242RoundRTests.swift; sourceTree = "<group>"; };
+		C24300000000000000000001 /* Item243RoundSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item243RoundSTests.swift; sourceTree = "<group>"; };
+		C24300000000000000000002 /* Item243RoundTTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item243RoundTTests.swift; sourceTree = "<group>"; };
+		C24600000000000000000002 /* Item246RoundUTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item246RoundUTests.swift; sourceTree = "<group>"; };
+		C23900000000000000000001 /* Item239ReferenceStillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item239ReferenceStillTests.swift; sourceTree = "<group>"; };
+		C23900000000000000000002 /* Item239StillStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item239StillStorageTests.swift; sourceTree = "<group>"; };
+		C23900000000000000000003 /* Item239VerifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item239VerifierTests.swift; sourceTree = "<group>"; };
+		C23700000000000000000001 /* Item237PictureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item237PictureTests.swift; sourceTree = "<group>"; };
+		C23700000000000000000002 /* Item237ThumbnailCameraTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item237ThumbnailCameraTests.swift; sourceTree = "<group>"; };
+		C21900000000000000000001 /* Item219WatchOwedAlertsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item219WatchOwedAlertsTests.swift; sourceTree = "<group>"; };
+		C22300000000000000000001 /* Item223ShareDiagnosticTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item223ShareDiagnosticTests.swift; sourceTree = "<group>"; };
+		C22400000000000000000001 /* Item224FailureNoticeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item224FailureNoticeTests.swift; sourceTree = "<group>"; };
+		C22700000000000000000001 /* Item227RestoreNoticeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item227RestoreNoticeTests.swift; sourceTree = "<group>"; };
+		C23300000000000000000001 /* Item233DownloadRoomTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item233DownloadRoomTests.swift; sourceTree = "<group>"; };
+		C23500000000000000000001 /* Item235DeleteOwedEntryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item235DeleteOwedEntryTests.swift; sourceTree = "<group>"; };
+		C23500000000000000000002 /* Item235PurgeEntryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item235PurgeEntryTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item144ArmPINCheckTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152SettingsGuardTests.swift; sourceTree = "<group>"; };
 		D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Item152BiometricBindingTests.swift; sourceTree = "<group>"; };
@@ -877,6 +917,7 @@
 				A1B2C3D4E5F6000000000010 /* PINViews.swift */,
 				A1B2C3D4E5F6000000000011 /* HomeView.swift */,
 				C18200000000000000000001 /* ScrollingIfNeeded.swift */,
+				C24600000000000000000001 /* MainActorBuilders.swift */,
 				C12000000000000000000001 /* OnScreenText.swift */,
 				A1B2C3D4E5F6000000000012 /* ArmingView.swift */,
 				A1B2C3D4E5F6000000000013 /* ArmedView.swift */,
@@ -961,6 +1002,25 @@
 				D1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift */,
 				D1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift */,
 				D1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift */,
+				C24000000000000000000004 /* Item240OnboardingTests.swift */,
+				C24200000000000000000004 /* Item242LaunchEvidenceTests.swift */,
+				C24200000000000000000005 /* Item242RoundQTests.swift */,
+				C24200000000000000000006 /* Item242RoundRTests.swift */,
+				C24300000000000000000001 /* Item243RoundSTests.swift */,
+				C24300000000000000000002 /* Item243RoundTTests.swift */,
+				C24600000000000000000002 /* Item246RoundUTests.swift */,
+				C23900000000000000000001 /* Item239ReferenceStillTests.swift */,
+				C23900000000000000000002 /* Item239StillStorageTests.swift */,
+				C23900000000000000000003 /* Item239VerifierTests.swift */,
+				C23700000000000000000001 /* Item237PictureTests.swift */,
+				C23700000000000000000002 /* Item237ThumbnailCameraTests.swift */,
+				C21900000000000000000001 /* Item219WatchOwedAlertsTests.swift */,
+				C22300000000000000000001 /* Item223ShareDiagnosticTests.swift */,
+				C22400000000000000000001 /* Item224FailureNoticeTests.swift */,
+				C22700000000000000000001 /* Item227RestoreNoticeTests.swift */,
+				C23300000000000000000001 /* Item233DownloadRoomTests.swift */,
+				C23500000000000000000001 /* Item235DeleteOwedEntryTests.swift */,
+				C23500000000000000000002 /* Item235PurgeEntryTests.swift */,
 				D1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift */,
 				D1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift */,
 				D1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift */,
@@ -1445,6 +1505,7 @@
 				B1B2C3D4E5F6000000000010 /* PINViews.swift in Sources */,
 				B1B2C3D4E5F6000000000011 /* HomeView.swift in Sources */,
 				C18200000000000000000011 /* ScrollingIfNeeded.swift in Sources */,
+				C24600000000000000000011 /* MainActorBuilders.swift in Sources */,
 				C12000000000000000000011 /* OnScreenText.swift in Sources */,
 				B1B2C3D4E5F6000000000012 /* ArmingView.swift in Sources */,
 				B1B2C3D4E5F6000000000013 /* ArmedView.swift in Sources */,
@@ -1512,6 +1573,25 @@
 				E1D2C3D4E5F6000000000086 /* Item199SigningKeyRowTests.swift in Sources */,
 				E1D2C3D4E5F6000000000087 /* Item200ShareNoteTests.swift in Sources */,
 				E1D2C3D4E5F6000000000088 /* Item122SetAsideLogTests.swift in Sources */,
+				C24000000000000000000014 /* Item240OnboardingTests.swift in Sources */,
+				C24200000000000000000014 /* Item242LaunchEvidenceTests.swift in Sources */,
+				C24200000000000000000015 /* Item242RoundQTests.swift in Sources */,
+				C24200000000000000000016 /* Item242RoundRTests.swift in Sources */,
+				C24300000000000000000011 /* Item243RoundSTests.swift in Sources */,
+				C24300000000000000000012 /* Item243RoundTTests.swift in Sources */,
+				C24600000000000000000012 /* Item246RoundUTests.swift in Sources */,
+				C23900000000000000001001 /* Item239ReferenceStillTests.swift in Sources */,
+				C23900000000000000001002 /* Item239StillStorageTests.swift in Sources */,
+				C23900000000000000001003 /* Item239VerifierTests.swift in Sources */,
+				C23700000000000000001001 /* Item237PictureTests.swift in Sources */,
+				C23700000000000000001002 /* Item237ThumbnailCameraTests.swift in Sources */,
+				C21900000000000000001001 /* Item219WatchOwedAlertsTests.swift in Sources */,
+				C22300000000000000001001 /* Item223ShareDiagnosticTests.swift in Sources */,
+				C22400000000000000001001 /* Item224FailureNoticeTests.swift in Sources */,
+				C22700000000000000001001 /* Item227RestoreNoticeTests.swift in Sources */,
+				C23300000000000000001001 /* Item233DownloadRoomTests.swift in Sources */,
+				C23500000000000000001001 /* Item235DeleteOwedEntryTests.swift in Sources */,
+				C23500000000000000001002 /* Item235PurgeEntryTests.swift in Sources */,
 				E1D2C3D4E5F6000000000041 /* Item144ArmPINCheckTests.swift in Sources */,
 				E1D2C3D4E5F6000000000042 /* Item152SettingsGuardTests.swift in Sources */,
 				E1D2C3D4E5F6000000000043 /* Item152BiometricBindingTests.swift in Sources */,
@@ -1823,7 +1903,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Malinois/Support/Malinois.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1833,7 +1913,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1851,7 +1931,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Malinois/Support/Malinois-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1861,7 +1941,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -1880,7 +1960,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1897,7 +1977,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.MalinoisTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -1912,7 +1992,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1921,7 +2001,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1937,7 +2017,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisNotificationService/MalinoisNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisNotificationService/Info.plist;
@@ -1946,7 +2026,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				MALINOIS_APP_BUNDLE_ID = com.johncompton.Malinois;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(MALINOIS_APP_BUNDLE_ID).NotificationService";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1963,7 +2043,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatch/MalinoisWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1975,7 +2055,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1994,7 +2074,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "MalinoisWatch/MalinoisWatch-Release.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -2006,7 +2086,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -2024,7 +2104,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -2033,7 +2113,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -2050,7 +2130,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = MalinoisWatchNotificationService/MalinoisWatchNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MalinoisWatchNotificationService/Info.plist;
@@ -2059,7 +2139,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.12;
+				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.johncompton.Malinois.watchkitapp.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;

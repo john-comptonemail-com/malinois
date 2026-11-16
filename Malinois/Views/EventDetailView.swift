@@ -52,6 +52,8 @@ struct EventDetailView: View {
     /// A capture iCloud gave is not the one this iPhone signed for the record, and was not added (item 190's A4, its
     /// download half; the owner's wording, 2026-11-04: "a, approved").
     @State private var downloadRefused = false
+    /// A capture the download brought did not fit within the size limit, and was not added (BACKLOG 233 (b)).
+    @State private var downloadNoRoom = false
     /// Item 52: when the phone that armed this watch was last heard from (an arm record from
     /// another phone, on Pro); nil until the reader answers.
     @State private var lastHeard: LastHeard?
@@ -103,6 +105,8 @@ struct EventDetailView: View {
                 // this and the sheet's dismissal comes first.
                 shareNote = ShareNote.line(readiness: request.readiness, completed: completed, destination: destination,
                                            made: request.bundle?.madeForTheDestination, mirrored: current.isMirrored)
+                // Item 223's diagnostic: how the share ended, and whether the ZIP's making was asked for.
+                request.bundle?.shareEnded(destination: destination, completed: completed)
             }
         }
         .task(id: current.id) {   // item 52
@@ -166,12 +170,46 @@ struct EventDetailView: View {
                  : (store.mediaURL(for: event), store.secondaryMediaURL(for: event))
     }
 
+    /// The Vision reference still the media section shows (item 239): the file, when it is on the phone, by the same
+    /// rules as the photos'.
+    static func shownVisionReference(of event: Event, in store: EventStore, setAside: Bool) -> URL? {
+        guard let url = setAside ? store.setAsideVisionReferenceURL(for: event) : store.visionReferenceURL(for: event),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// The words under the still (item 239; the owner's "wording approved", 2026-11-12): the time the still was taken,
+    /// with its date when that is not the day the event began.
+    static func visionReferenceCaption(takenAt: Date, eventStart: Date) -> String {
+        let time = Calendar.current.isDate(takenAt, inSameDayAs: eventStart)
+            ? takenAt.formatted(date: .omitted, time: .shortened)
+            : takenAt.formatted(date: .abbreviated, time: .shortened)
+        return "The view at \(time), which Vision compared against"
+    }
+
+    /// Whether the first place's camera is named over what it shows (item 237): not over a thumbnail standing in for a
+    /// missing file when the thumbnail's camera is not known, the place having taken a downloaded file's camera (the
+    /// note is set only on a record with a thumbnail).
+    static func namesTheFirstCamera(_ event: Event, fileHere: Bool) -> Bool {
+        fileHere || event.thumbnailCameraUnknown != true
+    }
+
+    /// The line under the download when a capture did not fit within the size limit (BACKLOG 233 (b); the owner's "wording
+    /// approved", 2026-11-12, W1).
+    static let downloadNoRoomNote = "A capture wasn't downloaded: there isn't room for it on this iPhone. Malinois stores "
+        + "up to 2 GB of photos and clips here, and a download never deletes others to make room."
+
+    /// The explanation beside the still (item 239; the owner's "wording approved", 2026-11-12).
+    static let visionReferenceExplanation =
+        "Vision tripped on a slow change: over a third of the view had changed since then."
+
     @ViewBuilder
     private var mediaSection: some View {
         let shown = Self.shownMedia(of: current, in: eventStore, setAside: setAside)
         VStack(alignment: .leading, spacing: 8) {
-            if let label = captureLabel(camera: current.primaryCamera, duration: current.primaryDuration) {
-                Text(label).font(.caption).foregroundStyle(.secondary)
+            if Self.namesTheFirstCamera(current, fileHere: shown.primary.map { FileManager.default.fileExists(atPath: $0.path) } ?? false),
+               let label = captureLabel(camera: current.primaryCamera, duration: current.primaryDuration) {
+                Text(label).font(.caption).foregroundStyle(.secondary).reportedOnScreen(label)
             }
             EvidenceMediaView(url: shown.primary,
                               fallbackThumbnail: current.thumbnailData)
@@ -181,6 +219,11 @@ struct EventDetailView: View {
                 }
                 EvidenceMediaView(url: shown.secondary,
                                   fallbackThumbnail: nil)
+            }
+            // A slow Vision trip's still of the view it compared against, when its file is on the phone (item 239).
+            if let reference = Self.shownVisionReference(of: current, in: eventStore, setAside: setAside),
+               let taken = current.visionReferenceTakenAt {
+                visionReferenceSection(reference, takenAt: taken)
             }
             // The storage cap removed the local files, and none remain in iCloud: before their first upload or after
             // a detected cloud loss. Say so without claiming an upload never happened, and offer no empty download.
@@ -192,7 +235,7 @@ struct EventDetailView: View {
             }
             // Original per-camera coverage remains visible alongside successful evidence.
             // Only a whole-capture failure can describe an attached photo as the bounded retry.
-            ForEach(current.captureFailureMessages, id: \.self) { message in
+            ForEach(current.captureFailureMessages, id: \.self) { @Sendable message in
                 Label(message, systemImage: "camera.badge.ellipsis")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -213,6 +256,22 @@ struct EventDetailView: View {
                 downloadSection
             }
         }
+    }
+
+    /// The still, the time it was taken and why it is here (item 239; the owner's "wording approved", 2026-11-12).
+    private func visionReferenceSection(_ url: URL, takenAt: Date) -> some View {
+        let caption = Self.visionReferenceCaption(takenAt: takenAt, eventStart: current.startDate)
+        return VStack(alignment: .leading, spacing: 6) {
+            EvidenceMediaView(url: url, fallbackThumbnail: nil)
+            Text(caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .reportedOnScreen(caption)
+            Text(Self.visionReferenceExplanation)
+                .font(.caption)
+                .reportedOnScreen(Self.visionReferenceExplanation)
+        }
+        .padding(.top, 4)
     }
 
     @ViewBuilder
@@ -237,6 +296,12 @@ struct EventDetailView: View {
                         .foregroundStyle(.orange)
                         .reportedOnScreen("A capture in iCloud differs from the one this iPhone recorded, so it wasn't added - iCloud's copy is unchanged.")
                 }
+                if downloadNoRoom {
+                    Text(Self.downloadNoRoomNote)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .reportedOnScreen(Self.downloadNoRoomNote)
+                }
                 if downloadFoundNothing {
                     Text("Nothing came back - the full capture may not be in iCloud, or iCloud isn't reachable.")
                         .font(.caption2)
@@ -255,17 +320,21 @@ struct EventDetailView: View {
     }
 
     /// Downloads the event's full capture from iCloud and says how it went: a capture that is not the one this iPhone
-    /// signed, not added (item 190's A4); nothing came back; or not everything could be checked.
+    /// signed, not added (item 190's A4); one with no room for it, not added (BACKLOG 233 (b)); nothing came back; or not
+    /// everything could be checked.
     private func startDownload() {
         Task {
             downloading = true
             downloadRefused = false
+            downloadNoRoom = false
             downloadFoundNothing = false
             downloadIncomplete = false
             let outcome = await engine.downloadFullEvidence(for: current.id)
             downloading = false
             downloadRefused = outcome.refused
-            downloadFoundNothing = !outcome.landed && !outcome.refused   // something came back: not "nothing came back"
+            downloadNoRoom = outcome.noRoom
+            // Something came back (not added, or no room for it): not "nothing came back".
+            downloadFoundNothing = !outcome.landed && !outcome.refused && !outcome.noRoom
             downloadIncomplete = !outcome.complete
         }
     }
@@ -350,16 +419,16 @@ struct Sparkline: View {
     let color: Color
 
     var body: some View {
-        GeometryReader { geo in
+        MainActorGeometryReader { size in
             let minV = values.min() ?? 0
             let maxV = values.max() ?? 1
             let range = max(maxV - minV, 0.0001)
             Path { path in
                 for (i, v) in values.enumerated() {
                     let x = values.count > 1
-                        ? geo.size.width * CGFloat(i) / CGFloat(values.count - 1)
+                        ? size.width * CGFloat(i) / CGFloat(values.count - 1)
                         : 0
-                    let y = geo.size.height * (1 - CGFloat((v - minV) / range))
+                    let y = size.height * (1 - CGFloat((v - minV) / range))
                     if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                     else { path.addLine(to: CGPoint(x: x, y: y)) }
                 }
@@ -379,25 +448,27 @@ struct EvidenceMediaView: View {
     /// The words over a thumbnail shown in place of a photo or clip that is not on this phone.
     static let thumbnailOnly = "Thumbnail only - full media not on this device"
 
+    /// What a test that lays out the view reads for the photo it shows: the file's name after this (item 237). Nothing in
+    /// Release.
+    static let pictureReport = "Evidence picture: "
+
     // Loaded once per url (via .task) rather than rebuilt on every body pass — a
     // fresh AVPlayer per render restarted playback, and reading the still on the
     // main thread hitched the scroll.
-    @State private var player: AVPlayer?
-    @State private var image: UIImage?
-
-    private var isVideo: Bool { url?.pathExtension.lowercased() == "mov" }
+    @StateObject private var picture = EvidencePictureLoad()
 
     var body: some View {
         Group {
-            if let player {
+            if let player = picture.player {
                 VideoPlayer(player: player)
                     .frame(height: 360)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else if let image {
+            } else if let image = picture.image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .reportedOnScreen(Self.pictureReport + (picture.imageName ?? ""))
             } else if mediaPresent {
                 // Present but still decoding — a neutral placeholder, never the
                 // "not on this device" badge (which would flash misleadingly).
@@ -421,28 +492,13 @@ struct EvidenceMediaView: View {
                 placeholder
             }
         }
-        .task(id: url) { await load() }
+        .task(id: url) { await picture.load(url) }
     }
 
     /// Whether the full-res media file actually exists on this device.
     private var mediaPresent: Bool {
         guard let url else { return false }
         return FileManager.default.fileExists(atPath: url.path)
-    }
-
-    private func load() async {
-        player = nil; image = nil
-        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
-        if isVideo {
-            player = AVPlayer(url: url)
-            return
-        }
-        // Read and decode the full-res still off the main thread, within the decoder's bounds
-        // (item 105, F-10): an image over its pixel cap keeps the neutral placeholder.
-        image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return BoundedImageDecoder.image(from: data, maxPixelSize: BoundedImageDecoder.fullDisplayPixels)
-        }.value
     }
 
     private var placeholder: some View {
@@ -452,6 +508,56 @@ struct EvidenceMediaView: View {
             .overlay(Image(systemName: "camera.metering.none")
                 .font(.largeTitle).foregroundStyle(.secondary))
     }
+}
+
+/// The picture an `EvidenceMediaView` shows for its file: a player for a clip, or a photo decoded off the main thread.
+/// A load starts each time the view's file changes (its `.task(id:)`), and only the latest load puts its photo up (item
+/// 237): a decode that returns after a later load began is dropped, so that after another device's update moves a file
+/// to the other camera's place, the old photo never comes back under the wrong camera.
+@MainActor
+final class EvidencePictureLoad: ObservableObject {
+    @Published private(set) var player: AVPlayer?
+    @Published private(set) var image: UIImage?
+    /// The name of the file `image` was decoded from.
+    @Published private(set) var imageName: String?
+    /// How many loads have begun: a decode is put up only by the latest.
+    private var loadsBegun = 0
+
+    /// Loads `url`'s picture in place of the one shown: a clip's player at once, a photo once it is decoded, unless a
+    /// later load began meanwhile.
+    func load(_ url: URL?) async {
+        loadsBegun &+= 1
+        let thisLoad = loadsBegun
+        player = nil
+        image = nil
+        imageName = nil
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+        if url.pathExtension.lowercased() == "mov" {
+            player = AVPlayer(url: url)
+            return
+        }
+        let decoded = await Self.decode(url)
+        guard thisLoad == loadsBegun else { return }   // a later load began: its file is the one on screen now
+        image = decoded
+        imageName = decoded == nil ? nil : url.lastPathComponent
+    }
+
+    /// Reads and decodes a full-res still off the main thread, within the decoder's bounds (item 105, F-10): an image
+    /// over its pixel cap keeps the neutral placeholder.
+    private static func decode(_ url: URL) async -> UIImage? {
+        #if DEBUG
+        if let decodeForTesting { return await decodeForTesting(url) }
+        #endif
+        return await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return BoundedImageDecoder.image(from: data, maxPixelSize: BoundedImageDecoder.fullDisplayPixels)
+        }.value
+    }
+
+    #if DEBUG
+    /// A test's decode in place of the real one, so that it can hold a decode and order the results (item 237).
+    static var decodeForTesting: (@MainActor (URL) async -> UIImage?)?
+    #endif
 }
 
 /// What one share sheet sends, fixed when Share opens it (item 90, phase 4), with its bundle and, when it has none, the

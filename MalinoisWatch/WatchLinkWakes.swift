@@ -14,12 +14,13 @@ import Foundation
 /// The wakes held for the iPhone link, each given back to watchOS once: when the watch app's rule says
 /// nothing is left to deliver, when watchOS says the wake's time is up, or at `deadline`, whichever
 /// comes first. A wake given back at its deadline may leave an alert unposted: watchOS may then suspend
-/// the app, and the alert is shown when the app next runs, or lost if watchOS ends the app first. Where
+/// the app, and the alert is shown when the app next runs, or was lost before 1.13 if watchOS ended the app first. Where
 /// the handling would have outlasted watchOS's 15 seconds, ending the app would lose it too; where it
 /// would have ended between the deadline and the 15 seconds, the deadline is what cuts it off (item
 /// 218's Codex-2, which corrects "would lose too" for that case). So the inbox gives the alerts of one
 /// run one allowance for the notification list (`WatchRelayInbox`), and a backlog does not reach the
-/// deadline waiting for the list. Keeping each alert until it is shown is BACKLOG item 219.
+/// deadline waiting for the list. Since 1.13 each alert is written down until it is shown, and one cut off here is
+/// handled at the next launch or wake (`WatchRelayOwed`, BACKLOG item 219, ADR 0082).
 @MainActor
 final class WatchLinkWakes<Wake: AnyObject> {
     /// How long a wake is held at most (item 212). watchOS allows a link wake 15 seconds of wall time

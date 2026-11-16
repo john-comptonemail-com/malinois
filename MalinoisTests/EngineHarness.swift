@@ -86,8 +86,11 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     /// Item 65: how many stills FAIL before the camera answers normally — the first attempt is
     /// the interruption's casualty, the retry lands.
     var stillFailuresRemaining = 0
-    var onVisionFrame: (@MainActor (VisionFrame) -> Void)?
+    var onVisionFrame: (@MainActor (VisionFrame, VisionStill?) -> Void)?
     var onSessionEvent: (@MainActor (CameraSessionEvent) -> Void)?
+    /// The numbers Vision asked the tap for stills by, in order (item 239).
+    var visionStillRequests: [Int] { lock.withLock { _visionStillRequests } }
+    private var _visionStillRequests: [Int] = []
 
     // MARK: The recording indicator
 
@@ -223,6 +226,7 @@ final class FakeCamera: EvidenceCamera, @unchecked Sendable {
     }
 
     func setVisionTapEnabled(_ enabled: Bool) { lock.withLock { _visionTapRequests.append(enabled) } }
+    func requestVisionStill(generation: Int) { lock.withLock { _visionStillRequests.append(generation) } }
 
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool {
         await onWarmUpForTesting?()
@@ -472,6 +476,17 @@ enum TestIsolation {
         where recoveryFlagPrefixes.contains(where: { key.hasPrefix($0) }) {
             defaults.removeObject(forKey: key)
         }
+        resetOnboardingScreens()
+    }
+
+    /// Two screens 1.13 changes after the owner's first armed sessions (item 240): Home's card after the first disarm,
+    /// and the arming screen's setup steps, folded after an armed session under Guided Access. An engine's disarm, or
+    /// its armed session under a simulated Guided Access, sets their flags for every later test in the process, so each
+    /// test starts with the card dismissed and the steps unfolded, as every screen test before 1.13 had them; a test of
+    /// either screen sets its own.
+    nonisolated static func resetOnboardingScreens() {
+        UserDefaults.standard.set(true, forKey: "com.malinois.onboarding.firstSessionCardDismissed")
+        UserDefaults.standard.removeObject(forKey: "com.malinois.onboarding.hasArmedUnderGuidedAccess")
     }
 }
 

@@ -10,11 +10,22 @@
 //  frames arrive, and this monitor is simply quiet (the arming screen says so).
 //
 //  Frames arrive from CameraController's video tap (~2 fps, 32×24 luminance). Nothing is
-//  stored during monitoring — the detector keeps two tiny baselines in memory; recording
-//  only begins when a trip fires the normal capture path.
+//  stored during monitoring — the detector keeps two tiny baselines in memory, and, since
+//  1.13, a small colour still of the view taken when it set its reference (item 239); recording
+//  only begins when a trip fires the normal capture path, and only a slow trip's event saves
+//  that still with it.
 //
 
 import Foundation
+
+/// A colour JPEG of the camera's view, made from the frame after Vision set its reference (item 239, ADR 0081), for the
+/// reference of `generation`: the number the monitor asked the camera for it by.
+struct VisionStill: Equatable, Sendable {
+    let generation: Int
+    let jpeg: Data
+    /// When the camera took the frame, by the phone's clock.
+    let takenAt: Date
+}
 
 @MainActor
 final class VisionMonitor: SensorMonitor {
@@ -23,6 +34,19 @@ final class VisionMonitor: SensorMonitor {
     var sensitivity: Sensitivity = .medium
     var onTrip: ((SensorType) -> Void)?
     var requiresCalibration: Bool { true }
+    /// Asks the camera for a still of its next frame, for the reference of the number given (item 239).
+    var onReferenceStillWanted: ((Int) -> Void)?
+    /// The still of the current reference, once the camera has delivered it (item 239): in memory only, replaced at
+    /// each new reference, dropped at the disarm and at the start of a calibration.
+    private(set) var referenceStill: VisionStill?
+    /// The number the current reference's still is asked for by: raised at each new reference, at the disarm and at a
+    /// calibration, so that a still delivered late, of an earlier reference, is never kept (item 239).
+    private var stillNumber = 0
+    /// The detector's reference that number stands for (`VisionDetector.referenceGeneration`).
+    private var stillReference = 0
+    /// The still of the reference the last trip compared against, when that trip was a slow one, until its event takes
+    /// it (item 239).
+    private var tripStill: VisionStill?
 
     private var detector = VisionDetector()
     private var calibrating = false
@@ -86,7 +110,11 @@ final class VisionMonitor: SensorMonitor {
     /// Entry point for every frame from the camera tap (main actor). A frame while the camera stands down, before the
     /// engine has it up again, counts for nothing: no reading, no trip, not even its time, so the first frame once the
     /// camera is up after a long cold spell still re-anchors (item 190's deepseek-1 on 1c083ab, the owner's "a").
-    func ingest(_ frame: VisionFrame) {
+    /// `still`, the camera's still of this frame when one was asked for, is kept when it is of the current reference
+    /// (item 239), whatever the frame counts for: it was taken after that reference was set.
+    func ingest(_ frame: VisionFrame, still: VisionStill? = nil) {
+        if let still, still.generation == stillNumber { referenceStill = still }
+        defer { noteReference() }
         if stoodDown && !warmedUp { return }
         let now = steadyNow()
         let gap = lastFrameAt.map { now - $0 }
@@ -123,14 +151,28 @@ final class VisionMonitor: SensorMonitor {
             noteReading(changed)
             guard !hasTripped else { return }
             hasTripped = true
+            // A slow trip, the quick check under its limit, keeps the still of the reference it compared against for its
+            // event; a quick trip keeps none, its photo or clip showing the change (item 239, ADR 0081's decision 2).
+            tripStill = changed <= tripFraction ? referenceStill : nil
             onTrip?(.vision)
         }
     }
 
+    /// After anything that may have set the detector's reference: a new reference drops the still of the one before
+    /// and asks the camera for its own (item 239).
+    private func noteReference() {
+        guard detector.referenceGeneration != stillReference else { return }
+        stillReference = detector.referenceGeneration
+        stillNumber &+= 1
+        referenceStill = nil
+        tripStill = nil
+        if detector.hasBaseline { onReferenceStillWanted?(stillNumber) }
+    }
+
     // MARK: - SensorMonitor
 
-    func beginCalibration() { calibrating = true; detector.beginCalibration() }
-    func endCalibration()   { calibrating = false; detector.endCalibration() }
+    func beginCalibration() { calibrating = true; detector.beginCalibration(); noteReference() }
+    func endCalibration()   { calibrating = false; detector.endCalibration(); noteReference() }
 
     func start() {
         watching = true
@@ -143,6 +185,10 @@ final class VisionMonitor: SensorMonitor {
         watching = false
         hasTripped = false
         suppressedUntil = nil
+        // The disarm drops the still, and one the camera delivers late is not kept (item 239).
+        stillNumber &+= 1
+        referenceStill = nil
+        tripStill = nil
     }
 
     func rearm() { hasTripped = false }
@@ -176,6 +222,7 @@ final class VisionMonitor: SensorMonitor {
     func rearmAndRebaseline() {
         hasTripped = false
         detector.rebaseline()
+        noteReference()
     }
 
     /// Ignore frames for a while — around a capture (the scene being recorded, the screen
@@ -188,6 +235,13 @@ final class VisionMonitor: SensorMonitor {
     }
 
     func recentTrace() -> [Double] { detector.trace }
+
+    /// The still of the reference the last trip compared against, when that trip was a slow one, handed over once
+    /// (item 239).
+    func takeTripStill() -> VisionStill? {
+        defer { tripStill = nil }
+        return tripStill
+    }
 
     func liveReading() -> SensorReading? {
         guard lastFrameAt != nil, !stoodDown else {

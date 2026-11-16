@@ -54,7 +54,7 @@ final class Item168ReviewTests: XCTestCase {
     // MARK: - deepseek-3: what Guided Access blocks (step 44)
 
     /// With Guided Access on, the arming screen says it stops app switching and the power-off slider, and that a forced
-    /// restart still ends the watch.
+    /// restart still ends the armed session (item 240's words, in place of "the watch").
     func testTheArmingScreenWithGuidedAccessOnSaysAForcedRestartStillEndsTheWatch() throws {
         let rig = makeRig()
         rig.engine.simulateGuidedAccessForTesting(on: true)
@@ -63,7 +63,7 @@ final class Item168ReviewTests: XCTestCase {
         let shown = try shownOnScreen(arming(rig)).shown
         let line = try XCTUnwrap(shown.first { $0.hasPrefix("The device is locked to Malinois") }, "\(shown)")
         XCTAssertTrue(line.contains("can't switch apps or use the power-off slider"), line)
-        XCTAssertTrue(line.contains("A forced restart still ends the watch."), line)
+        XCTAssertTrue(line.contains("A forced restart still ends the armed session."), line)   // item 240's words
     }
 
     /// With Guided Access off, the recommendation names the same two things it would stop.

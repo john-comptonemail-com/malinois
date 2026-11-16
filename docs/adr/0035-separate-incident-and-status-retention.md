@@ -4,7 +4,9 @@
   a row whose upload is running is never taken, and on Pro a removal of evidence meant for iCloud leaves
   a status entry (Consequences). Amended again 2026-10-14 (BACKLOG 116, Codex's review): status entries'
   uploads are protected too, and the launch trims, the media clean-up and the entry's daily limit hold.
-  Amended 2026-10-26 (BACKLOG 166's A1): the report a removal owes is kept on disk until it has run.
+  Amended 2026-10-26 (BACKLOG 166's A1): the report a removal owes is kept on disk until it has run. **Amended in part
+  by ADR 0088 (2026-11-14):** other devices' status entries have a budget of their own; mirrored copies go first in the
+  incident budget only.
 - **Date:** 2026-10-10
 
 ## Context

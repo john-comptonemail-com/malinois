@@ -54,3 +54,33 @@ extension MonitoringCloudCoordinator {
         localEventCount == 0 || restoreOwed ? .restoring : .checking
     }
 }
+
+/// How the last pull of the event log from iCloud went (item 227's Codex-1; the owner's D6 (a), every pull): whether it
+/// ran to the end, and how many records it found that this version of Malinois cannot read (one with no ID or date, or a
+/// status kind a later version wrote). Home and the top of the Event Log say what it shows, until a pull runs to the end
+/// and, for records it cannot read, while the last pull found any.
+struct CloudPullOutcome: Equatable, Sendable {
+    var complete: Bool
+    var unreadable: Int
+
+    /// Home's line when the last pull did not run to the end (the owner's "wording approved", 2026-11-12, W6).
+    static let homeIncomplete = "Malinois couldn't read all of your event log from iCloud. Pull down in the Event Log to try again."
+    /// The Event Log's top row, the same case (W7).
+    static let logIncomplete = "Part of your event log in iCloud couldn't be read. Pull down to try again."
+
+    /// The line for records the last pull could not read, on Home and in the Event Log (W8).
+    static func unreadableLine(_ count: Int) -> String {
+        count == 1 ? "1 record in iCloud can't be read by this version of Malinois and isn't shown."
+                   : "\(count) records in iCloud can't be read by this version of Malinois and aren't shown."
+    }
+
+    /// What Home says of it.
+    var homeLines: [String] {
+        (complete ? [] : [Self.homeIncomplete]) + (unreadable > 0 ? [Self.unreadableLine(unreadable)] : [])
+    }
+
+    /// What the top of the Event Log says of it.
+    var logLines: [String] {
+        (complete ? [] : [Self.logIncomplete]) + (unreadable > 0 ? [Self.unreadableLine(unreadable)] : [])
+    }
+}

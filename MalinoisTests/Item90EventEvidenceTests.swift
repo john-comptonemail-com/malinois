@@ -30,6 +30,9 @@ final class Item90EventEvidenceTests: XCTestCase {
                           wrongPINCount: 2, thermalState: "fair")
         event.keptLocal = true
         event.uploadedMedia = ["front"]
+        // A slow Vision trip's still (item 239): its file a name on this phone, its time a fact.
+        event.visionReferenceFilename = "reference.jpg"
+        event.visionReferenceTakenAt = Date(timeIntervalSince1970: 1_792_999_400.75)
         return event
     }
 
@@ -45,7 +48,8 @@ final class Item90EventEvidenceTests: XCTestCase {
             + #""stateChange":null,"interrupted":false,"interruptionCause":null,"sustainedCount":null,"wrongPINCount":2,"#
             + #""cancelCount":null,"ownerAttributed":false,"capturedOffline":true,"thermalState":"fair","captureFailure":null,"#
             + #""captureFailuresByCamera":{"front":"cameraUnavailable","rear":"clipUnverified"},"primaryCamera":"front","#
-            + #""primaryDuration":5250,"secondaryCamera":"rear","secondaryDuration":4000,"mediaDiscarded":true}"#)
+            + #""primaryDuration":5250,"secondaryCamera":"rear","secondaryDuration":4000,"mediaDiscarded":true,"#
+            + #""visionReferenceTakenAt":1792999400750}"#)
     }
 
     func testAStatusRecordsFactsSayFalseOrNullForWhatItDoesNotHave() {
@@ -84,7 +88,8 @@ final class Item90EventEvidenceTests: XCTestCase {
         XCTAssertEqual(facts.union(notEvidence).subtracting(stored).sorted(), [], "a name that is not a stored field")
         for (field, reason) in Event.notEvidenceFields { XCTAssertFalse(reason.isEmpty, field) }
         // The ones the attachments cover, and the identity the statement names, are among them.
-        for field in ["id", "mediaFilename", "secondaryMediaFilename", "thumbnailData", "motionTrace", "audioTrace", "visionTrace"] {
+        for field in ["id", "mediaFilename", "secondaryMediaFilename", "thumbnailData", "motionTrace", "audioTrace", "visionTrace",
+                      "visionReferenceFilename"] {
             XCTAssertNotNil(Event.notEvidenceFields[field], field)
         }
     }

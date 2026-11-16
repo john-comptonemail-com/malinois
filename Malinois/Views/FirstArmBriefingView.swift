@@ -43,6 +43,10 @@ struct FirstArmBriefingView: View {
                 if parts.voiceControl {
                     section(FirstArmBriefing.voiceControlHeading, [FirstArmBriefing.voiceControlText])
                 }
+                // Last: the least pressing part before a first arm (the owner, 2026-11-14; item 242's round q).
+                if parts.noDelete {
+                    section(FirstArmBriefing.noDeleteHeading, [FirstArmBriefing.noDeleteText])
+                }
                 line(FirstArmBriefing.footnote, font: .footnote, color: .secondary)
             }
             .padding(24)
@@ -75,7 +79,7 @@ struct FirstArmBriefingView: View {
                 .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
                 .reportedOnScreen(heading)
-            ForEach(texts, id: \.self) { line($0, font: .body, color: .primary) }
+            MainActorForEach(texts, id: \.self) { line($0, font: .body, color: .primary) }
         }
     }
 

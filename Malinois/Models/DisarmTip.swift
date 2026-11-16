@@ -17,11 +17,11 @@ import Foundation
 enum DisarmTip {
     /// The arming screen card's headline. "The screen", not "the black screen" (owner, 2026-10-13):
     /// on a charger the armed screen is dimmed, not black, and Alert mode shows the warning.
-    static let holdHeadline = "Press and hold the screen for 5 seconds"
+    static let holdHeadline = "Press and hold anywhere on the screen for 5 seconds"   // one wording (item 240)
     /// Under the countdown, in red: the last thing the owner reads before the screen goes dark.
-    static let countdownReminder = "To disarm later: press and hold the screen for 5 seconds, then enter your PIN."
+    static let countdownReminder = "To disarm later: press and hold anywhere on the screen for 5 seconds, then enter your Malinois PIN."
     /// Under the tamper warning until the owner's first disarm. Alert-screen text: no em-dash (B16).
-    static let alertTipText = "To disarm: press and hold anywhere for 5 seconds, then enter your Malinois PIN."
+    static let alertTipText = "To disarm: press and hold anywhere on the screen for 5 seconds, then enter your Malinois PIN."
     /// Below the tip, so its disappearance after the first disarm is expected.
     static let alertTipFootnote = "This tip shows only until you first disarm."
 

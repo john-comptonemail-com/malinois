@@ -25,6 +25,8 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     /// Part 4, the Side Button (BACKLOG 153), has tests of its own (Item153SideButtonBriefingTests): here it is
     /// acknowledged too.
     nonisolated private static let sideButtonAckKey = "com.malinois.onboarding.acknowledgedSideButtonBriefing"
+    /// Part 5, "Nothing is deleted" (item 240), has tests of its own (Item240OnboardingTests): here it is acknowledged too.
+    nonisolated private static let noDeleteAckKey = "com.malinois.onboarding.acknowledgedNoDeleteBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
 
@@ -34,15 +36,18 @@ final class Item131FirstArmBriefingTests: XCTestCase {
     override func setUp() {
         super.setUp()
         TestIsolation.setUp(folderPrefix: "MalinoisItem131")
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey,
+                    Self.noDeleteAckKey] {
             savedAcks[key] = UserDefaults.standard.object(forKey: key)
         }
         UserDefaults.standard.set(true, forKey: Self.voiceControlAckKey)
         UserDefaults.standard.set(true, forKey: Self.sideButtonAckKey)
+        UserDefaults.standard.set(true, forKey: Self.noDeleteAckKey)
     }
 
     override func tearDown() {
-        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey] {
+        for key in [Self.disarmAckKey, Self.guidedAccessAckKey, Self.voiceControlAckKey, Self.sideButtonAckKey,
+                    Self.noDeleteAckKey] {
             if let value = savedAcks[key] { UserDefaults.standard.set(value, forKey: key) }
             else { UserDefaults.standard.removeObject(forKey: key) }
         }

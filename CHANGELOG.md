@@ -2,6 +2,13 @@
 
 What each App Store release of Malinois changed, newest first. The current release is under What's new in the [README](README.md).
 
+**Shipped in 1.12**
+
+- If Malinois ever has to set aside an event log it can't read in full, that log now appears at the top of the Event Log, and Home reminds you about it until it's deleted. You can view the records that can still be read, share an exact copy of the file (not signed evidence) along with its photos and clips still on your iPhone, or delete it with your PIN, together with the photos and clips only it uses; the deletion is noted in the Event Log.
+- Settings now shows your iPhone's current signing key: its first eight characters, as the Mac verifier prints them, and the whole ID to copy. Give someone the ID before you send them an evidence ZIP, and they can tell it was signed on your iPhone.
+- If you share a signed event and its evidence ZIP can't be included, the event's screen now tells you so, and why when it can.
+- Also: a photo downloaded from another of your devices no longer shows under the wrong camera after that device updates the event; the Event Log's note that events not fully backed up to iCloud were removed to make room now appears only once per watch; and the Apple Watch app now hands back each background wake from your iPhone within 10 seconds, inside watchOS's time limit.
+
 **Shipped in 1.11**
 
 - If your iPhone stops just after making a signature (a crash, a forced restart, a flat battery) and that leaves a gap, it now notices the next time it signs and adds a signed statement naming the gap. A check then reports the missing signatures as made and not kept, not as a problem. To check a ZIP with that statement in it, use the Mac verifier from 1.11 or later.

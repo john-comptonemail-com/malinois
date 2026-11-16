@@ -43,7 +43,7 @@ struct PaywallView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Self.benefits, id: \.title) { b in
+                        MainActorForEach(Self.benefits, id: \.title) { b in
                             benefitRow(b, emphasized: b.feature == highlight)
                         }
                     }

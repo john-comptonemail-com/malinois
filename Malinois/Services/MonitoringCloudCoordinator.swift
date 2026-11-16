@@ -35,6 +35,7 @@ final class MonitoringCloudCoordinator {
     var onCloudPushRefusedChange: @MainActor (Bool) -> Void = { _ in }
     var onCloudRestoreInProgressChange: @MainActor (Bool) -> Void = { _ in }
     var onCurrentLaunchPullChange: @MainActor (LaunchPullKind) -> Void = { _ in }
+    var onLastCloudPullChange: @MainActor (CloudPullOutcome?) -> Void = { _ in }
     var onPendingSweepActiveChange: @MainActor (Bool) -> Void = { _ in }
     var onPendingSweepWaitingChange: @MainActor (Bool) -> Void = { _ in }
 
@@ -42,6 +43,8 @@ final class MonitoringCloudCoordinator {
     var cloudPushRefused = false { willSet { onCloudPushRefusedChange(newValue) } }
     var cloudRestoreInProgress = false { willSet { onCloudRestoreInProgressChange(newValue) } }
     var currentLaunchPull: LaunchPullKind = .checking { willSet { onCurrentLaunchPullChange(newValue) } }
+    /// How the last pull of the event log from iCloud went (item 227's Codex-1); nil until a pull has run.
+    var lastCloudPull: CloudPullOutcome? { willSet { onLastCloudPullChange(newValue) } }
     var pendingSweepActive = false { willSet { onPendingSweepActiveChange(newValue) } }
     var pendingSweepWaiting = false { willSet { onPendingSweepWaitingChange(newValue) } }
 
@@ -129,6 +132,8 @@ final class MonitoringCloudCoordinator {
     var cloudPresenceForTesting: (([String]) async -> Set<String>?)?
     var cloudAccountForTesting: String?
     var cloudFetchForTesting: ((Int) async -> (events: [Event], complete: Bool))?
+    /// With `cloudFetchForTesting`: how many records its fetch found and could not read (item 227).
+    var cloudUnreadableForTesting = 0
     var beatSendForTesting: ((HeartbeatBeat) async -> Bool)?
     var latestBeatFetchForTesting: ((UUID) async -> LastHeard)?
     var beatTrailsTrimForTesting: (@MainActor ([BeatSession]) async -> [UUID: BeatTrimOutcome])?

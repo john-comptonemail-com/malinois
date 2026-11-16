@@ -172,7 +172,9 @@ final class Item129F3F4T1Tests: XCTestCase {
 
     /// Three of another phone's records, held here without media, each downloaded in full: three
     /// 4-byte stills against an 8-byte limit. The limit's pass must run after the downloads, as it
-    /// does after a new event or a merge, and bring the referenced media back under the limit.
+    /// does after a new event or a merge, and the referenced media stay under the limit. Since 1.13
+    /// (BACKLOG 233 (b)) a download that would pass the limit is not added, and nothing is removed to
+    /// make room: the first two fill it, and the third is refused.
     func testDownloadedEvidenceIsHeldToTheMediaByteLimit() async throws {
         let store = EventStore()
         store.mediaBudgetForTesting = 8
@@ -199,10 +201,14 @@ final class Item129F3F4T1Tests: XCTestCase {
                                                                                   fileURL: file)],
                                             complete: true)
         }
+        var landed: [Bool] = [], noRoom: [Bool] = []
         for mirror in mirrors {
             let result = await engine.downloadFullEvidence(for: mirror.id)
-            XCTAssertTrue(result.landed)
+            landed.append(result.landed)
+            noRoom.append(result.noRoom)
         }
+        XCTAssertEqual(landed, [true, true, false], "the third would pass the limit")
+        XCTAssertEqual(noRoom, [false, false, true])
         func referencedBytes() -> Int {
             store.drainIOForTesting()
             return store.events.compactMap(\.mediaFilename).reduce(0) { total, name in
@@ -211,7 +217,7 @@ final class Item129F3F4T1Tests: XCTestCase {
         }
         await waitUntil(timeout: 4) { passes > passesBeforeDownloads && referencedBytes() <= 8 }
         XCTAssertGreaterThan(passes, passesBeforeDownloads, "the limit's pass runs after the downloads")
-        XCTAssertLessThanOrEqual(referencedBytes(), 8, "the downloads leave the media under the limit")
+        XCTAssertEqual(referencedBytes(), 8, "the two that fit stay, and leave the media at the limit")
     }
 
     // MARK: - T1: the camera permission is the camera's answer, not the simulator's

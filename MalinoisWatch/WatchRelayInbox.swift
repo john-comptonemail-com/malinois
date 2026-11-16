@@ -64,6 +64,8 @@ final class WatchRelayInbox {
     private var summary: WatchRelaySummary?
     /// The alert being handled, or the last one handled: the next one waits for it.
     private var last: Task<Bool, Never>?
+    /// The owed alerts handed in and not yet handled (BACKLOG 219): not handed in again meanwhile.
+    private var owedInHand: Set<String> = []
     /// The latest repeat's tidy-up, beside the alerts' queue (Codex's second look at 75, observation 1): each waits for the
     /// one before it, never for an alert. Tests wait for it.
     private(set) var repeatTidy: Task<Void, Never>?
@@ -97,16 +99,35 @@ final class WatchRelayInbox {
     /// reading the list (item 218's Codex-2).
     @discardableResult
     func receive(_ message: WatchAlertMessage) async -> Bool {
-        let previous = last
-        alertsInRun += 1
-        let task = Task { () -> Bool in
-            _ = await previous?.value
-            let posted = await self.handle(message)
-            self.endOfAnAlert()
-            return posted
+        await enqueue([message], owed: false)[0].value
+    }
+
+    /// The owed alerts (BACKLOG 219, `WatchRelayOwed`), handed in at once in their order, oldest first, before any alert
+    /// handed in after this call: at a launch and at each wake for the link. One handed in and not yet handled is not
+    /// handed in again, so a launch for a wake does not try a refused post twice. Each task answers whether its alert was
+    /// posted.
+    func receiveOwed() -> [Task<Bool, Never>] {
+        let owed = WatchRelayOwed.all(defaults: defaults).map(\.message)
+            .filter { !owedInHand.contains($0.notificationIdentifier) }
+        owedInHand.formUnion(owed.map(\.notificationIdentifier))
+        return enqueue(owed, owed: true)
+    }
+
+    /// Hands `messages` in, in their order, at once: each is handled once those handed in before it are done.
+    private func enqueue(_ messages: [WatchAlertMessage], owed: Bool) -> [Task<Bool, Never>] {
+        messages.map { message in
+            let previous = last
+            alertsInRun += 1
+            let task = Task { () -> Bool in
+                _ = await previous?.value
+                let posted = await self.handle(message)
+                self.endOfAnAlert()
+                if owed { self.owedInHand.remove(message.notificationIdentifier) }
+                return posted
+            }
+            last = task
+            return task
         }
-        last = task
-        return await task.value
     }
 
     /// One alert of the run is handled. When none is left to handle the run is over, and the next has the list's
@@ -124,6 +145,8 @@ final class WatchRelayInbox {
         let id = message.notificationIdentifier
         // Each event once: not when summed up before (Codex's X1), shown on its own, or being posted.
         guard !summed.contains(where: { $0.id == id }), ledger.begin(id) else {
+            // Passed over as one already shown or counted: handled, so it leaves the owed list (BACKLOG 219).
+            WatchRelayOwed.handled(id, defaults: defaults)
             // A repeat (the queued copy after the live one): iCloud's copy of the event, which may have come in between,
             // quiet, can go from the list (Codex's codex-1 on 75). Beside the alerts' queue, not in it, so a list slow to
             // answer holds no new alert back (Codex's second look at 75, observation 1).
@@ -168,7 +191,13 @@ final class WatchRelayInbox {
         // burst of old alerts cannot push out the shown alerts whose queued copies are still to come
         // (Codex's X1: each copy pushed out the next one's memory, and all were counted).
         ledger.finish(id, posted: posted && joined == nil)
-        guard posted else { return false }
+        guard posted else {
+            // Refused: still owed, and tried again at the next launch or wake, three times in all (BACKLOG 219, D1).
+            if WatchRelayOwed.postRefused(id, defaults: defaults) {
+                log.error("Relayed alert dropped after \(WatchRelayOwed.tries, privacy: .public) refused posts")
+            }
+            return false
+        }
         if let burstAfter { AlertBurst.commit(burstAfter, defaults: defaults, key: Self.relayArrivalsKey) }
         // Once the relayed copy is accepted, so iCloud's goes only after its replacement was scheduled.
         if !plan.replacing.isEmpty { remove(plan.replacing) }
@@ -179,6 +208,9 @@ final class WatchRelayInbox {
             summed = WatchRelayMemory.remembering(WatchRelayMemory.Summed(id: id, at: message.at), in: summed)
         }
         keepMemory(shownChanged: joined == nil)
+        // Handled: off the owed list, after the record of alerts shown, so a stop between the two writes leaves it on
+        // both and the next run passes it over, never on neither (BACKLOG 219).
+        WatchRelayOwed.handled(id, defaults: defaults)
         return true
     }
 
@@ -412,5 +444,101 @@ struct WatchRelayMemory: Codable, Equatable, Sendable {
         // one 72 showed again after this build forgot it is not pushed out (Codex's Z2).
         let fromKey = Set(older)
         return Array((kept.filter { !fromKey.contains($0) } + older).suffix(WatchAlertStatus.rememberedRelayLimit))
+    }
+}
+
+/// The relayed alerts the link has handed over and the inbox has not yet handled (BACKLOG 219, ADR 0082). The link hands a
+/// queued alert over once, and the watch app gives its wake back after 10 seconds at the latest (`WatchLinkWakes`), so an
+/// alert would otherwise live only in memory until it is posted. Each is written down before the hand-over returns, on
+/// the link's own thread; the inbox takes it off once it has handled it (posted on its own, added to the summary, or
+/// passed over as one already shown or counted), after the record of alerts shown is written, with which it shares its
+/// notification identifier, so a stop between the two writes cannot show it twice; and the watch app hands those left to
+/// the inbox at each launch and each wake for the link. Foundation-only, so the iPhone's tests build it too.
+enum WatchRelayOwed {
+    /// Where the list is, in the watch app's settings, beside the record of alerts shown (`WatchRelayInbox.memoryKey`).
+    static let key = "com.malinois.watch.relayOwed"
+    /// How many owed alerts the list takes: the newest by their events' times (the owner's D2, 2026-11-12). There is no
+    /// age limit: one handled more than an hour after its event joins the summary, as any late alert does (ADR 0051).
+    static let limit = 100
+    /// How many refused posts an owed alert is given before it is dropped, with a log line (the owner's D1): watchOS
+    /// refuses a post only rarely, and one it will never take should not hold every later wake.
+    static let tries = 3
+
+    /// One owed alert: the alert itself, and how many of its posts watchOS has refused.
+    struct Entry: Codable, Equatable, Sendable {
+        let kind: WatchAlertMessage.Kind
+        let eventID: UUID
+        let at: Date
+        var refusedPosts: Int
+
+        var message: WatchAlertMessage { WatchAlertMessage(kind: kind, eventID: eventID, at: at) }
+    }
+
+    /// One change at a time: the link's thread writes alerts down while the main actor takes them off.
+    private static let lock = NSLock()
+
+    /// Writes `message` down as owed, at once: called before the hand-over returns. One already owed stays as it is,
+    /// with its count of refused posts.
+    static func note(_ message: WatchAlertMessage, defaults: UserDefaults = .standard) {
+        change(defaults) { owed in
+            let id = message.notificationIdentifier
+            guard !owed.contains(where: { $0.message.notificationIdentifier == id }) else { return }
+            owed.append(Entry(kind: message.kind, eventID: message.eventID, at: message.at, refusedPosts: 0))
+        }
+    }
+
+    /// The owed alerts, oldest first; none when there are none or the list cannot be read.
+    static func all(defaults: UserDefaults = .standard) -> [Entry] {
+        lock.withLock { read(defaults) }
+    }
+
+    /// The inbox handled the alert under `identifier`: it leaves the list.
+    static func handled(_ identifier: String, defaults: UserDefaults = .standard) {
+        change(defaults) { owed in owed.removeAll { $0.message.notificationIdentifier == identifier } }
+    }
+
+    /// watchOS refused the post of the alert under `identifier`: the refusal is counted, and the alert dropped once
+    /// `tries` posts have been refused. Returns whether it was dropped. An alert not on the list (the live copy, which is
+    /// not written down) changes nothing.
+    @discardableResult
+    static func postRefused(_ identifier: String, defaults: UserDefaults = .standard) -> Bool {
+        var dropped = false
+        change(defaults) { owed in
+            guard let index = owed.firstIndex(where: { $0.message.notificationIdentifier == identifier }) else { return }
+            owed[index].refusedPosts += 1
+            guard owed[index].refusedPosts >= tries else { return }
+            owed.remove(at: index)
+            dropped = true
+        }
+        return dropped
+    }
+
+    /// Reads and changes the list in one turn of the lock, and writes it, oldest first and within the limit, only when
+    /// the change leaves it different.
+    private static func change(_ defaults: UserDefaults, _ body: (inout [Entry]) -> Void) {
+        lock.withLock {
+            let before = read(defaults)
+            var owed = before
+            body(&owed)
+            let after = newest(owed)
+            // An alert not on the list (the live copy, never written down) writes nothing when handled or refused, so
+            // the record of alerts shown stays its only write (item 134's X2; 1.13's chain i).
+            guard after != before else { return }
+            defaults.set(try? JSONEncoder().encode(after), forKey: key)
+        }
+    }
+
+    /// The list as written, oldest first and within the limit; none when there is none or it cannot be read, so a damaged
+    /// list starts again empty, as the record of alerts shown does.
+    private static func read(_ defaults: UserDefaults) -> [Entry] {
+        guard let data = defaults.data(forKey: key), let owed = try? StoredJSON.decode([Entry].self, from: data) else {
+            return []
+        }
+        return newest(owed)
+    }
+
+    /// The newest `limit` of `owed` by their events' times, oldest first.
+    private static func newest(_ owed: [Entry]) -> [Entry] {
+        Array(owed.sorted { $0.at < $1.at }.suffix(limit))
     }
 }

@@ -176,7 +176,7 @@ final class Item153StatusRecordsTests: XCTestCase {
         XCTAssertEqual(stateEvent("pinChanged").sensorSummary,
                        "Malinois PIN changed in Settings; the current PIN was entered first")
         XCTAssertEqual(stateEvent("guidedAccessEnded").sensorSummary,
-                       "Guided Access ended while armed; the watch kept running")   // item 155's A7: Face ID can end it too
+                       "Guided Access ended while armed; monitoring went on")   // item 155's A7: Face ID can end it too; item 240's words
     }
 
     /// Both have their own icon in the log, one iOS has.

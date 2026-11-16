@@ -25,7 +25,7 @@ struct DryRunView: View {
         NavigationStack {
             ScrollView {
                 // ~10 Hz re-render so the "would trip" highlights decay smoothly.
-                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                MainActorTimelineView(.periodic(from: .now, by: 0.1)) { _ in
                     VStack(spacing: 14) {
                         Text("Move, tap, or make noise near the phone to see each sensor react. Nothing is recorded and no events are logged.")
                             .font(.footnote)
@@ -54,7 +54,7 @@ struct DryRunView: View {
                             CalibrationSummaryView(summary: cal)
                         }
 
-                        ForEach(testedSensors) { sensor in
+                        MainActorForEach(testedSensors) { sensor in
                             if sensor == .touch {
                                 touchPad
                             } else if SensorType.proTripwires.contains(sensor) && !entitlements.proActive {

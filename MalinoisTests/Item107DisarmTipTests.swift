@@ -201,7 +201,7 @@ final class Item107DisarmTipTests: XCTestCase {
         for copy in [DisarmTip.holdHeadline, DisarmTip.countdownReminder] {
             XCTAssertFalse(copy.contains("black"), copy)
         }
-        XCTAssertTrue(DisarmTip.countdownReminder.contains("press and hold the screen for 5 seconds"))
+        XCTAssertTrue(DisarmTip.countdownReminder.contains("press and hold anywhere on the screen for 5 seconds"))   // item 240: one wording
         let arming = try text("Malinois/Views/ArmingView.swift")
         let reminder = try XCTUnwrap(arming.range(of: "Label(DisarmTip.countdownReminder"))
         XCTAssertTrue(arming[reminder.upperBound...].prefix(240).contains(".foregroundStyle(.red)"), "the reminder is red")

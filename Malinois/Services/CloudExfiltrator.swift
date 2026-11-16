@@ -263,16 +263,21 @@ final class CloudExfiltrator: ObservableObject {
     /// isn't mistaken for a bug.
     @Published private(set) var cloudUnavailable = false
 
-    /// Whether the last `fetchRecentEvents` had at least one query **fail**, as opposed to
+    /// Whether the last fetch to end (`fetchRecentEventsReporting`) had at least one query **fail**, as opposed to
     /// returning nothing. Without this the two are indistinguishable — every query returns `[]`
     /// on error — and the background-push path would report success to iOS for a fetch that
-    /// never ran.
+    /// never ran. A fetch's caller takes its own call's result (`FetchResult`, item 241's A1): another fetch may have
+    /// ended meanwhile.
     private(set) var lastFetchFailed = false
 
-    /// Whether the last `fetchRecentEvents` reached iCloud and ran every query to the end: the
+    /// Whether the last fetch to end reached iCloud and ran every query to the end: the
     /// account was ready and none failed. An owed restore (item 89, C1) is settled only then;
     /// `lastFetchFailed` alone cannot say it, since an account that is not ready never queries.
     private(set) var lastFetchComplete = false
+
+    /// How many records the last fetch to end found and could not read (item 227's Codex-1): one with no ID or date,
+    /// or a status kind a later version wrote. They do not make the fetch incomplete: no later fetch could read them.
+    private(set) var lastFetchUnreadable = 0
 
     /// Highest metadata revision successfully submitted this session, per event.
     ///
@@ -1118,8 +1123,10 @@ final class CloudExfiltrator: ObservableObject {
             // 59): the record that proves WHEN protection stopped is the one that must land;
             // the push is a courtesy on top. Its failure — most likely the type not yet
             // deployed to Production — is logged and reported (`alerted`), never counted against the
-            // audit record, whose sync state stays truthful; the pending sweep stands in for it
-            // (item 187's deepseek-5).
+            // audit record, whose sync state stays truthful. The pending sweep stands in for a late
+            // disarm's (item 187's deepseek-5); a live disarm's signal that fails here is not sent
+            // again, though its record still reaches the other devices at their next pull (item 242's A9,
+            // for 1.14).
             // `disarmSignal` false: a late disarm the pending sweep does not alert for (item 74 line 9).
             guard disarmSignal, Self.disarmSignalWanted(kind: kind) else { return StatePush(landed: true, alerted: false) }
             let signal = Self.makeDisarmSignalRecord(event, deviceName: DeviceInfo.name)
@@ -1261,7 +1268,10 @@ final class CloudExfiltrator: ObservableObject {
     nonisolated static func event(from record: CKRecord) -> Event? {
         guard let idString = customField("eventID", of: record) as? String,
               let id = UUID(uuidString: idString),
-              let rawStart = customField("startDate", of: record) as? Date
+              let rawStart = customField("startDate", of: record) as? Date,
+              // Not a number is not a date (item 243's fable-3): the clamp let it through, and the log, written whole,
+              // could not save with it. Unread, it counts among the records this version cannot read.
+              rawStart.timeIntervalSinceReferenceDate.isFinite
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
 
@@ -1432,6 +1442,7 @@ final class CloudExfiltrator: ObservableObject {
         guard let idString = customField("eventID", of: record) as? String,
               let id = UUID(uuidString: idString),
               let rawStart = customField("startDate", of: record) as? Date,
+              rawStart.timeIntervalSinceReferenceDate.isFinite,   // not a number is not a date (item 243's fable-3)
               let kind = customField("kind", of: record) as? String,
               // Allow-list (34 review, validation): an unknown kind — a future build's new
               // state, or a corrupted field — must be dropped, not rendered. It used to fall
@@ -1453,6 +1464,7 @@ final class CloudExfiltrator: ObservableObject {
                 || Event.signedRecordsGone(kind: kind) != nil   // item 182
                 || kind == Event.signaturesMissingKind   // item 190's A3
                 || Event.setAsideDeleted(kind: kind) != nil   // item 234
+                || Event.iCloudMediaPurged(kind: kind) != nil   // item 235's A10
         else { return nil }
         let start = clampedStartDate(rawStart, recordCreated: record.creationDate, now: Date())
         return Event(id: id, startDate: start, endDate: start,
@@ -1460,6 +1472,37 @@ final class CloudExfiltrator: ObservableObject {
                      cloudSyncState: .synced,
                      stateChange: kind,
                      sourceDevice: sanitizedDeviceName(customField("deviceName", of: record) as? String))
+    }
+
+    /// One fetch's own result (item 241's A1, Codex-1): the records it read and may merge, whether it reached iCloud and
+    /// ran every query to the end, and how many records it found and could not read (item 227's Codex-1). Two fetches can
+    /// overlap (a push's pull while the launch's restore runs), and the shared fields above hold whichever ended last: a
+    /// fetch's caller takes this, its own call's.
+    struct FetchResult: Sendable {
+        var events: [Event]
+        var complete: Bool
+        var unreadable: Int
+
+        /// A fetch that read nothing: no account lease, no database, or the account changed while it ran.
+        static let readNothing = FetchResult(events: [], complete: false, unreadable: 0)
+    }
+
+    /// `fetchRecentEventsReporting`'s records alone, for a caller that needs no more.
+    func fetchRecentEvents(limit: Int = fetchPageSize) async -> [Event] {
+        await fetchRecentEventsReporting(limit: limit).events
+    }
+
+    /// The fetch below, with its own result (item 241's A1). The shared fields show it from its start (not complete,
+    /// failed) and take its result at its end, every way out, for their readers that run straight after.
+    func fetchRecentEventsReporting(limit: Int = fetchPageSize) async -> FetchResult {
+        lastFetchComplete = false
+        lastFetchFailed = true
+        lastFetchUnreadable = 0
+        let result = await fetchRecentEventsResult(limit: limit)
+        lastFetchComplete = result.complete
+        lastFetchFailed = !result.complete
+        lastFetchUnreadable = result.unreadable
+        return result
     }
 
     /// Pulls recent evidence **and** the arm/disarm audit trail out of the owner's private
@@ -1484,15 +1527,13 @@ final class CloudExfiltrator: ObservableObject {
     /// query is isolated below: a missing index on one type must not take the others down
     /// with it, and during the migration the 1.0 types are exactly the ones most likely to be
     /// missing from a freshly-deployed container.
-    func fetchRecentEvents(limit: Int = fetchPageSize) async -> [Event] {
-        lastFetchComplete = false
-        lastFetchFailed = true
+    private func fetchRecentEventsResult(limit: Int) async -> FetchResult {
         #if DEBUG
         let heldByATest = readSubmitForTesting != nil
         #else
         let heldByATest = false
         #endif
-        guard let lease = await acquireCloudLease(), heldByATest || database != nil else { return [] }
+        guard let lease = await acquireCloudLease(), heldByATest || database != nil else { return .readNothing }
         let metaV2 = await fetch(Self.metaRecordTypeV2,
                                  limit: limit, lease: lease, decode: Self.event(from:))
         let metaV1 = await fetch(Self.metaRecordType,
@@ -1501,26 +1542,20 @@ final class CloudExfiltrator: ObservableObject {
                                   limit: limit, lease: lease, decode: Self.stateEvent(from:))
         let stateV1 = await fetch(Self.stateRecordType,
                                   limit: limit, lease: lease, decode: Self.stateEvent(from:))
-        guard enrollment.isCurrent(lease) else { lastFetchFailed = true; return [] }
-        lastFetchFailed = [metaV2, metaV1, stateV2, stateV1].contains { !$0.ok }
-        lastFetchComplete = !lastFetchFailed
+        guard enrollment.isCurrent(lease) else { return .readNothing }
+        let failed = [metaV2, metaV1, stateV2, stateV1].contains { !$0.ok }
+        let unreadable = [metaV2, metaV1, stateV2, stateV1].reduce(0) { $0 + $1.unreadable }   // item 227's Codex-1
         let evidence = metaV2.events + metaV1.events
         let stateChanges = stateV2.events + stateV1.events
         Log.cloud.info("Fetched \(evidence.count, privacy: .public) event(s) + \(stateChanges.count, privacy: .public) state record(s)")
         let events = evidence + stateChanges
         guard enrollment.registerRemoteEvents(events, lease: lease) else {
-            lastFetchComplete = false
-            lastFetchFailed = true
-            return []
+            return FetchResult(events: [], complete: false, unreadable: unreadable)
         }
         let permitted = events.filter { enrollment.authorizeRecord($0.id, lease: lease) }
-        if permitted.count != events.count {
-            // An ID already belonging to another account (or unbound local evidence) is
-            // not permission to replace its metadata during restore.
-            lastFetchFailed = true
-            lastFetchComplete = false
-        }
-        return permitted
+        // An ID already belonging to another account (or unbound local evidence) is
+        // not permission to replace its metadata during restore: such a fetch is not complete.
+        return FetchResult(events: permitted, complete: !failed && permitted.count == events.count, unreadable: unreadable)
     }
 
     /// How many records to ask for per round trip. Paging is bounded rather than unbounded so a
@@ -1545,12 +1580,13 @@ final class CloudExfiltrator: ObservableObject {
     private func fetch(_ recordType: String,
                        limit: Int,
                        lease: CloudEnrollment.Lease,
-                       decode: (CKRecord) -> Event?) async -> (events: [Event], ok: Bool) {
-        guard enrollment.isCurrent(lease) else { return ([], false) }
+                       decode: (CKRecord) -> Event?) async -> (events: [Event], ok: Bool, unreadable: Int) {
+        guard enrollment.isCurrent(lease) else { return ([], false, 0) }
         let query = CKQuery(recordType: recordType, predicate: NSPredicate(value: true))
         query.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         var out: [Event] = []
         var sawRecordFailure = false
+        var unreadable = 0   // records it found and could not read (item 227's Codex-1)
         var cursor: CKQueryOperation.Cursor?
         do {
             // Follow the cursor. A single `records(matching:)` returns one page and hands back a
@@ -1563,21 +1599,21 @@ final class CloudExfiltrator: ObservableObject {
                 let (matches, next) = try await queryPage(query, from: cursor, lease: lease)
                 try requireCurrent(lease)
                 sawRecordFailure = sawRecordFailure || Self.queryPageSawFailure(matches)
-                out += matches.compactMap { _, result -> Event? in
-                    guard case .success(let record) = result else { return nil }
-                    return decode(record)
+                for (_, result) in matches {
+                    guard case .success(let record) = result else { continue }   // counted in `sawRecordFailure`
+                    if let event = decode(record) { out.append(event) } else { unreadable += 1 }
                 }
                 cursor = next
             } while cursor != nil && out.count < limit
             if sawRecordFailure {
                 Log.cloud.error("Fetch of \(recordType, privacy: .public): per-record failure(s) in the results — reporting the fetch incomplete")
             }
-            return (out, !sawRecordFailure)
+            return (out, !sawRecordFailure, unreadable)
         } catch {
             Log.cloud.error("Fetch of \(recordType, privacy: .public) failed after \(out.count, privacy: .public) record(s): \(Log.ref(error), privacy: .public) \(error, privacy: .private)")
             // Partial results are kept: half a restore is worth more than none, and the `false`
             // tells the push path to report `.failed` so iOS knows to try again.
-            return enrollment.isCurrent(lease) ? (out, false) : ([], false)
+            return enrollment.isCurrent(lease) ? (out, false, unreadable) : ([], false, 0)
         }
     }
 

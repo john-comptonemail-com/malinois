@@ -25,7 +25,7 @@ struct ContentView: View {
                 Text(status.detail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                ForEach(status.lines, id: \.self) { line in
+                ForEach(status.lines, id: \.self) { @Sendable line in
                     Text(line)
                         .font(.caption2)
                 }

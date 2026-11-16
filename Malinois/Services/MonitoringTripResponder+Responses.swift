@@ -62,6 +62,13 @@ extension MonitoringTripResponder {
         return (current + added).sorted { $0.rawValue < $1.rawValue }
     }
 
+    /// The Vision reference still an event takes (item 239, ADR 0081): the one `take` hands over, asked for only when
+    /// Vision is among the tripwires the event records.
+    nonisolated static func visionReferenceStill(for triggered: [SensorType],
+                                                 take: () -> VisionStill?) -> VisionStill? {
+        triggered.contains(.vision) ? take() : nil
+    }
+
     /// Pure (unit-tested): whether a cadence capture (blackout / flood) may use the camera
     /// right now. The trigger response owns the pipeline outright (34.H10; ADR 0003), and
     /// cadence captures also exclude EACH OTHER — a blackout escalating during a flood is
@@ -506,10 +513,19 @@ extension MonitoringTripResponder {
             sustainedCount: sustained ? 1 : nil,
             wrongPINCount: wrongPIN ? 1 : nil,
             thermalState: MonitoringEngine.thermalStateName(thermalState()))   // item 38, choice 3
+        // A slow Vision trip's record is born naming the still of the view the slow check compared against, and its
+        // time, so every copy of the record carries them; the store saves the file once the record is in the log
+        // (item 239, ADR 0081's decision 3).
+        let reference = Self.visionReferenceStill(for: triggeredSensors) { host?.tripTakeVisionReferenceStill() }
+        if let reference {
+            event.visionReferenceFilename = UUID().uuidString + ".jpg"
+            event.visionReferenceTakenAt = reference.takenAt
+        }
         cloudCoordinator.registerLocalEvent(event)
         beginBindingUse(event.id)   // through the capture, until the upload has it (codex-6 on 0ed887f)
         defer { endBindingUse(event.id) }
         eventStore.add(event)
+        if let reference { eventStore.saveVisionReference(reference.jpeg, for: event) }
         host?.tripPublishEventCount(eventStore.events.count)
         // Captured during the owner's disarm flow (from the hold press-down through PIN
         // entry): remember it, so a successful PIN can retroactively attribute it to the

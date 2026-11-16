@@ -93,20 +93,24 @@ struct EventLogView: View {
         // What Deletes of set-aside logs left to tell (item 227's DS-5): first in the list, each until the owner
         // dismisses it, and shown even with nothing else to list.
         let deleteNotices = eventStore.setAsideDeletionsToTell
+        // How the last pull from iCloud went (item 227's Codex-1; the owner's W7 and W8), at the very top: a list the owner
+        // can pull down to try again, even with nothing else to list.
+        let pullNotices = engine.cloudRestoreInProgress ? [] : engine.lastCloudPull?.logLines ?? []
         return Group {
-            if eventStore.events.isEmpty && eventStore.setAsideLogs.isEmpty && deleteNotices.isEmpty {
+            if eventStore.events.isEmpty && eventStore.setAsideLogs.isEmpty && deleteNotices.isEmpty && pullNotices.isEmpty {
                 ContentUnavailableView("No events",
                                        systemImage: "checkmark.shield",
                                        description: Text("No tamper events have been recorded."))
             } else {
                 List {
-                    ForEach(deleteNotices, id: \.self) { outcome in
+                    MainActorForEach(pullNotices, id: \.self) { line in pullNoticeRow(line) }
+                    MainActorForEach(deleteNotices, id: \.self) { outcome in
                         if let notice = SetAsideLogWords.deleteNotice(for: outcome) { deleteNoticeRow(notice, of: outcome) }
                     }
                     // Each set-aside log at the top (item 122), read only on its own screen; the fresh log may be empty.
                     if !eventStore.setAsideLogs.isEmpty {
                         Section {
-                            ForEach(eventStore.setAsideLogs) { setAside in
+                            MainActorForEach(eventStore.setAsideLogs) { setAside in
                                 NavigationLink {
                                     SetAsideLogView(log: setAside)
                                 } label: {
@@ -128,7 +132,7 @@ struct EventLogView: View {
                             freeTierBanner
                         }
                     }
-                    ForEach(eventStore.events) { event in
+                    MainActorForEach(eventStore.events) { event in
                         NavigationLink {
                             EventDetailView(event: event)
                         } label: {
@@ -152,6 +156,15 @@ struct EventLogView: View {
     /// What a Delete of a set-aside log left to tell (item 227's DS-5): that its photos and clips may still be on the
     /// phone, or that nothing was deleted. Delete's screen leaves for this one, so it is said here, and it stays until
     /// the owner presses OK: leaving the Event Log does not dismiss it, so however the screens close it is not lost.
+    /// One line of how the last pull from iCloud went (item 227's Codex-1).
+    private func pullNoticeRow(_ line: String) -> some View {
+        Label(line, systemImage: "icloud.slash")
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .reportedOnScreen(line)
+            .listRowSeparator(.hidden)
+    }
+
     private func deleteNoticeRow(_ notice: SetAsideLogWords.DeleteNotice, of outcome: SetAsideLogDeletion) -> some View {
         let dismissed: @MainActor () -> Void = { eventStore.setAsideDeletionWasTold(outcome) }
         return VStack(alignment: .leading, spacing: 4) {
@@ -218,7 +231,7 @@ struct EventLogView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
-            ForEach(summary.reasons, id: \.self) { reason in
+            ForEach(summary.reasons, id: \.self) { @Sendable reason in
                 Text(reason.explanation).font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -334,6 +347,7 @@ struct EventRow: View {
     static func summaryLineLimit(for event: Event) -> Int? {
         if isAlarm(event) { return nil }
         if event.stateChange.flatMap(Event.setAsideDeleted(kind:)) != nil { return nil }   // item 234
+        if event.stateChange.flatMap(Event.iCloudMediaPurged(kind:)) != nil { return nil }   // item 235's A10
         return 1
     }
 
@@ -391,7 +405,8 @@ struct EventRow: View {
         case let kind? where Event.clockChangeSeconds(kind: kind) != nil: return "clock.badge.exclamationmark"   // item 113
         case let kind? where Event.resumedSeconds(kind: kind) != nil: return "eye"   // item 153's MAL-06
         case let kind? where Event.sirenElsewhereDevice(kind: kind) != nil: return "headphones"   // 1.8.2's step 26
-        case let kind? where Event.setAsideDeleted(kind: kind) != nil: return "trash"   // item 234
+        case let kind? where Event.setAsideDeleted(kind: kind) != nil || Event.iCloudMediaPurged(kind: kind) != nil:
+            return "trash"   // item 234; "Free up iCloud space...", item 235's A10
         case let kind? where Event.signedRecordsGone(kind: kind) != nil || kind == Event.signaturesMissingKind:
             return "exclamationmark.triangle.fill"   // items 182 and 190, in red
         default:         return "camera.metering.none"

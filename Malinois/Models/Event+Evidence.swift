@@ -16,6 +16,7 @@ extension Event {
         "id": "the statement names the record by it",
         "mediaFilename": "a file name on this phone; the attachment covers the file itself",
         "secondaryMediaFilename": "a file name on this phone; the attachment covers the file itself",
+        "visionReferenceFilename": "a file name on this phone; the attachment covers the file itself",
         "thumbnailData": "covered by its attachment's hash",
         "motionTrace": "covered by its attachment's hash",
         "audioTrace": "covered by its attachment's hash",
@@ -28,11 +29,14 @@ extension Event {
         "receiptEpoch": "upload bookkeeping, kept on this phone only",
         "keptLocal": "whether the record may upload, not what it records",
         "cloudMediaManifest": "another device's list of its uploads, on its copies only",
+        "thumbnailCameraUnknown": "a label for the screen on this phone's copies, of a thumbnail its attachment covers",
     ]
 
-    /// The record's facts, in their fixed order, every one always present (null when the record has no value). Times
-    /// and lengths are whole milliseconds, null when none can hold them (a damaged log's); a flag the record leaves
-    /// unset is false, as the app reads it.
+    /// The record's facts, in their fixed order, every one always present (null when the record has no value), but the
+    /// last: the time of a slow Vision trip's still, `visionReferenceTakenAt`, only in a record with one (item 239, ADR
+    /// 0081's decision 4), so that no record without one changes, and none is signed again for it. Times and lengths are
+    /// whole milliseconds, null when none can hold them (a damaged log's); a flag the record leaves unset is false, as
+    /// the app reads it.
     var evidenceFacts: [EvidenceJSON.Member] {
         func text(_ value: String?) -> EvidenceJSON { value.map(EvidenceJSON.string) ?? .null }
         func number(_ value: Int?) -> EvidenceJSON { value.map { EvidenceJSON.int(Int64($0)) } ?? .null }
@@ -44,7 +48,7 @@ extension Event {
         let failures = (captureFailuresByCamera ?? [:])
             .sorted { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) }
             .map { EvidenceJSON.Member($0.key, .string($0.value)) }
-        return [
+        var facts = [
             EvidenceJSON.Member("startDate", time(startDate)),
             EvidenceJSON.Member("endDate", time(endDate)),
             EvidenceJSON.Member("triggeredSensors", .array(triggeredSensors.map { EvidenceJSON.string($0.rawValue) })),
@@ -65,14 +69,19 @@ extension Event {
             EvidenceJSON.Member("secondaryDuration", length(secondaryDuration)),
             EvidenceJSON.Member("mediaDiscarded", .bool(mediaDiscarded == true)),
         ]
+        if let taken = visionReferenceTakenAt { facts.append(EvidenceJSON.Member("visionReferenceTakenAt", time(taken))) }
+        return facts
     }
 
     /// The record's attachments, in their fixed order: its photo or clip files (`primary`, `secondary`: their digests,
-    /// which the caller reads, knowing where the files are), the thumbnail, and each sensor trace with samples.
-    func evidenceAttachments(primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?) -> [EvidenceForm.Attachment] {
+    /// which the caller reads, knowing where the files are), the Vision reference still (`visionReference`, item 239),
+    /// the thumbnail, and each sensor trace with samples.
+    func evidenceAttachments(primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?,
+                             visionReference: EvidenceForm.Digest? = nil) -> [EvidenceForm.Attachment] {
         var attachments: [EvidenceForm.Attachment] = []
         if let primary { attachments.append(EvidenceForm.Attachment(name: "primary", digest: primary)) }
         if let secondary { attachments.append(EvidenceForm.Attachment(name: "secondary", digest: secondary)) }
+        if let visionReference { attachments.append(EvidenceForm.Attachment(name: "visionReference", digest: visionReference)) }
         if let thumbnailData {
             attachments.append(EvidenceForm.Attachment(name: "thumbnail", digest: EvidenceHash.digest(of: thumbnailData)))
         }
@@ -86,10 +95,12 @@ extension Event {
     /// One revision of the record, ready to sign: its `revision` number, the phone's clock at signing, and the app's
     /// version and build ("1.10 (81)").
     func evidenceRecord(revision: Int64, signedAt: Date, app: String,
-                        primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?) -> EvidenceForm.Record {
+                        primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?,
+                        visionReference: EvidenceForm.Digest? = nil) -> EvidenceForm.Record {
         // The phone's clock now is always a whole number of milliseconds since 1970 well inside the range.
         EvidenceForm.Record(id: id, revision: revision, signedAt: EvidenceForm.milliseconds(since1970: signedAt) ?? 0, app: app,
-                            facts: evidenceFacts, attachments: evidenceAttachments(primary: primary, secondary: secondary))
+                            facts: evidenceFacts,
+                            attachments: evidenceAttachments(primary: primary, secondary: secondary, visionReference: visionReference))
     }
 }
 

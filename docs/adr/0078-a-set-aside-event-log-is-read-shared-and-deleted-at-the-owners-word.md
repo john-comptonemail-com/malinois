@@ -9,7 +9,11 @@
   Decision 3 puts the Malinois PIN in front of Delete, and decision 2's README says which photos and clips the ZIP has,
   since the same day (the owner: "as you recommend, wording approved", BACKLOG item 232, the second full review), also
   before it. Decision 7, the status entry a Delete leaves, added the same day (the owner: "1", "wording approved
-  also", BACKLOG item 234, the third full review), also before it.
+  also", BACKLOG item 234, the third full review), also before it. Decision 7's first limit (the moment between the
+  delete and its entry) superseded in 1.13 by ADR 0083: the Delete writes a note first, and the entry is never lost.
+  Decision 5's "and has no notice", for an event log that is a folder or a link, superseded in 1.13 by ADR 0085: Home says
+  so at that launch. Decision 2's photos and clips, and its README's first sentence, superseded in 1.13 by ADR 0087: Share
+  leaves out every photo and clip the current log names.
 - **Date:** 2026-11-07
 - **Summary:** A set-aside event log is read record by record and listed at the top of the Event Log, on a screen of its own that
   shows what could be read, read only. Nothing read from it goes back into the log. Share sends the file as the phone kept it, with
@@ -69,7 +73,8 @@ of a set-aside log are such records: that statement stays true only if they stay
    release: BACKLOG item 218, Codex's look at all of 1.12). The list, the screen's reading, Share and Delete take neither a
    folder nor a link under a set-aside log's name or a photo's, and nothing through a media folder that is a link; the search
    for the photos a set-aside log may name opens plain files only. Only an edited backup restored to the phone can put such
-   things there. A folder or a link named like a set-aside log is not listed and has no notice; its name still holds the
+   things there. A folder or a link named like a set-aside log is not listed and has no notice (since 1.13 an event log
+   set aside as one is said on Home at that launch: ADR 0085); its name still holds the
    media sweep and the removals behind the limits, so that nothing is deleted on its account. Bytes after the list's end
    count as one unreadable part.
 6. **Its screens say what the file recorded of iCloud, never what iCloud has now, and Delete tells the owner what it did** (added
@@ -107,7 +112,8 @@ of a set-aside log are such records: that statement stays true only if they stay
    store's delete has returned: if Malinois is stopped between the file's removal and the entry's write, the time
    the store takes to find and remove the log's photos (well under a second for an ordinary log, longer for a very
    large one), the log is gone and no entry is written; closing that takes a note kept before the delete and an
-   entry owed at the next launch, which is BACKLOG item 234's A11, for the owner's ruling. And photos a Delete left
+   entry owed at the next launch, which is BACKLOG item 234's A11, for the owner's ruling (done in 1.13: ADR 0083).
+   And photos a Delete left
    that no record names are cleared by the launch's sweep once no set-aside log is kept, as the confirmation says,
    with no entry of their own.
 
@@ -130,5 +136,5 @@ plain files in a real media folder (decision 5).
   screen of a set-aside log says what iCloud has now.
 - A Delete leaves a record that it happened and how much went with it: in the Event Log, signed with it, and on Pro in
   iCloud. Someone who has learned the PIN can still delete a set-aside log, and leaves that record, unless Malinois is
-  stopped in the moment between the delete and the entry (decision 7; to be closed in the release after 1.12, BACKLOG
-  item 235). The record stays until the log's limit for status entries removes it.
+  stopped in the moment between the delete and the entry (decision 7; closed in 1.13 by ADR 0083, BACKLOG item 235).
+  The record stays until the log's limit for status entries removes it.

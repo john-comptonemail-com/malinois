@@ -51,9 +51,9 @@ extension MonitoringCloudCoordinator {
         // the fetch, and the mirrored record landed only when the owner next opened the app
         // (item 65, finding 10). Wait for the answer — bounded, iOS's patience is finite.
         await awaitEntitlementResolution(bound: timing.pushResolveWait)
-        let added = await syncFromCloud()
-        return Self.pushResult(pro: entitlements.proActive,
-                               fetchFailed: cloud.lastFetchFailed, added: added)
+        // This pull's own result, not the shared fields another pull may have set meanwhile (item 241's A1).
+        let pull = await pullFromCloud(limit: CloudExfiltrator.fetchPageSize)
+        return Self.pushResult(pro: entitlements.proActive, fetchFailed: !pull.complete, added: pull.added)
     }
 
     /// Returns once the entitlement check has resolved, or after `bound` — whichever first.
@@ -297,29 +297,44 @@ extension MonitoringCloudCoordinator {
         let lease: CloudEnrollment.Lease?
         #if DEBUG
         if cloudFetchForTesting != nil, !requiresCloudLeaseForTesting { lease = nil } else {
-            guard let granted = await cloud.acquireCloudLease() else { return (0, false) }
+            guard let granted = await cloud.acquireCloudLease() else { return pullCouldNotStart() }
             lease = granted
         }
         #else
-        guard let granted = await cloud.acquireCloudLease() else { return (0, false) }
+        guard let granted = await cloud.acquireCloudLease() else { return pullCouldNotStart() }
         lease = granted
         #endif
         let fetch = await fetchFromCloud(limit: limit)
         if let lease, !cloud.enrollment.isCurrent(lease) { return (0, false) }
+        // How the pull went, for Home and the Event Log (item 227's Codex-1; the owner's D6 (a)): every pull's, the
+        // latest kept.
+        lastCloudPull = CloudPullOutcome(complete: fetch.complete, unreadable: fetch.unreadable)
         guard !fetch.events.isEmpty else { return (0, fetch.complete) }
         let added = eventStore.mergeFromCloud(fetch.events)
         if added > 0 { eventCount = eventStore.events.count }
         return (added, fetch.complete)
     }
 
-    /// iCloud's newest records and whether the fetch ran to the end, or, under the test seam,
-    /// the closure's.
-    private func fetchFromCloud(limit: Int) async -> (events: [Event], complete: Bool) {
+    /// A Pro pull whose account check failed (item 241's A1, Codex-1): with the account still verified, as a failure that
+    /// passes leaves it, the pull did not run to the end, and Home and the Event Log say so; an account that is not there,
+    /// or not this installation's, has lines of its own.
+    private func pullCouldNotStart() -> (added: Int, complete: Bool) {
+        if cloud.enrollment.verified { lastCloudPull = CloudPullOutcome(complete: false, unreadable: 0) }
+        return (0, false)
+    }
+
+    /// iCloud's newest records, whether the fetch ran to the end, and how many records it found and could not read (item
+    /// 227's Codex-1): this fetch's own, never another's that ran meanwhile (item 241's A1); or, under the test seam, the
+    /// closure's.
+    private func fetchFromCloud(limit: Int) async -> (events: [Event], complete: Bool, unreadable: Int) {
         #if DEBUG
-        if let fetch = cloudFetchForTesting { return await fetch(limit) }
+        if let fetch = cloudFetchForTesting {
+            let answer = await fetch(limit)
+            return (answer.events, answer.complete, cloudUnreadableForTesting)
+        }
         #endif
-        let events = await cloud.fetchRecentEvents(limit: limit)
-        return (events, cloud.lastFetchComplete)
+        let fetch = await cloud.fetchRecentEventsReporting(limit: limit)
+        return (fetch.events, fetch.complete, fetch.unreadable)
     }
 
     /// Where one downloaded capture belongs on the event — decided by IDENTITY (its
@@ -374,6 +389,9 @@ extension MonitoringCloudCoordinator {
         /// A capture came back that is not the one this phone signed for its record, and was not added (item 190's A4,
         /// its download half; item 192's step 2, the owner's "a"): the event's screen says so.
         var refused = false
+        /// A capture came back that does not fit within the size limit with the photos and clips this phone has, and was
+        /// not added: a download never removes others to make room (BACKLOG 233 (b)). The event's screen says so.
+        var noRoom = false
     }
 
     /// iCloud's full-media fetch for one event, or the test's stand-in.
@@ -517,6 +535,7 @@ extension MonitoringCloudCoordinator {
         var landed = false
         var keptAll = true   // every capture that came back is on the record, or one in its place was already (A2)
         var refused = false   // a capture came back that is not the one this phone signed (item 190's A4)
+        var noRoom = false    // a capture came back that does not fit within the size limit (BACKLOG 233 (b))
         captures: for item in fetch.media {
             // Skip known duplicates before copying bytes, but decide again after every await:
             // a cloud merge or another download may fill or name a slot while storage runs.
@@ -527,18 +546,19 @@ extension MonitoringCloudCoordinator {
             // keeps the capture, and otherwise it is removed (item 194's codex-1 on bdf51301, the owner's "a").
             defer { Self.discardStaged(staged.media) }
             if let lease, !cloud.enrollment.isCurrent(lease) {
-                return EvidenceDownload(landed: landed, complete: false, refused: refused)
+                return EvidenceDownload(landed: landed, complete: false, refused: refused, noRoom: noRoom)
             }
             switch await join(staged, camera: item.camera, slot: item.slot, to: id, lease: lease) {
             case .landed: landed = true
             case .refused: refused = true
+            case .noRoom: noRoom = true   // its slot was checked: not "try again for the rest"
             case .notKept: keptAll = false
             case .skipped: continue
             case .gone: break captures
-            case .stale: return EvidenceDownload(landed: landed, complete: false, refused: refused)
+            case .stale: return EvidenceDownload(landed: landed, complete: false, refused: refused, noRoom: noRoom)
             }
         }
-        return EvidenceDownload(landed: landed, complete: fetch.complete && keptAll, refused: refused)
+        return EvidenceDownload(landed: landed, complete: fetch.complete && keptAll, refused: refused, noRoom: noRoom)
     }
 
     /// Removes the private copy a clip was staged into (`stageDownloadedAsset`) when the store did not take it: a photo is
@@ -556,6 +576,8 @@ extension MonitoringCloudCoordinator {
         case landed
         /// Not the capture this phone signed for its slot: not added (item 190's A4).
         case refused
+        /// Does not fit within the size limit with the photos and clips this phone has: not added (BACKLOG 233 (b)).
+        case noRoom
         /// Not kept here: the signer could not tell what it signed, or the store failed; the rest is still to get.
         case notKept
         /// Not needed: its slot was filled meanwhile.
@@ -598,6 +620,14 @@ extension MonitoringCloudCoordinator {
         guard let stored = await eventStore.store(staged.media, ext: staged.ext) else { return .notKept }
         var joined = DownloadJoin.skipped
         defer { if joined != .landed { eventStore.discardUnattached(stored.filename) } }
+        // Room for it (BACKLOG 233 (b)), measured last: the placement and the adding below follow in the same turn of the
+        // main actor as the answer. Not known (captures kept being saved while the files were measured): it waits for
+        // another try, as an unchecked slot does.
+        let space = await room(for: stored.filename)
+        guard space != .notKnown else {
+            joined = .notKept
+            return joined
+        }
         if let lease, !cloud.enrollment.isCurrent(lease) {
             joined = .stale
             return joined
@@ -613,12 +643,26 @@ extension MonitoringCloudCoordinator {
                 joined = .refused
                 return joined
             }
+            // No room: not added, and nothing removed to make room (BACKLOG 233 (b)).
+            guard space == .fits else {
+                joined = .noRoom
+                return joined
+            }
             current.mediaFilename = stored.filename
-            if setLabel { current.primaryCamera = camera }
+            if setLabel {
+                // The place takes the file's camera; a thumbnail the record already had came with no camera named, so its
+                // camera is not known, and the screen names none over it once the file is gone (item 237).
+                if current.thumbnailData != nil { current.thumbnailCameraUnknown = true }
+                current.primaryCamera = camera
+            }
             if current.thumbnailData == nil { current.thumbnailData = stored.thumbnail }
         case .secondary(let setLabel):
             guard Self.mayFill("secondary", with: staged.digest, signed: signed) else {
                 joined = .refused
+                return joined
+            }
+            guard space == .fits else {
+                joined = .noRoom
                 return joined
             }
             current.secondaryMediaFilename = stored.filename
@@ -629,5 +673,27 @@ extension MonitoringCloudCoordinator {
         eventStore.update(current)
         joined = .landed
         return joined
+    }
+
+    /// Whether a downloaded file fits within the size limit (BACKLOG 233 (b)).
+    enum DownloadRoom: Equatable {
+        case fits
+        case noRoom
+        /// Captures kept being saved while the files were measured.
+        case notKnown
+    }
+
+    /// Whether the file `name` a download stored fits within the size limit with the photos and clips the log names, so
+    /// that a download never removes others to make room (BACKLOG 233 (b); the owner's D3 (a), 2026-11-12). Their sizes
+    /// are measured off the main actor, and measured again while a capture was saved during the measuring, so that the
+    /// answer holds for the turn of the main actor that adds the file; after three such changes in a row it is not known.
+    private func room(for name: String) async -> DownloadRoom {
+        let bytes = EventStore.mediaFileSize(named: name, in: eventStore.mediaDirectory)
+        for _ in 0..<3 {
+            let measured = await eventStore.measureStoredMedia()
+            guard measured.names == eventStore.storedMediaNamesNow else { continue }   // a capture saved meanwhile
+            return bytes <= eventStore.mediaBudget - measured.bytes ? .fits : .noRoom
+        }
+        return .notKnown
     }
 }

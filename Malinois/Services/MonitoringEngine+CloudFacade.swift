@@ -99,6 +99,11 @@ extension MonitoringEngine {
         set { cloudCoordinator.cloudFetchForTesting = newValue }
     }
 
+    var cloudUnreadableForTesting: Int {
+        get { cloudCoordinator.cloudUnreadableForTesting }
+        set { cloudCoordinator.cloudUnreadableForTesting = newValue }
+    }
+
     var beatSendForTesting: ((HeartbeatBeat) async -> Bool)? {
         get { cloudCoordinator.beatSendForTesting }
         set { cloudCoordinator.beatSendForTesting = newValue }

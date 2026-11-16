@@ -63,7 +63,7 @@ struct SetAsideLogView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     let inTheLog = Set(eventStore.events.map(\.id))
-                    ForEach(reading.records) { record in
+                    MainActorForEach(reading.records) { record in
                         let alsoInLog = inTheLog.contains(record.id)
                         NavigationLink {
                             EventDetailView(event: record, setAside: true)
@@ -135,7 +135,15 @@ struct SetAsideLogView: View {
         preparing = true
         let mediaDirectory = eventStore.mediaDirectory
         Task {
-            let zip = await Task.detached { [log] in try? SetAsideLogShare.zip(of: log, mediaDirectory: mediaDirectory) }.value
+            // Not a photo or clip the current log names, nor one a capture still being saved names (item 241's A4,
+            // gpt6-astra-r1 and -m1); no ZIP when what is being saved cannot be read.
+            guard let liveMedia = await eventStore.mediaSetAsideShareLeavesOut() else {
+                preparing = false
+                return
+            }
+            let zip = await Task.detached { [log] in
+                try? SetAsideLogShare.zip(of: log, mediaDirectory: mediaDirectory, liveMedia: liveMedia)
+            }.value
             preparing = false
             guard let zip else { return }
             sharedZIP = zip

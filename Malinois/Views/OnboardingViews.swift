@@ -32,6 +32,9 @@ enum OnboardingState {
     private static let guidedAccessBriefingKey = "com.malinois.onboarding.acknowledgedGuidedAccessBriefing"
     private static let voiceControlBriefingKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
     private static let sideButtonBriefingKey = "com.malinois.onboarding.acknowledgedSideButtonBriefing"
+    private static let firstSessionCardKey = "com.malinois.onboarding.firstSessionCardDismissed"
+    private static let noDeleteBriefingKey = "com.malinois.onboarding.acknowledgedNoDeleteBriefing"
+    private static let armedUnderGuidedAccessKey = "com.malinois.onboarding.hasArmedUnderGuidedAccess"
 
     static var hasSeenTrialWelcome: Bool {
         get { UserDefaults.standard.bool(forKey: welcomeKey) }
@@ -98,10 +101,38 @@ enum OnboardingState {
     /// choice, new installs only: `FirstArmBriefing.initialAcknowledged`). Stored values are kept.
     static func seedFirstArmBriefing() {
         let defaults = UserDefaults.standard
-        for key in [disarmBriefingKey, guidedAccessBriefingKey] {
+        for key in [disarmBriefingKey, guidedAccessBriefingKey, noDeleteBriefingKey] {   // item 240's D2: new installs only
             defaults.set(FirstArmBriefing.initialAcknowledged(stored: defaults.object(forKey: key) as? Bool,
                                                               hasArmedOnce: hasArmedOnce), forKey: key)
         }
+    }
+
+    /// The same for the "No one can delete an entry" part (item 240's D2 (a)), seeded with the disarm part's rule, so
+    /// only a new install sees it.
+    static var acknowledgedNoDeleteBriefing: Bool {
+        get { UserDefaults.standard.bool(forKey: noDeleteBriefingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: noDeleteBriefingKey) }
+    }
+
+    /// Whether an armed session has gone live under Guided Access on this install (item 240's D3): after it, the arming
+    /// screen folds its setup steps into one line. Cleared with the app.
+    static var hasArmedUnderGuidedAccess: Bool {
+        get { UserDefaults.standard.bool(forKey: armedUnderGuidedAccessKey) }
+        set { UserDefaults.standard.set(newValue, forKey: armedUnderGuidedAccessKey) }
+    }
+
+    /// Home's card after the first disarm was dismissed (item 240's D1): seeded at launch, so an install that armed
+    /// before this build never sees it; cleared with the app.
+    static var firstSessionCardDismissed: Bool {
+        get { UserDefaults.standard.bool(forKey: firstSessionCardKey) }
+        set { UserDefaults.standard.set(newValue, forKey: firstSessionCardKey) }
+    }
+
+    /// Writes the card's starting value once, at launch (`FirstSessionCard.initialDismissed`). A stored value is kept.
+    static func seedFirstSessionCard() {
+        let defaults = UserDefaults.standard
+        let stored = defaults.object(forKey: firstSessionCardKey) as? Bool
+        defaults.set(FirstSessionCard.initialDismissed(stored: stored, hasArmedOnce: hasArmedOnce), forKey: firstSessionCardKey)
     }
 
     /// Writes `hasDisarmedOnce`'s starting value once, at launch, before anything can arm: a new
@@ -124,6 +155,94 @@ enum OnboardingState {
                                             guidedAccessOn: Bool,
                                             alreadySeen: Bool) -> Bool {
         completedASession && !guidedAccessOn && !alreadySeen
+    }
+}
+
+// MARK: - Welcome (item 240)
+
+/// The first screen of an install with no PIN, and what a launch shows (BACKLOG items 221 and 240;
+/// docs/design/onboarding.md, APPROVED 2026-11-12). Its words are approved text: the App Store description's first
+/// sentence and SECURITY.md's own-device sentence. "See it work" opens Test sensors before any PIN exists: with no PIN
+/// there is nothing to hide, and a reinstall still has its PIN, so an owner's phone never comes back here (PIN
+/// continuity); once a PIN exists, Test sensors asks for it on Home as before.
+enum Welcome {
+    static let summary = "Malinois detects when someone handles your unattended iPhone, even someone who knows your iPhone passcode."
+    static let ownDevice = "Use Malinois only on your own device. It is intended to help you notice and record someone handling your unattended phone, not to monitor other people without their knowledge."
+    static let seeItWork = "See it work"
+    static let setAPIN = "Set a PIN"
+
+    /// What a launch shows.
+    enum LaunchScreen: Equatable { case pinStorageUnavailable, recovery, welcome, pinSetup, app }
+
+    /// Pure (unit-tested): in RootView's order. A PIN store that cannot be read yet, while disarmed, says so; a
+    /// recovery owed (a reinstall that still has its PIN, or evidence without one) comes next; an install with no PIN
+    /// opens on the welcome screen, and its "Set a PIN" leads to setup; otherwise the app.
+    static func launchScreen(pinUnresolved: Bool, disarmed: Bool, recovery: Bool, needsPINSetup: Bool,
+                             pinSetupChosen: Bool) -> LaunchScreen {
+        if pinUnresolved, disarmed { return .pinStorageUnavailable }
+        if recovery { return .recovery }
+        if needsPINSetup { return pinSetupChosen ? .pinSetup : .welcome }
+        return .app
+    }
+}
+
+/// Home's card after the owner's first disarm (item 240's D1 (a), the owner's words of 2026-11-12): it leads to the
+/// Event Log through the usual PIN or face gate, and either button removes it for good.
+enum FirstSessionCard {
+    static let text = "Your first armed session is over. The Event Log has what it recorded."
+    static let openLog = "Open the Event Log"
+    static let notNow = "Not now"
+
+    /// Pure (unit-tested): after the first disarm, until dismissed.
+    static func shows(hasDisarmedOnce: Bool, dismissed: Bool) -> Bool { hasDisarmedOnce && !dismissed }
+
+    /// Pure (unit-tested): the starting value, written once when this build first runs. A stored value always wins;
+    /// without one, an install that has armed before starts dismissed, so only a new install sees the card.
+    static func initialDismissed(stored: Bool?, hasArmedOnce: Bool) -> Bool { stored ?? hasArmedOnce }
+}
+
+/// The welcome screen (item 240): what Malinois does, whose device it is for, and two ways on.
+struct WelcomeView: View {
+    var onSeeItWork: () -> Void
+    var onSetAPIN: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                Image("MalinoisEmblem")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 118)
+                    .accessibilityHidden(true)
+                Text(Welcome.summary)
+                    .font(.title3.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .reportedOnScreen(Welcome.summary)
+                Text(Welcome.ownDevice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .reportedOnScreen(Welcome.ownDevice)
+                // Each button reports its action, for a test to press (item 240): the same closure the button runs.
+                VStack(spacing: 12) {
+                    Button(action: onSeeItWork) {
+                        Text(Welcome.seeItWork).frame(maxWidth: 260)
+                    }
+                    .buttonStyle(.bordered)
+                    .reportedAction(Welcome.seeItWork) { onSeeItWork() }
+                    Button(action: onSetAPIN) {
+                        Text(Welcome.setAPIN).frame(maxWidth: 260)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .reportedAction(Welcome.setAPIN) { onSetAPIN() }
+                }
+                .padding(.top, 8)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
     }
 }
 
@@ -245,7 +364,7 @@ struct TrialWelcomeView: View {
             Label(title, systemImage: icon)
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(tint)
-            ForEach(rows, id: \.1) { row in
+            MainActorForEach(rows, id: \.1) { row in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: row.0)
                         .font(.body)
@@ -268,6 +387,10 @@ struct TrialWelcomeView: View {
 
 /// Shown once, after the first armed session that ran without Guided Access.
 struct GuidedAccessPromptView: View {
+    /// Its passcode step; "the armed session" for "the watch" (item 240; the owner, 2026-11-12: "(a), (i), 1 to 4
+    /// approved").
+    static let passcodeStep = "Guided Access → Passcode Settings → set a passcode. Make it **different** from your device passcode, and turn off the Face ID (or Touch ID) switch there, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the armed session."
+
     var onDismiss: () -> Void
 
     /// What the screen says a session without Guided Access risked (item 140 pins its words).
@@ -312,7 +435,7 @@ struct GuidedAccessPromptView: View {
                     Text("Set it up once - about a minute")
                         .font(.subheadline.weight(.bold))
                     step(1, "Settings → Accessibility → Guided Access → turn it on.")
-                    step(2, "Guided Access → Passcode Settings → set a passcode. Make it **different** from your device passcode, and turn off the Face ID (or Touch ID) switch there, so someone who knows your unlock code can't end Guided Access. A forced restart still ends the watch.")
+                    step(2, Self.passcodeStep)
                     step(3, "Then whenever you arm Malinois: tap ARM first, and on the arming screen triple-click the side button and tap Start.")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

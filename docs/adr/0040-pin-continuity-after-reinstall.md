@@ -46,9 +46,11 @@ versions retain their prior behavior. Real reinstall/authentication checks remai
 Simulator tests cannot establish the OS's uninstall or biometric behavior.
 
 Amended for 1.8.1: a recognised reinstall (a surviving PIN, no setup marker, no earlier
-local evidence) leaves one status entry in the new log, "Malinois was reinstalled on this
-iPhone: the log it kept before is gone". It is written at the first successful iCloud
-verification, tied to that account so that with Pro and iCloud backup on it uploads, or at
+local evidence) leaves one status entry in the new log, "Malinois was reinstalled: its
+earlier event log was deleted with the app" (the owner's words since 1.13; until then
+"Malinois was reinstalled on this iPhone: the log it kept before is gone"). It is written
+at the first successful iCloud verification, tied to that account so that with Pro and
+iCloud backup on it uploads, or at
 the first watch if that comes first, when it is tied to no account and stays on the phone.
 A damaged credential leaves none. It raises no alert, and the recovery screens are unchanged.
 

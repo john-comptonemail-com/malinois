@@ -572,7 +572,8 @@ actor EvidenceSigner {
             if lastSeen[event.id] == event { continue }
             guard let files = mediaDigests(for: event) else { continue }   // a file there but unreadable now: next write
             let facts = event.evidenceFacts
-            let attachments = event.evidenceAttachments(primary: files.primary, secondary: files.secondary)
+            let attachments = event.evidenceAttachments(primary: files.primary, secondary: files.secondary,
+                                                        visionReference: files.visionReference)
             let content = Self.content(id: event.id, facts: facts, attachments: attachments)
             if records[event.id]?.content == content {
                 lastSeen[event.id] = event
@@ -1158,11 +1159,12 @@ actor EvidenceSigner {
 
     // MARK: - Helpers
 
-    /// The digests of a record's photo or clip files: a file no longer on the phone is left out; nil when one is there
-    /// but cannot be read now (the record waits for a later write).
-    private func mediaDigests(for event: Event) -> (primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?)? {
+    /// The digests of a record's photo or clip files and of its Vision reference still (item 239): a file no longer on
+    /// the phone is left out; nil when one is there but cannot be read now (the record waits for a later write).
+    private func mediaDigests(for event: Event)
+        -> (primary: EvidenceForm.Digest?, secondary: EvidenceForm.Digest?, visionReference: EvidenceForm.Digest?)? {
         var found: [EvidenceForm.Digest?] = []
-        for name in [event.mediaFilename, event.secondaryMediaFilename] {
+        for name in [event.mediaFilename, event.secondaryMediaFilename, event.visionReferenceFilename] {
             guard let name, let url = Self.mediaFile(named: name, in: mediaDirectory) else {
                 found.append(nil)
                 continue
@@ -1183,7 +1185,7 @@ actor EvidenceSigner {
             digests[name] = (size, modified, digest)
             found.append(digest)
         }
-        return (found[0], found[1])
+        return (found[0], found[1], found[2])
     }
 
     /// The file a record's photo or clip names, when the name is a plain one in the media folder: the file the signer

@@ -10,6 +10,13 @@ import StoreKit
 import SwiftUI
 
 struct HomeView: View {
+    /// A status row's dot (item 240).
+    enum StatusDot: Equatable { case ready, warning, neutral }
+
+    /// Pure (unit-tested): Guided Access's row. Off is neutral, not a warning (item 221's ruling 3): Guided Access is
+    /// started on the arming screen, so off is the normal state at Home, and the arming screen says what it is for.
+    static func guidedAccessDot(enabled: Bool) -> StatusDot { enabled ? .ready : .neutral }
+
     /// Home's orange line while what this installation records stays on this iPhone until it verifies iCloud access:
     /// before its first verification, or after another account was seen (item 140 pins its words).
     /// Said when the crash-loop guard declined an automatic re-arm (fable-3 on Fable's review of 75; item 132).
@@ -89,6 +96,15 @@ struct HomeView: View {
     static let logNotice = "New events aren't being saved to this device - storage may be full. Anything already uploaded to iCloud is unaffected."
     /// Home's notice while the journal's appends fail and the log is still saving (item 73).
     static let journalNotice = "Recent events may not survive a crash - the event journal can't be written. The log itself is saving normally."
+    /// Home's line at the launch that set aside an event log the list does not show (`EventStore.setAsideNotListed`), in
+    /// 1.11's words (item 224's point 1; the owner, 2026-11-12: "as you recommend").
+    static let setAsideNotListedNotice = "The event log couldn't be read and was set aside as a backup - new events go to a fresh log."
+    /// Home's line when the event log could be neither read nor set aside (`EventStore.loadFailed`): opening Malinois again
+    /// tries both again, and reinstalling, which starts a new log, deletes every photo, clip and set-aside log on the
+    /// phone (item 227; the owner's "wording approved", 2026-11-12, W10).
+    static let logUnreadableNotice = "The event log couldn't be read and new events aren't being saved on this iPhone. "
+        + "Close Malinois and open it again to retry. Reinstalling starts a new log, but deletes every photo, clip and "
+        + "set-aside log on this iPhone."
 
     /// asked for it (`MonitoringEngine.ratingRequestPending`), with no PIN pad up and Guided Access off; otherwise it
     /// waits for the next chance on Home.
@@ -102,6 +118,7 @@ struct HomeView: View {
     @State private var showLog = false
     @State private var showTest = false
     @State private var showPaywall = false
+    @State private var showFirstSessionCard = false   // item 240's D1
 
     var body: some View {
         NavigationStack {
@@ -115,6 +132,8 @@ struct HomeView: View {
                 // accessibility text sizes the buttons are its last part (item 119, `bottomButtons`).
                 VStack(spacing: 18) {
                     statusBadge
+
+                    if showFirstSessionCard { firstSessionCard }
 
                     Button(action: armTapped) {
                         VStack(spacing: 6) {
@@ -201,6 +220,8 @@ struct HomeView: View {
                 if requested { openLogFromNotification() }
             }
             .onAppear {
+                showFirstSessionCard = FirstSessionCard.shows(hasDisarmedOnce: OnboardingState.hasDisarmedOnce,
+                                                              dismissed: OnboardingState.firstSessionCardDismissed)
                 if engine.eventLogOpenRequested { openLogFromNotification() }
                 Task { await engine.refreshNotificationHealth() }   // a pull-to-refresh or Settings may have changed the picture (item 69)
                 askForRatingIfDue()
@@ -211,6 +232,42 @@ struct HomeView: View {
             .onChange(of: engine.guidedAccessEnabled) { _, _ in askForRatingIfDue() }
             .onChange(of: pinGate) { _, _ in askForRatingIfDue() }
         }
+    }
+
+    /// Home's card after the first disarm (item 240's D1 (a)): "Open the Event Log" goes through the usual gate.
+    private var firstSessionCard: some View {
+        VStack(spacing: 10) {
+            Text(FirstSessionCard.text)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .reportedOnScreen(FirstSessionCard.text)
+            // Each button reports its action, for a test to press: the same function the button runs.
+            HStack(spacing: 12) {
+                Button(FirstSessionCard.notNow, action: dismissFirstSessionCard)
+                    .buttonStyle(.bordered)
+                    .reportedAction(FirstSessionCard.notNow) { dismissFirstSessionCard() }
+                Button(FirstSessionCard.openLog, action: openLogFromFirstSessionCard)
+                    .buttonStyle(.borderedProminent)
+                    .reportedAction(FirstSessionCard.openLog) { openLogFromFirstSessionCard() }
+            }
+            .controlSize(.small)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.12)))
+    }
+
+    /// Either button removes the card for good.
+    private func dismissFirstSessionCard() {
+        OnboardingState.firstSessionCardDismissed = true
+        showFirstSessionCard = false
+    }
+
+    /// "Open the Event Log": the card goes, and the log opens behind its usual gate, the PIN or (where the owner turned
+    /// it on) a face or finger, as Home's own Event Log button.
+    private func openLogFromFirstSessionCard() {
+        dismissFirstSessionCard()
+        pinGate = .log
     }
 
     /// Apple's rating request at a calm moment (item 137, ADR 0058): iOS decides whether to show it.
@@ -349,7 +406,7 @@ struct HomeView: View {
                 // What Malinois does, not where the evidence stays: the iPhone's own backups can copy it (item 168's deepseek-2).
                 statusRow(ready: false, text: "iCloud backup is Pro - Malinois uploads no evidence")
             }
-            statusRow(ready: engine.guidedAccessEnabled,
+            statusRow(dot: Self.guidedAccessDot(enabled: engine.guidedAccessEnabled),
                       text: engine.guidedAccessEnabled ? "Guided Access ready" : "Guided Access off")
             if let last = engine.lastArmedDuration {
                 Label(lastArmedText(duration: last, interval: engine.lastArmedInterval),
@@ -442,6 +499,18 @@ struct HomeView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
             }
+            // How the last pull from iCloud went (item 227's Codex-1; the owner's W6 and W8): until a pull runs to the end,
+            // and while the last one found records this version cannot read. Not while a pull runs. Only a Pro pull sets it.
+            if !engine.cloudRestoreInProgress {
+                MainActorForEach(engine.lastCloudPull?.homeLines ?? [], id: \.self) { line in
+                    Label(line, systemImage: "icloud.slash")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .reportedOnScreen(line)
+                }
+            }
             if !engine.isOnline && entitlements.proActive {
                 // Only meaningful when cloud backup is in use; a free user's evidence stays
                 // on-device regardless of connectivity, so this would be misleading (P-05).
@@ -477,12 +546,12 @@ struct HomeView: View {
                     .padding(.horizontal)
             }
             if eventStore.loadFailed {
-                Label("The event log couldn't be read and new events aren't being saved locally. Reinstalling will reset it.",
-                      systemImage: "externaldrive.badge.exclamationmark")
+                Label(Self.logUnreadableNotice, systemImage: "externaldrive.badge.exclamationmark")
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .reportedOnScreen(Self.logUnreadableNotice)
             }
             if eventStore.persistDegraded {
                 Label(Self.logNotice, systemImage: "externaldrive.badge.exclamationmark")
@@ -492,6 +561,16 @@ struct HomeView: View {
                     .padding(.horizontal)
                     .reportedOnScreen(Self.logNotice)
             }
+            // An event log set aside at this launch that the list does not show (a folder or a link in its place), in 1.11's
+            // words (item 224's point 1).
+            if eventStore.setAsideNotListed {
+                Label(Self.setAsideNotListedNotice, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .reportedOnScreen(Self.setAsideNotListedNotice)
+            }
             // While any set-aside log is kept, not only at the launch that set it aside (item 122's decision 4 (a)).
             if !eventStore.setAsideLogs.isEmpty {
                 Label(SetAsideLogWords.home,
@@ -500,6 +579,7 @@ struct HomeView: View {
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .reportedOnScreen(SetAsideLogWords.home)
             }
             // Only while the log is saving: the notice says it is. When the log's write fails too (a full disk fails
             // both; an event that cannot be encoded does), the notice above says new events are not being saved, and
@@ -588,9 +668,14 @@ struct HomeView: View {
 
     /// A status line — colored dot + label — matching the iCloud/Guided Access rows.
     private func statusRow(ready: Bool, text: String) -> some View {
+        statusRow(dot: ready ? .ready : .warning, text: text)
+    }
+
+    /// A status line with its dot: green when ready, orange for a warning, grey when neither (item 240).
+    private func statusRow(dot: StatusDot, text: String) -> some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(ready ? .green : .orange)
+                .fill(dot == .ready ? Color.green : dot == .warning ? Color.orange : Color.secondary)
                 .frame(width: 8, height: 8)
             Text(text)
                 .font(.caption)

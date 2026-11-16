@@ -286,6 +286,9 @@ final class AudioMonitor: SensorMonitor {
         // bar by tens of dB, so the unchanged room tripped a false Sound event when the microphone
         // came back. Skip the tick: the warm-up, the baseline and the trace wait for real samples.
         guard observeRecorderHealth() else { return }
+        // Item 243's glm-5.3-4: a recorder just restarted says it records before it has metered anything, and reads
+        // its floor, -160 dBFS, "no data". That is not the room: no trip, no trace, no baseline, as for a microphone down.
+        guard Self.isSample(level) else { return }
         traceBuffer.append(level)
         if traceBuffer.count > traceCapacity { traceBuffer.removeFirst() }
 
@@ -339,6 +342,9 @@ final class AudioMonitor: SensorMonitor {
         #endif
         return recorder?.isRecording == true
     }
+
+    /// Pure: whether a reading is the room's, not the recorder's floor (−160 dBFS, which it reads with no data).
+    nonisolated static func isSample(_ level: Double) -> Bool { level > -160 }
 
     /// Pure: the next rolling baseline, capped at `baseline + maxDrift` (unit-tested).
     nonisolated static func clampedRolling(_ proposed: Double, baseline: Double, maxDrift: Double) -> Double {

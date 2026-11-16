@@ -23,15 +23,20 @@ enum FirstArmBriefing {
     /// Part 3 (item 144 (e), the owner's approved wording, 2026-10-21): the one accessibility feature Guided Access
     /// leaves running, and one that can close Malinois.
     static let voiceControlHeading = "Voice Control"
-    static let voiceControlText = "If you use Voice Control, turn it OFF before you arm (Settings → Accessibility → Voice Control). It keeps working under Guided Access and can be told to close Malinois. Malinois can't see whether it is on, so this is up to you."
+    static let voiceControlText = "Voice Control is off unless you turned it on. If you did, turn it OFF before you arm (Settings → Accessibility → Voice Control): it keeps working under Guided Access and can be told to close Malinois. Malinois can't see whether it is on, so this is up to you."   // item 242's round q: the owner's words
     /// Part 4 (item 153, the owner's approved wording, 2026-11-04, "approved, b"): Guided Access's own option, with
     /// which one press of the side button locks the screen and nothing is watched until the owner unlocks.
     static let sideButtonHeading = "Side Button"
     static let sideButtonText = "In Guided Access's Options, turn Side Button OFF (Sleep/Wake Button on older phones). If it is on, one press locks the screen, and nothing is watched until you unlock. Malinois can't see this setting, so this is up to you."
     static let button = "I understand"
+    /// Part 5 (item 240's D2 (a); the owner's words of 2026-11-13, item 241's B1): before a new install's first arm, that
+    /// no one can delete an entry, what the log's limit and a set-aside log's Delete take, and the way to try the sensors
+    /// without recording. Seeded acknowledged for an install that armed before.
+    static let noDeleteHeading = "No one can delete an entry"
+    static let noDeleteText = "Every arm, disarm and trip goes in the Event Log, and no one can delete an entry, not even with your PIN. When the log is full, its oldest entries make way for new ones, and a log Malinois had to set aside can be deleted whole, with your PIN. To try the sensors without recording anything, use Test sensors on Home."
 
-    /// Which parts the screen shows: how to disarm, how to end Guided Access, turning Voice Control off, and turning
-    /// Guided Access's Side Button off.
+    /// Which parts the screen shows: how to disarm, how to end Guided Access, turning Voice Control off, turning Guided
+    /// Access's Side Button off, and that no one can delete an entry (item 240).
     struct Parts: Equatable, Identifiable {
         var disarm: Bool
         var guidedAccess: Bool
@@ -39,8 +44,10 @@ enum FirstArmBriefing {
         var voiceControl: Bool = false
         /// Part 4, turning Guided Access's Side Button off (BACKLOG 153); false unless named.
         var sideButton: Bool = false
-        var isEmpty: Bool { !disarm && !guidedAccess && !voiceControl && !sideButton }
-        var id: String { "\(disarm)-\(guidedAccess)-\(voiceControl)-\(sideButton)" }
+        /// Part 5, "No one can delete an entry" (item 240's D2 (a)): false unless named.
+        var noDelete: Bool = false
+        var isEmpty: Bool { !disarm && !guidedAccess && !voiceControl && !sideButton && !noDelete }
+        var id: String { "\(disarm)-\(guidedAccess)-\(voiceControl)-\(sideButton)-\(noDelete)" }
     }
 
     /// Pure (unit-tested): the parts due when the owner taps Start countdown. None for an arm the owner did not
@@ -48,14 +55,17 @@ enum FirstArmBriefing {
     /// part until it is acknowledged; the Guided Access part only when Guided Access is on for this arm, until it is
     /// acknowledged; the Voice Control part until it is acknowledged, with or without Guided Access (item 144 (e): it
     /// is set before arming); the Side Button part only when Guided Access is on for this arm, until it is
-    /// acknowledged (item 153: the option is Guided Access's own). A first arm under Guided Access shows all four on
-    /// the one screen.
+    /// acknowledged (item 153: the option is Guided Access's own); the "No one can delete an entry" part until it is
+    /// acknowledged (item 240: seeded acknowledged for an install that armed before, so a new install's first arm). A
+    /// new install's first arm under Guided Access shows all five on the one screen.
     static func partsDue(ownerStarted: Bool, guidedAccessOn: Bool,
                          disarmAcknowledged: Bool, guidedAccessAcknowledged: Bool,
-                         voiceControlAcknowledged: Bool, sideButtonAcknowledged: Bool) -> Parts {
+                         voiceControlAcknowledged: Bool, sideButtonAcknowledged: Bool,
+                         noDeleteAcknowledged: Bool = true) -> Parts {
         guard ownerStarted else { return Parts(disarm: false, guidedAccess: false) }
         return Parts(disarm: !disarmAcknowledged, guidedAccess: guidedAccessOn && !guidedAccessAcknowledged,
-                     voiceControl: !voiceControlAcknowledged, sideButton: guidedAccessOn && !sideButtonAcknowledged)
+                     voiceControl: !voiceControlAcknowledged, sideButton: guidedAccessOn && !sideButtonAcknowledged,
+                     noDelete: !noDeleteAcknowledged)
     }
 
     /// Pure (unit-tested): an acknowledgment's starting value, written once when this build first runs. The owner's

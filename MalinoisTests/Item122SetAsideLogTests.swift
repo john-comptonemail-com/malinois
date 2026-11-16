@@ -340,9 +340,12 @@ final class Item122SetAsideLogTests: XCTestCase {
         XCTAssertFalse(SetAsideLogWords.explanation.contains("still there"), "nothing here says what iCloud has now")
         XCTAssertEqual(SetAsideLogWords.alsoInLog, "Also in your event log")
         XCTAssertEqual(SetAsideLogWords.noneReadable, "No records could be read.")
+        // The README's first sentence since 1.13: Share leaves out the photos and clips the current log names (item 241's
+        // gpt6-astra-r1; the owner, 2026-11-13: "as you recommend, wording approved").
         XCTAssertEqual(SetAsideLogWords.readme, "This ZIP contains an event log Malinois set aside because it couldn't be read, with "
-                       + "the photos and clips it names that were still on the iPhone when it was shared. It is not signed "
-                       + "evidence: it is the file as the phone kept it. Malinois's verifier does not check it.")
+                       + "the photos and clips it names that were still on the iPhone when it was shared, except any the current "
+                       + "event log also names. It is not signed evidence: it is the file as the phone kept it. Malinois's "
+                       + "verifier does not check it.")
     }
 
     /// The Event Log's row: when it was set aside, as the event log's lines give a time, and how many records it could and
@@ -367,10 +370,12 @@ final class Item122SetAsideLogTests: XCTestCase {
 
     /// The Event Log lists each set-aside log at its top, even when the fresh log is empty, and opens its screen. Since
     /// item 227 it also shows what a Delete left to tell with nothing else to list (red at that item's first commit, by
-    /// its first line).
+    /// its first line), and since 1.13 the last pull's notice (item 227's Codex-1; this line missed that change until
+    /// chain h, 2026-11-13).
     func testTheEventLogListsThemAtItsTop() throws {
         let log = try source("Malinois/Views/EventLogView.swift")
-        XCTAssertTrue(log.contains("if eventStore.events.isEmpty && eventStore.setAsideLogs.isEmpty && deleteNotices.isEmpty {"))
+        XCTAssertTrue(log.contains(
+            "if eventStore.events.isEmpty && eventStore.setAsideLogs.isEmpty && deleteNotices.isEmpty && pullNotices.isEmpty {"))
         XCTAssertTrue(log.contains("ForEach(eventStore.setAsideLogs) { setAside in"))
         XCTAssertTrue(log.contains("SetAsideLogView(log: setAside)"))
     }
@@ -1509,6 +1514,123 @@ final class Item122SetAsideLogTests: XCTestCase {
                       "the photo its record names is in the folder")
     }
 
+    // MARK: - Share leaves out every photo and clip the current log names (item 241's A4, DeepSeek-4; gpt6-astra-r1)
+    //
+    // 1.13's full review: Share carried every photo and clip a set-aside log's bytes name, where its Delete leaves alone
+    // any the current log names. Only an edited backup restored to the phone can make a set-aside log name another
+    // event's photo; Share then carried it to whoever the owner sends the log to. The round's first fix still let such a
+    // photo go when the set-aside log's readable records held the same event; gpt6-astra's change review (gpt6-astra-r1):
+    // those records are the edited file's own, so the edit copies the live event's ID with its photo's name. Now Share,
+    // as Delete, leaves out every photo and clip the current log names (the owner, 2026-11-13: "as you recommend, wording
+    // approved"): a record the journal brought back goes without its photo, which its event in the Event Log shares.
+
+    /// The rule: a photo the current log does not name goes; one it names stays out, whatever event a set-aside record
+    /// claims for it.
+    func testTheShareRuleForAPhotoTheCurrentLogNames() {
+        // The rule no longer reads the set-aside log's records: what a record there claims cannot let a photo go.
+        XCTAssertEqual(SetAsideLogShare.sharedMedia(named: ["a.jpg", "b.jpg", "c.jpg", "d.jpg"], liveMedia: ["b.jpg", "c.jpg", "d.jpg"]),
+                       ["a.jpg"], "a: the current log does not name it; b, c and d: it does, whatever event a set-aside record claims")
+        let only = Event(startDate: TestApp.date(2026, 11, 7, 1, 1), endDate: TestApp.date(2026, 11, 7, 1, 2),
+                         triggeredSensors: [.motion], motionTrace: [0.5])
+        var named = only
+        named.mediaFilename = "e.jpg"
+        named.secondaryMediaFilename = "f.mov"
+        XCTAssertEqual(SetAsideLogShare.liveMedia(of: [only, named]), ["e.jpg", "f.mov"])
+    }
+
+    /// Share's folder, through the real search of the log's bytes: its own photo goes; one the current log names stays
+    /// out, for the same event (a record the journal brought back) as for another.
+    func testShareLeavesOutEveryPhotoTheCurrentLogNames() throws {
+        let fm = FileManager.default
+        let media = scratch.appendingPathComponent("Media", isDirectory: true)
+        try fm.createDirectory(at: media, withIntermediateDirectories: true)
+        let own = "\(UUID().uuidString).jpg", both = "\(UUID().uuidString).jpg", another = "\(UUID().uuidString).jpg"
+        for name in [own, both, another] { try Data([0xFF, 0xD8, 0x01]).write(to: media.appendingPathComponent(name)) }
+        let first = recorded(own, minute: 1), second = recorded(both, minute: 2), third = recorded(another, minute: 3)
+        let file = scratch.appendingPathComponent("events.corrupt-1762520000.json")
+        try JSONEncoder().encode([first, second, third]).write(to: file)
+        let live = SetAsideLogShare.liveMedia(of: [second, recorded(another, minute: 4)])
+        let out = scratch.appendingPathComponent("out", isDirectory: true)
+        try fm.createDirectory(at: out, withIntermediateDirectories: true)
+        let folder = try XCTUnwrap(SetAsideLogShare.folder(of: SetAsideLog(url: file), mediaDirectory: media, in: out,
+                                                           liveMedia: live))
+        XCTAssertEqual(Set(try fm.contentsOfDirectory(atPath: folder.appendingPathComponent("Media").path)), [own],
+                       "its own photo; not the one both logs name for one event, nor the one the current log names for another")
+    }
+
+    /// gpt6-astra-r1, its probe: a set-aside record edited to carry a live event's ID as well as its photo's name, its other
+    /// facts its own. The photo stays out of Share, and the file goes byte for byte. Red at its red commit: the record's
+    /// claim to the live event let the photo go.
+    func testShareLeavesOutAPhotoARecordClaimsWithALiveEventsID() throws {
+        let fm = FileManager.default
+        let media = scratch.appendingPathComponent("Media", isDirectory: true)
+        try fm.createDirectory(at: media, withIntermediateDirectories: true)
+        let name = "\(UUID().uuidString).jpg"
+        try Data([0xFF, 0xD8, 0x01]).write(to: media.appendingPathComponent(name))
+        let live = recorded(name, minute: 4)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(recorded(name, minute: 1)))
+                                   as? [String: Any], "an older record, as the store writes one")
+        object["id"] = live.id.uuidString
+        let bytes = try JSONSerialization.data(withJSONObject: [object])
+        let file = scratch.appendingPathComponent("events.corrupt-1762520000.json")
+        try bytes.write(to: file)
+        let claiming = try XCTUnwrap(SetAsideLog.reading(bytes).records.first, "the edited record reads")
+        XCTAssertEqual(claiming.id, live.id, "it claims the live event")
+        XCTAssertNotEqual(claiming.startDate, live.startDate, "with facts of its own")
+        let out = scratch.appendingPathComponent("out", isDirectory: true)
+        try fm.createDirectory(at: out, withIntermediateDirectories: true)
+        let folder = try XCTUnwrap(SetAsideLogShare.folder(of: SetAsideLog(url: file), mediaDirectory: media, in: out,
+                                                           liveMedia: SetAsideLogShare.liveMedia(of: [live])))
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(file.lastPathComponent)), bytes, "the file as it was")
+        XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent("Media").appendingPathComponent(name).path),
+                       "the live photo stays out")
+    }
+
+    /// Share's ZIP, as the screen asks for it, read by the names its directory lists (gpt6-astra's note on the round: the
+    /// log's own text, also in the ZIP, names the same files, and only its compression kept a search of the bytes from
+    /// finding them there): its own photo and the README; not a clip the current log names for the same event, nor
+    /// another event's photo.
+    func testShareZIPLeavesOutEveryPhotoAndClipTheCurrentLogNames() throws {
+        let fm = FileManager.default
+        let media = scratch.appendingPathComponent("Media", isDirectory: true)
+        try fm.createDirectory(at: media, withIntermediateDirectories: true)
+        let own = "\(UUID().uuidString).jpg", clip = "\(UUID().uuidString).mov", another = "\(UUID().uuidString).jpg"
+        for name in [own, clip, another] { try Data([0xFF, 0xD8, 0x01]).write(to: media.appendingPathComponent(name)) }
+        var clipped = event(2)
+        clipped.secondaryMediaFilename = clip
+        let file = scratch.appendingPathComponent("events.corrupt-1762520000.json")
+        try JSONEncoder().encode([recorded(own, minute: 1), clipped, recorded(another, minute: 3)]).write(to: file)
+        let live = SetAsideLogShare.liveMedia(of: [clipped, recorded(another, minute: 4)])
+        let out = scratch.appendingPathComponent("out", isDirectory: true)
+        try fm.createDirectory(at: out, withIntermediateDirectories: true)
+        let zip = try XCTUnwrap(SetAsideLogShare.zip(of: SetAsideLog(url: file), mediaDirectory: media, temporaryDirectory: out,
+                                                     liveMedia: live))
+        defer { SetAsideLogShare.remove(zip) }
+        let entries = try XCTUnwrap(zipEntryNames(Data(contentsOf: zip)), "the ZIP's directory reads")
+        func carries(_ name: String) -> Bool { entries.contains { $0 == "Media/" + name || $0.hasSuffix("/Media/" + name) } }
+        XCTAssertTrue(carries(own), "its own photo: \(entries)")
+        XCTAssertTrue(entries.contains { $0.hasSuffix("README.txt") }, "its README: \(entries)")
+        XCTAssertFalse(carries(clip), "not a clip the current log names for the same event: \(entries)")
+        XCTAssertFalse(carries(another), "nor another event's photo: \(entries)")
+    }
+
+    /// The set-aside log's screen (read from the source tree, as built) shares with the names the store gives it, which
+    /// include the captures still being saved, and makes no ZIP without them (item 241's gpt6-astra-m1); the store reads
+    /// what is being saved before the log's names, so that a capture whose intent goes between the two reads is in the
+    /// log by the second. Red at gpt6-astra-m1's red commit: the screen took the log's names alone.
+    func testTheSetAsideLogsScreenSharesWithTheCurrentLogsMedia() throws {
+        let screen = try source("Malinois/Views/SetAsideLogView.swift")
+        XCTAssertTrue(screen.contains("guard let liveMedia = await eventStore.mediaSetAsideShareLeavesOut() else {"),
+                      "the store's names, or no ZIP")
+        XCTAssertTrue(screen.contains("SetAsideLogShare.zip(of: log, mediaDirectory: mediaDirectory, liveMedia: liveMedia)"))
+        let store = try source("Malinois/Services/EventStore.swift")
+        // Share's own reader, which passes over what recovery never acts on (gpt6-astra-n1), not Delete's.
+        let saving = try XCTUnwrap(store.range(of: "let saving = await Task.detached { [self] in mediaNamedByCapturesBeingSavedForShare() }.value"),
+                                   "what is being saved, read off the main actor")
+        let logged = try XCTUnwrap(store.range(of: "return saving.union(SetAsideLogShare.liveMedia(of: events))"), "and the log's names")
+        XCTAssertLessThan(saving.lowerBound, logged.lowerBound, "read in that order")
+    }
+
     // MARK: - A set-aside log names a file only by a name the store gives (item 231, Codex-10; the owner, 2026-11-11: "a, wording approved")
     //
     // Codex's look at round seven: the search of a set-aside log reads a character as written or as its unicode escape,
@@ -2073,8 +2195,10 @@ final class Item122SetAsideLogTests: XCTestCase {
     }
 
     /// The ZIP's README says which photos and clips the ZIP has (DS-1 of the second full review; the owner, 2026-11-11:
-    /// "wording approved"): those the log names that were still on the iPhone when it was shared. A log that names two
-    /// photos, one of them no longer on the phone: the ZIP has the one, and its README does not say it has both.
+    /// "wording approved"): those the log names that were still on the iPhone when it was shared, and since 1.13 not
+    /// those the current event log also names (item 241's gpt6-astra-r1; the owner, 2026-11-13: "as you recommend,
+    /// wording approved"). A log that names two photos, one of them no longer on the phone: the ZIP has the one, and its
+    /// README does not say it has both.
     func testTheReadmeSaysTheZIPHasThePhotosStillOnTheIPhone() throws {
         let media = scratch.appendingPathComponent("Media", isDirectory: true)
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
@@ -2089,7 +2213,8 @@ final class Item122SetAsideLogTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("Media").path), [onThePhone],
                        "the ZIP has the photo still on the phone, and not the other")
         let readme = try String(contentsOf: folder.appendingPathComponent("README.txt"), encoding: .utf8)
-        XCTAssertTrue(readme.contains("with the photos and clips it names that were still on the iPhone when it was shared."),
+        XCTAssertTrue(readme.contains("with the photos and clips it names that were still on the iPhone when it was shared, "
+                                      + "except any the current event log also names."),
                       "the README says which photos and clips the ZIP has: \(readme)")
         XCTAssertFalse(readme.contains("with the photos and clips it names. "), "and no longer that it has every one: \(readme)")
     }
@@ -2625,5 +2750,28 @@ final class Item122SetAsideLogTests: XCTestCase {
 
     private func source(_ path: String) throws -> String {
         try String(contentsOf: Self.root.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    /// The names a ZIP's directory lists, from its end record on (gpt6-astra's note on round l: a name found anywhere in
+    /// a ZIP's bytes can be the log's own text, which names the same files); nil when the bytes are no ZIP this reads.
+    private func zipEntryNames(_ zip: Data) -> [String]? {
+        let bytes = [UInt8](zip)
+        func u16(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 }
+        func u32(_ at: Int) -> Int { u16(at) | u16(at + 2) << 16 }
+        guard bytes.count >= 22 else { return nil }
+        var end = bytes.count - 22   // the end record, found from the end: a comment may follow it
+        while end >= 0, u32(end) != 0x0605_4B50 { end -= 1 }
+        guard end >= 0 else { return nil }
+        var at = u32(end + 16)   // where the directory starts
+        var names: [String] = []
+        for _ in 0..<u16(end + 10) {
+            guard at + 46 <= bytes.count, u32(at) == 0x0201_4B50 else { return nil }
+            let length = u16(at + 28)
+            guard at + 46 + length <= bytes.count,
+                  let name = String(bytes: bytes[(at + 46)..<(at + 46 + length)], encoding: .utf8) else { return nil }
+            names.append(name)
+            at += 46 + length + u16(at + 30) + u16(at + 32)
+        }
+        return names
     }
 }

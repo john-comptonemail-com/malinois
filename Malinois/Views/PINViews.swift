@@ -75,40 +75,59 @@ struct PINPad: View {
           digitOrder[9], "⌫"]]
     }
     private var canSubmit: Bool { digits.count >= Self.minLength }
+    /// The most dots the pad shows: no pad takes more digits (setup's 4 or 6, the entry pad's 6), and `tap` stops at
+    /// `maxLength`.
+    nonisolated static let maxDots = 6
 
+    // Item 246: the dots and the keys are laid out without loops. While an animation runs, SwiftUI may build a loop's
+    // rows on its background render thread, where Swift 6 stops the app at the first line of a row builder written
+    // here: the crash of 1.12 (87) on an iPhone 16, as a first PIN went on to "Confirm your PIN". The pad never
+    // changes shape, so it needs none: six places for dots, and four rows of three keys.
     var body: some View {
         VStack(spacing: 24) {
             // Dots — placeholders reveal the length, so when concealing show only what's
             // been typed. Reserve a little height so the pad doesn't jump as dots appear.
             HStack(spacing: 16) {
-                if conceal {
-                    ForEach(0..<digits.count, id: \.self) { _ in
-                        Circle().fill(Color.accentColor).frame(width: 16, height: 16)
-                    }
-                } else {
-                    ForEach(0..<maxLength, id: \.self) { i in
-                        Circle()
-                            .strokeBorder(Color.primary.opacity(0.4), lineWidth: 1.5)
-                            .background(Circle().fill(i < digits.count ? Color.accentColor : .clear))
-                            .frame(width: 16, height: 16)
-                    }
-                }
+                dot(0); dot(1); dot(2); dot(3); dot(4); dot(5)
             }
             .frame(height: 16)
 
             VStack(spacing: 12) {
-                ForEach(keys, id: \.self) { row in
-                    HStack(spacing: 24) {
-                        ForEach(row, id: \.self) { key in
-                            keyButton(key)
-                        }
-                    }
-                }
+                keyRow(0)
+                keyRow(1)
+                keyRow(2)
+                keyRow(3)
             }
         }
         // A light tap on every keypress so the PIN can be entered without looking
         // at the (often dim) screen. Fires on append and delete.
         .sensoryFeedback(.impact(flexibility: .soft), trigger: digits)
+    }
+
+    /// The `index`th place for a dot: when concealing, a dot for a typed digit and nothing past them; otherwise a
+    /// ring for each of `maxLength` digits, filled once typed.
+    @ViewBuilder
+    private func dot(_ index: Int) -> some View {
+        if conceal {
+            if index < digits.count {
+                Circle().fill(Color.accentColor).frame(width: 16, height: 16)
+            }
+        } else if index < maxLength {
+            Circle()
+                .strokeBorder(Color.primary.opacity(0.4), lineWidth: 1.5)
+                .background(Circle().fill(index < digits.count ? Color.accentColor : .clear))
+                .frame(width: 16, height: 16)
+        }
+    }
+
+    /// The `row`th row of three keys.
+    private func keyRow(_ row: Int) -> some View {
+        let three = keys[row]
+        return HStack(spacing: 24) {
+            keyButton(three[0])
+            keyButton(three[1])
+            keyButton(three[2])
+        }
     }
 
     @ViewBuilder
@@ -516,8 +535,10 @@ struct PINEntryView: View {
         // short screen, instead of squeezing its title and lockout message to a line or two. Laid out
         // at least as tall as the room, it sits centred as before wherever it fits, and does not move
         // under a finger then. One pad throughout (the recovery PIN's fix from 1.7, W1, now every PIN
-        // screen's), so the digits typed and the lockout survive a change of size.
-        GeometryReader { room in
+        // screen's), so the digits typed and the lockout survive a change of size. Item 246: the room's size reaches
+        // the pad's screen built on the main thread, as SwiftUI may measure the room on its render thread while the
+        // pad shakes after a wrong PIN.
+        MainActorGeometryReader { room in
             ScrollView {
                 VStack(spacing: 28) {
                     Text(title)
@@ -558,7 +579,7 @@ struct PINEntryView: View {
                         .reportedAction("Cancel: " + title) { onCancel() }
                 }
                 .padding(40)
-                .frame(maxWidth: .infinity, minHeight: room.size.height)
+                .frame(maxWidth: .infinity, minHeight: room.height)
             }
             .scrollBounceBehavior(.basedOnSize)
         }

@@ -4,7 +4,7 @@ These are the project's architecture decision records: one file per decision, wr
 made and amended in place when it changed, as the source cites them ("ADR 0039"). A record that was later
 superseded, suspended or rejected stays here with its status, because the code and later records refer to it.
 The records cite a private findings ledger by item number; those entries are not published, and
-the numbers are kept so the records read as written. Taken from the private repository at commit 6c484fa;
+the numbers are kept so the records read as written. Taken from the private repository at commit 062e08d;
 published with each release from 1.8 on, as the source is.
 
 ◆ marks the records the security model rests on: the record comes before any response (ADR 0005), only the size limits remove records (ADR 0035), a sealed or surviving PIN is never taken for none (ADR 0040) and the covert response goes loud only on evidence of interference (ADR 0001). The PIN's rate limit, which fails closed, has no record of its own: SECURITY.md's PIN reference states it.
@@ -82,3 +82,11 @@ published with each release from 1.8 on, as the source is.
 | [ADR 0078: A set-aside event log is read, shared and deleted at the owner's word](0078-a-set-aside-event-log-is-read-shared-and-deleted-at-the-owners-word.md) — A set-aside event log is read record by record and listed at the top of the Event Log, on a screen of its own that shows what could be read, read only. Nothing read from it goes back into the log. Share sends the file as the phone kept it, with the photos and clips it names that are still on the phone. Only the owner deletes one, behind the Malinois PIN, with the photos and clips only it names, and the Delete leaves a status entry in the Event Log. Home says so while any is kept. | accepted |
 | [ADR 0079: The watch gives a link wake back at its deadline, and one run of alerts shares the list's two seconds](0079-the-watchs-link-wakes-and-its-reads-of-the-list-as-they-stand.md) | accepted |
 | [ADR 0080: Share says when it went without the signed ZIP, and waits a minute at most for it](0080-share-says-when-it-went-without-the-signed-zip-and-waits-a-minute-for-it.md) | accepted |
+| [ADR 0081: A slow Vision trip saves the view it compared against, on the phone and in the evidence ZIP only](0081-a-slow-vision-trip-saves-the-view-it-compared-against.md) | accepted |
+| [ADR 0082: The watch writes down each relayed alert until it is shown](0082-the-watch-writes-down-each-relayed-alert-until-it-is-shown.md) | accepted |
+| [ADR 0083: A set-aside log's Delete writes a note first, so its status entry is never lost](0083-a-set-aside-logs-delete-writes-a-note-first-so-its-entry-is-never-lost.md) | accepted |
+| [ADR 0084: "Free up iCloud space..." leaves a status entry; the automatic retention does not](0084-free-up-icloud-space-leaves-a-status-entry-the-automatic-retention-does-not.md) | accepted |
+| [ADR 0085: An event log set aside that the list does not show is said on Home, at that launch](0085-an-event-log-set-aside-that-the-list-does-not-show-is-said-on-home.md) | accepted |
+| [ADR 0086: A new install opens on a welcome screen, and Test sensors needs no PIN until one exists](0086-a-new-install-opens-on-a-welcome-screen-and-test-sensors-needs-no-pin-until-one-exists.md) | accepted |
+| [ADR 0087: A set-aside log's Share leaves out the photos and clips the current log names](0087-a-set-aside-logs-share-leaves-out-the-photos-and-clips-the-current-log-names.md) | accepted |
+| [ADR 0088: Other devices' status entries have a budget of their own](0088-other-devices-status-entries-have-a-budget-of-their-own.md) | accepted |

@@ -21,6 +21,8 @@
 import Foundation
 import Combine
 @preconcurrency import AVFoundation
+import CoreImage
+import ImageIO
 import UIKit
 
 /// The engine's view of the camera — everything `MonitoringEngine` asks of the capture
@@ -59,9 +61,13 @@ protocol EvidenceCamera: AnyObject, Sendable {
     /// A clip session asked for the microphone and could not attach it (item 73, review 1 R7):
     /// clips will be silent although the owner asked for sound. False whenever no mic was asked for.
     var micUnavailableForClips: Bool { get }
-    /// Frames from the vision tap, delivered on the main actor.
-    var onVisionFrame: (@MainActor (VisionFrame) -> Void)? { get set }
+    /// Frames from the vision tap, delivered on the main actor, each with the still asked for of it, if one was
+    /// (item 239): the frame's grid and its still in one step.
+    var onVisionFrame: (@MainActor (VisionFrame, VisionStill?) -> Void)? { get set }
     func setVisionTapEnabled(_ enabled: Bool)
+    /// Asks the vision tap for a still of its next frame, for Vision's reference of `generation` (item 239): one
+    /// still, the newest number asked for.
+    func requestVisionStill(generation: Int)
     func warmUp(forClips: Bool, camera: CameraChoice) async throws -> Bool
     func warmUpMultiCam(forClips: Bool) async throws -> Bool
     /// Whether the store that holds clips until the log takes them has room for `outputs` new
@@ -216,7 +222,8 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
 
     // MARK: Vision tripwire tap (BACKLOG 16)
     /// Attached to the single-camera session only when the engine asks for it. Delivers
-    /// ~2 fps of 32×24 luminance to `onVisionFrame`; nothing is written anywhere.
+    /// ~2 fps of 32×24 luminance to `onVisionFrame`, with a colour still of a frame when Vision
+    /// asks for one at a new reference (item 239), in memory; nothing is written here.
     nonisolated(unsafe) private let visionOutput = AVCaptureVideoDataOutput()
     private let visionQueue = DispatchQueue(label: "com.malinois.camera.vision", qos: .utility)
     nonisolated(unsafe) private var visionFrameCounter = 0
@@ -265,8 +272,17 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
     func setVisionTapEnabled(_ enabled: Bool) {
         sessionQueue.async { self.visionTapEnabled = enabled }
     }
-    /// Receives downsampled frames on the main actor.
-    nonisolated(unsafe) var onVisionFrame: (@MainActor (VisionFrame) -> Void)?
+    func requestVisionStill(generation: Int) {
+        visionQueue.async { self.visionStillWanted = generation }
+    }
+    /// The still Vision asked for, by its number, until the tap's next frame makes it (item 239). Confined to
+    /// `visionQueue`, as the frame counters are.
+    nonisolated(unsafe) private var visionStillWanted: Int?
+    /// How the tap's stills are turned to show the view as this session's photos do, set at each configuration
+    /// (item 239). Confined to `visionQueue`.
+    nonisolated(unsafe) private var visionStillOrientation: CGImagePropertyOrientation = .up
+    /// Receives downsampled frames on the main actor, each with its still when one was asked for (item 239).
+    nonisolated(unsafe) var onVisionFrame: (@MainActor (VisionFrame, VisionStill?) -> Void)?
     /// Item 54: the session's interruptions, their end, and runtime errors, for the engine.
     nonisolated(unsafe) var onSessionEvent: (@MainActor (CameraSessionEvent) -> Void)?
     /// Photo continuations keyed by the capture's settings uniqueID, so a delegate
@@ -834,6 +850,12 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         // the *other* session's connection as active — which is how a tap that never attached
         // came out as "No frames" (attached, none arriving) instead of "Not running", and sent
         // an evening's debugging at the rear camera.
+        if visionAttached {
+            noteVisionStillOrientation(capture: Self.stillTurnSource(forClips: forClips, movie: movieOutput.connection(with: .video),
+                                                                     photo: photoOutput.connection(with: .video)),
+                                       tap: visionOutput.connection(with: .video),
+                                       session: (position == .front ? "front camera" : "rear camera") + (forClips ? ", clips" : ", photos"))
+        }
         if visionTapEnabled {
             let active = visionAttached && (visionOutput.connection(with: .video)?.isActive ?? false)
             visionTapActive = active
@@ -925,6 +947,10 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
         // output whose connection is inactive is the failure mode that looks exactly like a
         // working one from the app's side.
         if visionTapEnabled, visionTapActive == true {
+            noteVisionStillOrientation(capture: Self.stillTurnSource(forClips: forClips, movie: frontMovieOutput.connection(with: .video),
+                                                                     photo: frontPhotoOutput.connection(with: .video)),
+                                       tap: visionOutput.connection(with: .video),
+                                       session: forClips ? "both cameras, the front's tap, clips" : "both cameras, the front's tap, photos")
             let live = visionOutput.connection(with: .video)?.isActive ?? false
             visionTapActive = live
             if live {
@@ -954,6 +980,28 @@ final class CameraController: NSObject, ObservableObject, @unchecked Sendable {
             self.visionWindowStart = nil
             self.visionProcessed = 0
         }
+    }
+
+    /// Whose turn and mirroring the Vision still takes (item 239; item 242's round q, item 241's A5): the event's capture
+    /// output's, so that the still shows the view as the event's photo or clip does. A clip session (a new install's
+    /// default) has the movie output and no photo output, whose connection was then nil and gave the still no turn.
+    nonisolated static func stillTurnSource<Connection>(forClips: Bool, movie: Connection?, photo: Connection?) -> Connection? {
+        forClips ? movie : photo
+    }
+
+    /// How the tap's stills are turned for the session just configured (item 239): as the event's capture is, from the
+    /// capture output's connection (`stillTurnSource`: the photo output's, or in a clip session the movie output's) and
+    /// its turn and mirroring, with the tap's own undone; handed to the tap's queue, which reads it. The values and the
+    /// turn chosen go to the camera log, under `session` (item 242's round r).
+    private func noteVisionStillOrientation(capture: AVCaptureConnection?, tap: AVCaptureConnection?, session: String) {
+        let captureAngle = capture?.videoRotationAngle ?? 0, captureMirrored = capture?.isVideoMirrored ?? false
+        let tapAngle = tap?.videoRotationAngle ?? 0, tapMirrored = tap?.isVideoMirrored ?? false
+        let orientation = Self.stillOrientation(photoAngle: captureAngle, photoMirrored: captureMirrored,
+                                                tapAngle: tapAngle, tapMirrored: tapMirrored)
+        let note = Self.stillOrientationNote(session: session, captureAngle: captureAngle, captureMirrored: captureMirrored,
+                                             tapAngle: tapAngle, tapMirrored: tapMirrored, orientation: orientation)
+        Log.camera.info("\(note, privacy: .public)")
+        visionQueue.async { self.visionStillOrientation = orientation }
     }
 
     /// Hands the shared vision output back from whichever session isn't about to use it.
@@ -1512,9 +1560,72 @@ extension CameraController: AVCaptureFileOutputRecordingDelegate {
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        processVisionFrame(pb)
+    }
+
+    #if DEBUG
+    /// Test-only (item 239): one frame of the tap, on the tap's own queue, as the camera hands it over.
+    nonisolated func processVisionFrameForTesting(_ pixelBuffer: CVPixelBuffer) {
+        visionQueue.sync { processVisionFrame(pixelBuffer) }
+    }
+    #endif
+
+    /// A colour JPEG of `pixelBuffer`, turned by `orientation`, at most `maxDimension` pixels on its long side (item
+    /// 239): the still of Vision's reference. nil when it cannot be made.
+    nonisolated static func referenceStillJPEG(from pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation,
+                                               maxDimension: CGFloat = 640) -> Data? {
+        let turned = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        let longSide = max(turned.extent.width, turned.extent.height)
+        guard longSide > 0 else { return nil }
+        let scale = min(1, maxDimension / longSide)
+        let scaled = turned.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let placed = scaled.transformed(by: CGAffineTransform(translationX: -scaled.extent.origin.x, y: -scaled.extent.origin.y))
+        let colours = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
+        return stillContext.jpegRepresentation(of: placed, colorSpace: colours, options: [quality: 0.7])
+    }
+
+    /// The context the stills are drawn in, made once: CoreImage's contexts are safe to share between threads.
+    private static let stillContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// The orientation that shows a frame of the tap as the event's capture shows its view (item 239): the capture
+    /// connection's turn and mirroring, with the tap's own undone. A connection mirrors after it turns, so a mirrored tap
+    /// reverses the turn that undoes it (item 242's round r, gpt6-astra-q1: with the tap mirrored and a quarter turn from
+    /// the capture, the still came out upside down). `photoAngle` and `photoMirrored` are the capture connection's: the
+    /// photo output's, or in a clip session the movie output's (`stillTurnSource`).
+    nonisolated static func stillOrientation(photoAngle: CGFloat, photoMirrored: Bool,
+                                             tapAngle: CGFloat, tapMirrored: Bool) -> CGImagePropertyOrientation {
+        let difference = Int((photoAngle - tapAngle).rounded())
+        let turn = (((tapMirrored ? -difference : difference) % 360) + 360) % 360
+        switch (turn, photoMirrored != tapMirrored) {
+        case (90, false): return .right
+        case (180, false): return .down
+        case (270, false): return .left
+        case (90, true): return .leftMirrored
+        case (180, true): return .downMirrored
+        case (270, true): return .rightMirrored
+        case (_, true): return .upMirrored
+        default: return .up
+        }
+    }
+
+    /// The camera log's line for a still's turn (item 242's round r, gpt6-astra-q1): the session, both connections' turn
+    /// and mirroring, and the orientation chosen (its EXIF number), so that a phone's Console shows which case it is in.
+    /// The app sets no connection's turn or mirroring: iOS's defaults decide them.
+    nonisolated static func stillOrientationNote(session: String, captureAngle: CGFloat, captureMirrored: Bool,
+                                                 tapAngle: CGFloat, tapMirrored: Bool,
+                                                 orientation: CGImagePropertyOrientation) -> String {
+        func connection(_ angle: CGFloat, _ mirrored: Bool) -> String { "\(Int(angle.rounded()))°" + (mirrored ? " mirrored" : "") }
+        return "Vision still (\(session)): the capture's connection \(connection(captureAngle, captureMirrored)), "
+            + "the tap's \(connection(tapAngle, tapMirrored)); the still turned by orientation \(orientation.rawValue)"
+    }
+
+    /// One frame of the tap, on `visionQueue`: every `visionDecimation`th is reduced to the detector's grid and handed
+    /// to the main actor.
+    nonisolated private func processVisionFrame(_ pb: CVPixelBuffer) {
         visionFrameCounter &+= 1
-        guard visionFrameCounter % Self.visionDecimation == 0,
-              let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard visionFrameCounter % Self.visionDecimation == 0 else { return }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return }
@@ -1540,6 +1651,16 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             visionWindowStart = now
             Log.camera.info("Vision tap: \(self.visionProcessed, privacy: .public) frames, \(fps, format: .fixed(precision: 2), privacy: .public) fps")
         }
-        Task { @MainActor in self.onVisionFrame?(frame) }
+        // The still Vision asked for, of this frame, handed over with it in one step (item 239): made only when asked
+        // for, once for each time.
+        let wanted = visionStillWanted
+        visionStillWanted = nil
+        let still = wanted.flatMap { number in
+            Self.referenceStillJPEG(from: pb, orientation: visionStillOrientation).map {
+                VisionStill(generation: number, jpeg: $0, takenAt: now)
+            }
+        }
+        if wanted != nil, still == nil { Log.camera.error("Vision tap: the still of the reference could not be made") }
+        Task { @MainActor in self.onVisionFrame?(frame, still) }
     }
 }

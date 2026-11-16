@@ -7,6 +7,8 @@
 //  and removed once the sheet is gone. Only the sheet's operation for the destination picked makes it: iOS asks the
 //  sheet's items as soon as it opens, before anything is picked, and those asks get only a bundle already made (the
 //  device check of 2026-10-31). A bundle that cannot be made is left out, and the sentence and the media go as before.
+//  Item 223's diagnostic (D7 (a), in 1.13's TestFlight build): each ask for the ZIP and each share's end is written to
+//  the share log, with its thread and its time; log lines only, naming no record.
 //
 
 import SwiftUI
@@ -60,6 +62,18 @@ final class EvidenceBundleItem: UIActivityItemProvider, @unchecked Sendable {
     /// Whether the making for a destination that takes files gave a ZIP (item 200): nil until it ran. Apart from `state`,
     /// whose lock a making holds, so a read never waits on one; kept once the share is over.
     private let outcome = Mutex<Bool?>(nil)
+    /// Where item 223's diagnostic lines go (D7 (a)): the share log, in the open, unless a test gives another.
+    private let report: @Sendable (String) -> Void
+    /// When the item was made, just before its sheet opens: the diagnostic's times are counted from here.
+    private let opened = ContinuousClock.now
+    /// Whether a making is under way (item 223's diagnostic): apart from `state`, whose lock a making holds, so the
+    /// sheet's ask can say so before it waits for that lock.
+    private let making = Mutex(false)
+    /// How many shares this launch has made: the last one's number.
+    private static let shares = Mutex(0)
+
+    /// This share's number in this launch (item 223's diagnostic), so one share's lines can be told from another's.
+    let share: Int
 
     /// How long a share waits for its bundle, in seconds (item 220's defect 1). The making signs the export statement
     /// through App Attest, whose calls have no deadline of their own, and can ask Apple to certify a new key; it also
@@ -74,10 +88,18 @@ final class EvidenceBundleItem: UIActivityItemProvider, @unchecked Sendable {
     /// - Parameters:
     ///   - placeholder: where the bundle's ZIP will be, by name: the sheet reads only its kind, a file.
     ///   - limit: how long the making may take before the share goes on without the bundle.
+    ///   - report: where item 223's diagnostic lines go: the share log, in the open, unless a test gives another.
     ///   - make: makes the bundle and returns its ZIP, in a folder of its own; nil when it cannot.
-    init(placeholder: URL, limit: TimeInterval = EvidenceBundleItem.makingLimit, make: @escaping @Sendable () async -> URL?) {
+    init(placeholder: URL, limit: TimeInterval = EvidenceBundleItem.makingLimit,
+         report: @escaping @Sendable (String) -> Void = { EvidenceBundleItem.log($0) },
+         make: @escaping @Sendable () async -> URL?) {
         self.make = make
         self.limit = limit
+        self.report = report
+        share = Self.shares.withLock { shares in
+            shares += 1
+            return shares
+        }
         super.init(placeholderItem: placeholder)
     }
 
@@ -104,20 +126,48 @@ final class EvidenceBundleItem: UIActivityItemProvider, @unchecked Sendable {
     /// share went without it; true when it was made. Kept once the share is over; never waits on a making.
     var madeForTheDestination: Bool? { outcome.withLock { $0 } }
 
+    /// Whether the bundle is being made now (item 223's diagnostic); never waits on a making.
+    var makingUnderWay: Bool { making.withLock { $0 } }
+
+    /// The sheet's end (item 223's diagnostic): reports how the share ended and whether the ZIP's making was asked for.
+    func shareEnded(destination: UIActivity.ActivityType?, completed: Bool) {
+        report(ShareDiagnostic.end(share: share, after: ContinuousClock.now - opened, completed: completed,
+                                   destination: destination, made: madeForTheDestination))
+    }
+
+    /// Writes one of item 223's diagnostic lines to the share log, in the open: it names no record.
+    static func log(_ line: String) {
+        Log.share.notice("\(line, privacy: .public)")
+    }
+
     /// Called on a secondary thread once the owner picks where to send the share, the destination in `activityType`: the
     /// only place the bundle is made. It may not be nil: a bundle not made has its placeholder here, and the sheet's ask
-    /// below leaves it out.
+    /// below leaves it out. Each ask is reported, with its thread, its time and what it got (item 223's diagnostic).
     override var item: Any {
-        if let bundle = madeBundle(for: activityType) { return bundle }
+        let asked = ContinuousClock.now
+        let onMain = Thread.isMainThread
+        let destination = activityType
+        let bundle = madeBundle(for: destination)
+        report(ShareDiagnostic.operationAsk(share: share, onMain: onMain, after: asked - opened, destination: destination,
+                                            took: ContinuousClock.now - asked, got: bundle != nil))
+        if let bundle { return bundle }
         return placeholderItem ?? NSNull()
     }
 
     /// The sheet's own ask for the item, on the main thread: the bundle its operation made for the destination picked, or
     /// nil to leave it out. It never makes one: iOS asks as soon as the sheet opens, before any destination is picked,
-    /// and a bundle made then spent a signature on a sheet that might be cancelled, the main thread held meanwhile.
+    /// and a bundle made then spent a signature on a sheet that might be cancelled, the main thread held meanwhile. Each
+    /// ask is reported, with its thread, its time, whether a making was under way and how long the ask waited (item
+    /// 223's diagnostic: whether this ask ever waits on a making).
     override func activityViewController(_ activityViewController: UIActivityViewController,
                                          itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        keptBundle(for: activityType)
+        let asked = ContinuousClock.now
+        let onMain = Thread.isMainThread
+        let whileMaking = makingUnderWay
+        let bundle = keptBundle(for: activityType)
+        report(ShareDiagnostic.sheetAsk(share: share, onMain: onMain, after: asked - opened, destination: activityType,
+                                        whileMaking: whileMaking, waited: ContinuousClock.now - asked, got: bundle != nil))
+        return bundle
     }
 
     /// The system's destinations that take photos, videos, text or links but never a ZIP: Save Image or Save Video,
@@ -161,7 +211,9 @@ final class EvidenceBundleItem: UIActivityItemProvider, @unchecked Sendable {
             case .finished:
                 return nil
             case .waiting:
+                making.withLock { $0 = true }
                 let url = Self.wait(for: make, atMost: limit)
+                making.withLock { $0 = false }
                 state = .made(url)
                 outcome.withLock { $0 = url != nil }
                 return url
@@ -222,6 +274,61 @@ enum ShareNote {
         case .notNow: return notMade
         case .ready: return made == false ? notMade : nil
         }
+    }
+}
+
+/// Item 223's diagnostic (BACKLOG 223; D7 (a) of docs/design/1.13-fixes.md, the owner's of 2026-11-12): log lines only,
+/// read on the owner's phone with the Console app during 1.13's TestFlight test, for the ruling on item 223's points 2
+/// and 3: on which thread, and when, iOS asks for the ZIP; whether the sheet's own ask ever waits on a making; and
+/// whether a share ever completes with the ZIP's making never asked for. Pure (unit-tested): the lines' words. They name
+/// no record: a share's number in this launch, times since its sheet opened, and the destination, Apple's by its own
+/// name and another app's not named.
+enum ShareDiagnostic {
+    /// A destination as the lines name it: Apple's by its own name; another app's not named, so the log does not list
+    /// the apps on the phone.
+    static func destination(_ type: UIActivity.ActivityType?) -> String {
+        guard let name = type?.rawValue else { return "no destination named" }
+        return name.hasPrefix("com.apple.") ? name : "another app's destination"
+    }
+
+    /// The sheet's own ask (`activityViewController(_:itemForActivityType:)`): its thread, its time since the sheet
+    /// opened, whether a making was under way, how long it waited and whether it got the ZIP.
+    static func sheetAsk(share: Int, onMain: Bool, after: Duration, destination: UIActivity.ActivityType?,
+                         whileMaking: Bool, waited: Duration, got: Bool) -> String {
+        "share \(share): the sheet asked for the ZIP on \(thread(onMain)), \(seconds(after)) after it opened, for "
+            + "\(self.destination(destination)), \(whileMaking ? "while the ZIP was being made" : "with no ZIP being made"); "
+            + "it waited \(seconds(waited)) and got \(got ? "the ZIP" : "none")"
+    }
+
+    /// The ask of the sheet's operation (`item`), once a destination is picked, the one that makes the ZIP: its thread,
+    /// its time since the sheet opened, and what it got after how long.
+    static func operationAsk(share: Int, onMain: Bool, after: Duration, destination: UIActivity.ActivityType?,
+                             took: Duration, got: Bool) -> String {
+        "share \(share): the operation asked for the ZIP on \(thread(onMain)), \(seconds(after)) after the sheet opened, "
+            + "for \(self.destination(destination)); it got \(got ? "the ZIP" : "none") after \(seconds(took))"
+    }
+
+    /// The sheet's end: how it ended, and whether the ZIP's making was asked for. A share that completed to a
+    /// destination that may take a file with the making never asked for (item 223's point 3) says what that cost.
+    static func end(share: Int, after: Duration, completed: Bool, destination: UIActivity.ActivityType?,
+                    made: Bool?) -> String {
+        let making = switch made {
+        case nil where completed && EvidenceBundleItem.takesFile(destination):
+            "the ZIP's making was never asked for, so the share went without it and the screen said nothing"
+        case nil: "the ZIP's making was never asked for"
+        case true?: "the ZIP was made"
+        case false?: "the ZIP could not be made"
+        }
+        return "share \(share): the sheet ended \(seconds(after)) after it opened, "
+            + "\(completed ? "completed" : "not completed"), for \(self.destination(destination)); \(making)"
+    }
+
+    private static func thread(_ onMain: Bool) -> String { onMain ? "the main thread" : "another thread" }
+
+    /// Seconds to the hundredth, with a point whatever the phone's language.
+    private static func seconds(_ duration: Duration) -> String {
+        let (whole, fraction) = duration.components
+        return String(format: "%.2f s", Double(whole) + Double(fraction) / 1e18)
     }
 }
 

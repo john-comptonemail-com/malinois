@@ -1,7 +1,8 @@
 # ADR 0055: Settings that cannot be read yet are not the owner's choices
 
 - **Status:** accepted (the owner's ruling on BACKLOG 152, 2026-10-22: 1.8.1 takes the audit's recommended fixes;
-  lead 3 with lead 17 and hardening note (a)). In 1.8.1 (78), BACKLOG 145 step 12.
+  lead 3 with lead 17 and hardening note (a)). In 1.8.1 (78), BACKLOG 145 step 12. Decision 4 extended in 1.13 to a
+  retention value that alone cannot be read (BACKLOG item 224's point 3; the owner, 2026-11-12: "as you recommend").
 - **Date:** 2026-10-22
 
 ## Context
@@ -43,7 +44,9 @@ start deleting the owner's iCloud media.
    unlocked, in which case the canary is broken, not sealed, and is replaced (the log's rule, mirrored).
 4. **A damaged store falls back to Keep forever.** The reset keeps the iCloud switches where they can be read (ADR
    0049) and sets retention to Keep forever, not 12 months: nothing in iCloud is deleted on the strength of a
-   setting the owner never chose. Home's reset notice is unchanged.
+   setting the owner never chose. Home's reset notice is unchanged. Since 1.13 a retention value that alone cannot be
+   read (a later build's choice, read by this one) falls back to Keep forever too, the other settings as saved; a store
+   from before the setting existed keeps its default of 12 months (`AppSettings.init(from:)`).
 
 ## Path inventory
 

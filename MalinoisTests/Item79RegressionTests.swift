@@ -423,35 +423,6 @@ final class Item79RegressionTests: XCTestCase {
         XCTAssertEqual(Set(store.events.map(\.id)), before)
     }
 
-    /// The owner's Air, 2026-09-25: the log was at its cap and the seed added nothing. Through the
-    /// real store at the real cap: seeding drops only the oldest mirrored copies, and every event
-    /// this device captured stays.
-    func testSeedingAtTheCapDropsOnlyCopies() {
-        let store = EventStore()
-        let old = Date().addingTimeInterval(-86_400)
-        let copies = (0..<(EventStore.maxAuditEvents - 3)).map { i in
-            Event(startDate: old.addingTimeInterval(Double(i)), endDate: old.addingTimeInterval(Double(i)),
-                  triggeredSensors: [], cloudSyncState: .synced, stateChange: "armed", sourceDevice: "Another iPhone")
-        }
-        _ = store.merge(copies)
-        let ownIDs = (0..<3).map { _ in
-            let e = Event(startDate: Date().addingTimeInterval(-600), endDate: Date().addingTimeInterval(-600),
-                          triggeredSensors: [], cloudSyncState: .localOnly, stateChange: "disarmed")
-            store.add(e)
-            return e.id
-        }
-        XCTAssertEqual(store.events.count, EventStore.maxAuditEvents, "the log starts full")
-
-        let result = store.seedUnsyncedBacklogForTesting(count: 100)
-
-        XCTAssertEqual(result.added, 97)
-        XCTAssertEqual(result.droppedCopies, 97)
-        XCTAssertEqual(store.events.count, EventStore.maxAuditEvents)
-        XCTAssertEqual(store.events.filter(\.isMirrored).count, 0)
-        XCTAssertTrue(ownIDs.allSatisfy { id in store.events.contains { $0.id == id } },
-                      "every event this device captured stays")
-    }
-
     /// Through the real store: the seeded rows land newest-first, all counted as not yet synced,
     /// beside what was already there.
     func testSeedingAddsNewestFirstAndCountsAsUnsynced() {

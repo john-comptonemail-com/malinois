@@ -139,6 +139,8 @@ final class SirenPlayer {
     /// path needs audio contention timed against activation — not unit-constructible, see
     /// BACKLOG 42's device-leg note), so SR-1's consume-once rule can be regression-tested.
     func setActivationExhaustedForTesting() { activationExhausted = true }
+    /// The re-check's interval in the tests (item 243's glm-5.3-6), in place of `recheckInterval`.
+    nonisolated(unsafe) static var recheckIntervalForTesting: TimeInterval?
     /// Test-only: the playing player's volume, nil when none plays.
     var volumeForTesting: Float? { player?.volume }
     /// Test-only (item 162's A1): the level the alarm was last started at, before the test runner's silence.
@@ -202,6 +204,27 @@ final class SirenPlayer {
         beginPlayback(rampUp: false, rampFrom: rampStartedAt)
     }
 
+    /// While the alarm should sound, a check this often (item 243's glm-5.3-6): iOS does not post an end for every
+    /// interruption it begins, and the alarm came back only on that end, a new trip or the microphone's release. The
+    /// check is `ensureSounding()`, which acts only when the alarm should sound and does not; during a call iOS refuses
+    /// the audio session, and the attempts fail quietly until the call ends.
+    nonisolated static let recheckInterval: TimeInterval = 5
+    private var recheckTimer: Timer?
+
+    /// Starts the re-check, once, when the alarm is asked to sound; `stop()` ends it. A timer of a safety transition, so a
+    /// common-mode one (item 73's rule; item 243's gpt6-astra-s1): it keeps firing while the run loop tracks a touch, a
+    /// drag on the PIN pad among them.
+    private func startRecheck() {
+        guard recheckTimer == nil else { return }
+        var interval = Self.recheckInterval
+        #if DEBUG
+        if let override = Self.recheckIntervalForTesting { interval = override }
+        #endif
+        recheckTimer = Timer.commonMode(interval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.ensureSounding() }
+        }
+    }
+
     /// Counts a request to sound, for the tests; nothing in Release.
     private func noteSoundRequest() {
         #if DEBUG
@@ -263,6 +286,7 @@ final class SirenPlayer {
     ///   (ADR 0062); false keeps the playback setting, which plays wherever the iPhone's sound goes.
     func start(rampUp: Bool = false, onSpeaker: Bool = false) {
         shouldBeSounding = true
+        startRecheck()
         self.onSpeaker = onSpeaker
         noteSoundRequest()
         if let p = player, p.isPlaying { return }   // already sounding (incl. mid-ramp) — leave it
@@ -274,6 +298,7 @@ final class SirenPlayer {
     /// ramping quietly, or stopped by an interruption. `onSpeaker` as for `start`.
     func goFullVolume(onSpeaker: Bool = false) {
         shouldBeSounding = true
+        startRecheck()
         self.onSpeaker = onSpeaker
         noteSoundRequest()
         rampTimer?.invalidate(); rampTimer = nil
@@ -516,6 +541,7 @@ final class SirenPlayer {
 
     func stop() {
         shouldBeSounding = false                     // an interruption ending must NOT revive it
+        recheckTimer?.invalidate(); recheckTimer = nil   // nor the re-check (item 243's glm-5.3-6)
         rampTimer?.invalidate(); rampTimer = nil     // never let a ramp outlive its player
         rampStartedAt = nil
         playbackRequest &+= 1                         // and no waiting retry outlives the stop

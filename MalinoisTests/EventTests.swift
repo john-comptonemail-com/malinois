@@ -1373,7 +1373,9 @@ final class EventTests: XCTestCase {
     }
 
     /// Both budgets stay independent at capacity, including interrupted status rows;
-    /// cloud copies in either pool cannot evict owned history or pending captures.
+    /// cloud copies in either pool cannot evict owned history or pending captures. Another device's status entries have
+    /// a budget of their own (ADR 0088; item 242's round q): they stay beside a full status history, where they went
+    /// first before; another device's incidents still go first.
     @MainActor
     func testFullPoolsRejectMirrorPressureAndKeepPendingIncidentOnNextCapture() throws {
         let root = try XCTUnwrap(EventStore.rootOverrideForTesting)
@@ -1395,12 +1397,15 @@ final class EventTests: XCTestCase {
                   cloudSyncState: .synced, stateChange: i < 10 ? nil : "armed", sourceDevice: "Other phone")
         }
         _ = store.merge(mirrors)
-        XCTAssertEqual(Set(store.events.map(\.id)), Set((incidents + status).map(\.id)))
+        let statusCopies = Set(mirrors[10...].map(\.id))
+        XCTAssertEqual(Set(store.events.map(\.id)), Set((incidents + status).map(\.id)).union(statusCopies),
+                       "the incident copies go; the status copies stay, in a budget of their own")
         let capture = Event(startDate: future, endDate: future, triggeredSensors: [.touch])
         store.add(capture)
         let disarm = Event(startDate: future, endDate: future, triggeredSensors: [], stateChange: "disarmed")
         store.add(disarm)
-        XCTAssertEqual(store.events.count, 600)
+        XCTAssertEqual(store.events.count, 610)
+        XCTAssertTrue(statusCopies.isSubset(of: Set(store.events.map(\.id))), "another device's status entries stay")
         XCTAssertTrue(store.events.contains { $0.id == incidents.last?.id }, "pending evidence outlives synced evidence")
         XCTAssertFalse(store.events.contains { $0.id == incidents[498].id }, "oldest synced incident makes room")
         XCTAssertFalse(store.events.contains { $0.id == status.last?.id }, "only the oldest status makes room for disarm")

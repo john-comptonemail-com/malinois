@@ -77,10 +77,13 @@ struct MalinoisApp: App {
         // pending recordings no event took (item 108, F8), keeping those a refused save left
         // waiting for this launch (BACKLOG 180's A3). Off the launch path — nothing waits on it,
         // and it only touches files over a day (temp) or a month (pending) old.
+        // A share's bundles the app ended before removing (item 90, phase 4), listed now, before any share can begin, so
+        // the task below never takes a share's ZIP made before it runs (item 243's gpt6-astra-3).
+        let leftoverExports = EvidenceExporter.leftoverFolders()
         Task.detached(priority: .background) {
             CameraController.sweepOrphanedClips()
             CameraController.sweepPendingClipsAtLaunch()
-            EvidenceExporter.removeLeftovers()   // a share's bundle the app ended before removing (item 90, phase 4)
+            EvidenceExporter.remove(leftoverExports)
         }
         // Before this launch can start any upload; repeated construction preserves assets still in use.
         CloudExfiltrator.sweepOrphanedThumbnails()
@@ -91,6 +94,7 @@ struct MalinoisApp: App {
         settings.whenResolved { _ in
             OnboardingState.seedHasDisarmedOnce()
             OnboardingState.seedFirstArmBriefing()
+            OnboardingState.seedFirstSessionCard()   // item 240's D1: new installs only
         }
         let eventStore = EventStore()
         let cloud = CloudExfiltrator()

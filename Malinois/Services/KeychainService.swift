@@ -195,8 +195,10 @@ enum KeychainService {
     }
 
     /// Observes all local evidence, including journals, quarantined logs and media attachment
-    /// intents, without creating files. Empty folders do not count. Inspection errors or
-    /// symbolic links conservatively require recovery, rather than authorize fresh setup.
+    /// intents, without creating files. Empty folders do not count, nor does what a new install
+    /// writes before any PIN exists: the seen and restore markers, and the evidence signer's file
+    /// while it shows no records (`EvidenceSignatureFile.showsRecords(at:)`, item 242). Inspection
+    /// errors or symbolic links conservatively require recovery, rather than authorize fresh setup.
     static func hasPriorLocalEvidence(in root: URL) -> Bool {
         do {
             let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -206,6 +208,10 @@ enum KeychainService {
                 // EventStore creates these bookkeeping markers even on a genuinely new
                 // install, before RootView appears. They are not recorded evidence.
                 if ["seen.json", "restore-owed.json"].contains(child.lastPathComponent) { continue }
+                // The signer writes its file at launch too, before any PIN: its key lines are not records
+                // (item 242's A1 and A2); a line it cannot rule out still counts.
+                if child.lastPathComponent == EvidenceSignatureFile.name,
+                   !EvidenceSignatureFile.showsRecords(at: child) { continue }
                 let kind = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if kind.isSymbolicLink == true || kind.isDirectory != true { return true }
                 if hasPriorLocalEvidence(in: child) { return true }
@@ -434,10 +440,14 @@ enum KeychainService {
     /// can't reset it. The deadline is stored against the monotonic **uptime** clock, not
     /// the wall clock, so an attacker can't skip the wait by moving the device's date
     /// forward (F-09). A reboot resets uptime and thus clears the current wait — but that
-    /// buys an attacker nothing: after a restart iOS requires the *device passcode* before
+    /// buys an attacker no guesses: after a restart iOS requires the *device passcode* before
     /// first unlock (biometrics don't apply, and `WhenUnlockedThisDeviceOnly` keeps this
-    /// item unreadable until then), and the threat model excludes an attacker who has that
-    /// passcode. So a reboot is a dead end, not a rate-limit — and the count survives too.
+    /// item unreadable until then), so someone without that passcode never reaches the pad,
+    /// and someone with it needs no guesses, since after a reinstall the passcode alone sets
+    /// a new PIN. Only on an iPhone with no passcode does a restart allow one more guess
+    /// (SECURITY.md; item 242's F3: this said the threat model excludes the person with the
+    /// passcode, whom SECURITY.md names first). So a reboot is a dead end, not a rate-limit
+    /// — and the count survives too.
     @discardableResult
     @MainActor
     static func recordFailure() -> TimeInterval {

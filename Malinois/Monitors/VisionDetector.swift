@@ -68,7 +68,12 @@ struct VisionDetector {
 
     // MARK: - State
 
-    private(set) var sessionBaseline: [Double] = []
+    /// The reference the slow check compares against: set at the end of calibration, by `rebaseline`, and cleared at
+    /// the start of a calibration. Each change raises `referenceGeneration` (item 239).
+    private(set) var sessionBaseline: [Double] = [] { didSet { referenceGeneration &+= 1 } }
+    /// Raised each time the reference is set or cleared (item 239): a still of the view is asked for at each, and one of
+    /// an earlier reference is never taken for the current one.
+    private(set) var referenceGeneration = 0
     private(set) var rolling: [Double] = []
     private(set) var noise: Double = VisionDetector.minNoise
     private(set) var calibrating = false

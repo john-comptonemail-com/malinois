@@ -416,8 +416,15 @@ final class AppSettings: ObservableObject, Codable {
             micGranted: AVAudioApplication.shared.recordPermission == .granted)
         notifyOtherDevices = try c.decodeIfPresent(Bool.self, forKey: .notifyOtherDevices) ?? true
         cloudBackup = try c.decodeIfPresent(Bool.self, forKey: .cloudBackup) ?? true   // item 115; older settings keep uploading
-        // `try?`, like triggerMode: a future build retiring a case must not reset every setting.
-        cloudRetention = (try? c.decodeIfPresent(CloudRetention.self, forKey: .cloudRetention)) ?? .months12
+        // `try?`, like triggerMode: a future build retiring a case must not reset every setting. A value that cannot be read
+        // (a later build's choice) becomes Keep forever, as a full reset's does: nothing in iCloud is deleted on the
+        // strength of a setting the owner never chose (item 224's point 3). Settings from before the setting keep its
+        // default.
+        if c.contains(.cloudRetention) {
+            cloudRetention = (try? c.decode(CloudRetention.self, forKey: .cloudRetention)) ?? .forever
+        } else {
+            cloudRetention = .months12
+        }
         jammingResponse = try c.decodeIfPresent(Bool.self, forKey: .jammingResponse) ?? true
         responseMode = try c.decodeIfPresent(ResponseMode.self, forKey: .responseMode) ?? .alert
         alertMessage = try c.decodeIfPresent(String.self, forKey: .alertMessage) ?? AppSettings.defaultAlertMessage

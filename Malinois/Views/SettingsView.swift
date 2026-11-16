@@ -10,6 +10,11 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    /// Texts item 240 tests: "monitoring starts" for "the watch goes live" (the owner, 2026-11-12: "(a), (i), 1 to 4
+    /// approved"), and the lawful-use line under "Record audio in clips" (the owner's words, "wording approved").
+    static let armingDelayCaption = "Any enabled tripwire fires on its own. Time to set the device down and step away before monitoring starts."
+    static let audioLawfulUse = "Recording people's voices without their consent is against the law in some places. Check the rules where you use Malinois before turning this on."
+
     /// The iCloud backup switch's caption (item 115). It also names the iPhone's own backups, which it does not
     /// control (Fable's fable-1 on 1.8 (75)).
     static let backupCaption = "Uploads this iPhone's events, photos and clips to your private iCloud. Off: nothing new uploads (a file already being sent finishes), and events recorded while it is off are never uploaded, even after you turn it back on. Turning it off needs Face ID, Touch ID or your passcode and leaves an entry in your log, also sent to iCloud. While it is off, your other devices get no alerts from this iPhone through iCloud; your paired Apple Watch still gets them directly. This switch does not change your iPhone's own backups (iCloud Backup, or a backup made with a computer), which include Malinois's evidence when they are on."
@@ -21,6 +26,11 @@ struct SettingsView: View {
     /// the power-off slider, which Guided Access hides; a forced restart still ends the watch (item 168's deepseek-3: it
     /// said "powering the device off").
     static let requireGuidedAccessCaption = "Refuse to arm unless Guided Access is on. It's what stops a snoop swiping the app away or using the power-off slider. On by default; while you're still testing, the arming screen can lift it for one arm."
+    /// The Security section's footer, reported on screen for the tests that read Settings as shown: that a forced restart
+    /// still ends the armed session, which the Require Guided Access caption above does not say, and where Malinois
+    /// coaches Guided Access (item 242: B1, gpt6-astra-3, then round q, without repeating that caption; the owner's
+    /// "wording approved", 2026-11-14).
+    static let guidedAccessFooter = "A forced restart still ends the armed session, even under Guided Access. Malinois coaches you through Guided Access on the arming screen."
     /// The iCloud section's footer on the free tier: Malinois uploads no evidence, but the iPhone's own backups can hold the
     /// evidence (fable-1; it said the evidence was "on this device only").
     static let freeTierNote = "iCloud backup and cross-device alerts are Pro. On the free tier, Malinois uploads no evidence; your iPhone's own backups (iCloud Backup, or a computer) can still include it."
@@ -150,7 +160,7 @@ struct SettingsView: View {
     private var sensorsSection: some View {
         Section {
             // Touch has no switch (item 83, ADR 0015): its row follows the switchable ones.
-            ForEach(SensorType.allCases.filter { $0 != .camera && $0 != .touch }) { sensor in
+            MainActorForEach(SensorType.allCases.filter { $0 != .camera && $0 != .touch }) { sensor in
                 Toggle(isOn: binding(for: sensor)) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -230,9 +240,9 @@ struct SettingsView: View {
 
     private var sensitivitySection: some View {
         Section("Sensitivity") {
-            ForEach(SensorType.sensitivityTripwires) { sensor in
+            MainActorForEach(SensorType.sensitivityTripwires) { sensor in
                 Picker(selection: sensitivityBinding(for: sensor)) {
-                    ForEach(Sensitivity.allCases) { Text($0.displayName).tag($0) }
+                    ForEach(Sensitivity.allCases) { @Sendable in Text($0.displayName).tag($0) }
                 } label: {
                     Label(sensor.displayName, systemImage: sensor.iconName)
                 }
@@ -264,7 +274,7 @@ struct SettingsView: View {
         } header: {
             Text("Arming")
         } footer: {
-            Text("Any enabled tripwire fires on its own. Time to set the device down and step away before the watch goes live.")
+            Text(Self.armingDelayCaption)
         }
     }
 
@@ -276,7 +286,7 @@ struct SettingsView: View {
             Picker(selection: Binding(
                 get: { settings.responseMode },
                 set: { settings.responseMode = $0 })) {
-                ForEach(ResponseMode.allCases) { Text($0.displayName).tag($0) }
+                ForEach(ResponseMode.allCases) { @Sendable in Text($0.displayName).tag($0) }
             } label: {
                 Text("Mode")
             }
@@ -363,7 +373,7 @@ struct SettingsView: View {
             Picker(selection: Binding(
                 get: { settings.captureMode },
                 set: { settings.captureMode = $0 })) {
-                ForEach(CaptureMode.allCases) { Text($0.displayName).tag($0) }
+                ForEach(CaptureMode.allCases) { @Sendable in Text($0.displayName).tag($0) }
             } label: {
                 // No collar on this row or the Camera row (owner, 2026-09-05): not every option
                 // in these pickers is Pro, and the mark read as if the whole picker were. The
@@ -384,6 +394,9 @@ struct SettingsView: View {
                         Text("Record audio in clips")
                         Text(clipAudioCaption)
                             .font(.caption).foregroundStyle(.secondary)
+                        Text(Self.audioLawfulUse)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .reportedOnScreen(Self.audioLawfulUse)
                     }
                 }
             }
@@ -391,7 +404,7 @@ struct SettingsView: View {
                 get: { settings.cameraPosition },
                 set: { settings.cameraPosition = $0 })) {
                 // Rear and Auto serve the Vision tripwire's setup only (ADR 0012).
-                ForEach(CameraChoice.allCases.filter { settings.isEnabled(.vision) || !$0.needsVision }) {
+                ForEach(CameraChoice.allCases.filter { settings.isEnabled(.vision) || !$0.needsVision }) { @Sendable in
                     Text($0.displayName).tag($0)
                 }
             } label: {
@@ -417,14 +430,14 @@ struct SettingsView: View {
             Picker("Battery mode", selection: Binding(
                 get: { settings.cameraReadiness },
                 set: { settings.cameraReadiness = $0 })) {
-                ForEach(CameraReadiness.allCases) { Text($0.displayName).tag($0) }
+                ForEach(CameraReadiness.allCases) { @Sendable in Text($0.displayName).tag($0) }
             }
             Text(settings.cameraReadiness.summary)
                 .font(.caption).foregroundStyle(.secondary)
             Picker("Illumination", selection: Binding(
                 get: { settings.illumination },
                 set: { settings.illumination = $0 })) {
-                ForEach(IlluminationMode.allCases) { Text($0.displayName).tag($0) }
+                ForEach(IlluminationMode.allCases) { @Sendable in Text($0.displayName).tag($0) }
             }
             Text("Lights the shot (screen flash front / LED rear) so evidence isn't black. Auto only fires in dim light; Off = full stealth.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -471,7 +484,8 @@ struct SettingsView: View {
         } header: {
             Text("Security")
         } footer: {
-            Text("Guided Access (single-app mode) is strongly recommended while armed - it stops a snoop from switching away or powering off. Malinois coaches you through it on the arming screen.")
+            Text(Self.guidedAccessFooter)
+                .reportedOnScreen(Self.guidedAccessFooter)
         }
     }
 
@@ -581,7 +595,7 @@ struct SettingsView: View {
             Picker(selection: Binding(
                 get: { settings.cloudRetention },
                 set: { settings.cloudRetention = $0 })) {
-                ForEach(CloudRetention.allCases) { Text($0.displayName).tag($0) }
+                ForEach(CloudRetention.allCases) { @Sendable in Text($0.displayName).tag($0) }
             } label: {
                 HStack { Text("iCloud Photo & Video Storage"); proMark }
             }
@@ -589,17 +603,21 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             if settings.cloudRetention == .manual {
                 Button("Free up iCloud space…") { showPurgeDialog = true }
+                    .reportedAction("Free up iCloud space…") { showPurgeDialog = true }
                     .confirmationDialog("Delete full-resolution photos and clips from iCloud?",
                                         isPresented: $showPurgeDialog, titleVisibility: .visible) {
-                        ForEach([1, 3, 6, 12], id: \.self) { months in
-                            Button("Older than \(months) month\(months == 1 ? "" : "s")",
-                                   role: .destructive) {
-                                Task { await runPurge(monthsOld: months) }
-                            }
-                        }
+                        purgeChoice(1)
+                        purgeChoice(3)
+                        purgeChoice(6)
+                        purgeChoice(12)
                         Button("Cancel", role: .cancel) {}
                     } message: {
                         Text("Event facts, thumbnails, and arm/disarm records are kept. Nothing newer than 30 days can be deleted. This cannot be undone.")
+                    }
+                    // A test that lays Settings out presses the six months' choice (item 235's A10).
+                    .reportedDialog("Delete full-resolution photos and clips from iCloud?", isPresented: $showPurgeDialog,
+                                    button: "Older than 6 months: Delete full-resolution photos and clips from iCloud?") {
+                        Task { await runPurge(monthsOld: 6) }
                     }
             }
             if let purgeNote {
@@ -739,7 +757,7 @@ struct SettingsView: View {
     /// copy-the-address as the way out. The destinations live in `AppLinks`, pinned by test.
     private var helpSection: some View {
         Section {
-            ForEach(AppLinks.rows) { row in
+            MainActorForEach(AppLinks.rows) { row in
                 Link(destination: row.url) {
                     Label(row.title, systemImage: row.symbol)
                 }
@@ -756,12 +774,21 @@ struct SettingsView: View {
         }
     }
 
+    /// The purge dialog's choice for photos and clips older than `months` (item 246: four buttons rather than a loop, as
+    /// a fixed list needs none).
+    private func purgeChoice(_ months: Int) -> some View {
+        Button("Older than \(months) month\(months == 1 ? "" : "s")", role: .destructive) {
+            Task { await runPurge(monthsOld: months) }
+        }
+    }
+
     /// The Manual retention mode's explicit purge (32.R2). The 30-day protection floor is
     /// enforced by the cloud entry point using server dates, independent of the phone clock.
+    /// Through the engine, which writes its entry in the Event Log (item 235's A10).
     private func runPurge(monthsOld months: Int) async {
         guard entitlements.proActive else { return }
         purgeNote = "Deleting…"
-        let result = await cloud.purgeFullMedia(monthsOld: months)
+        let result = await engine.freeUpICloudSpace(monthsOld: months)
         purgeNote = result.failed
             ? "Some records couldn't be deleted - check iCloud and try again."
             : "Deleted full media from \(result.eventsExamined) event(s)."
@@ -1584,7 +1611,7 @@ struct Spike14View: View {
                 if model.log.isEmpty {
                     Text("No entries yet.").foregroundStyle(.secondary)
                 }
-                ForEach(Array(model.log.enumerated()), id: \.offset) { _, line in
+                ForEach(Array(model.log.enumerated()), id: \.offset) { @Sendable _, line in
                     Text(line).font(.caption.monospaced())
                 }
             }

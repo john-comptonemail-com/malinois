@@ -210,8 +210,8 @@ struct ArmedView: View {
     @ViewBuilder
     private var armedDurationBadge: some View {
         if let since = engine.armedSince {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text("Armed for \(context.date.timeIntervalSince(since).clockString)")
+            MainActorTimelineView(.periodic(from: .now, by: 1)) { date in
+                Text("Armed for \(date.timeIntervalSince(since).clockString)")
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.6))
                     .reportedOnScreen("Armed for")
@@ -318,6 +318,10 @@ struct AlertMessageView: View {
                 .frame(maxWidth: .infinity)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.1)))
                 .padding(.top, 10)
+                // Laid out before the message, which can shrink to fit: a stack offers its parts equal shares of the
+                // room, and at the capped size on a short screen the box's share was a line short of 1.13's longer tip
+                // though the warning had room for it, so the tip lost its last line (item 240).
+                .layoutPriority(1)
             }
         }
         .padding(36)

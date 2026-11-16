@@ -331,10 +331,11 @@ enum SetAsideLogWords {
     }
     /// The README in its ZIP. Since item 232 (DS-1 of the second full review; the owner, 2026-11-11: "wording
     /// approved") it says which photos and clips the ZIP has: those still on the iPhone, as `SetAsideLogShare.folder`
-    /// takes them, where it said "the photos and clips it names".
+    /// takes them, where it said "the photos and clips it names"; and since 1.13 not those the current event log also
+    /// names (item 241's gpt6-astra-r1; the owner, 2026-11-13: "as you recommend, wording approved").
     static let readme = "This ZIP contains an event log Malinois set aside because it couldn't be read, with the photos and clips "
-        + "it names that were still on the iPhone when it was shared. It is not signed evidence: it is the file as the phone "
-        + "kept it. Malinois's verifier does not check it."
+        + "it names that were still on the iPhone when it was shared, except any the current event log also names. It is not "
+        + "signed evidence: it is the file as the phone kept it. Malinois's verifier does not check it."
 
     /// The Event Log's row: "Set-aside log, Nov 7, 1:25 PM: 37 records, 2 unreadable", the time as the event log's own lines
     /// give one; no count of unreadable parts when there are none, and no time for a name without one.
@@ -346,8 +347,9 @@ enum SetAsideLogWords {
     }
 }
 
-/// Share of a set-aside log (item 122's decision 2 (a)): one ZIP of the file as the phone kept it, the photos and clips it
-/// names that are on the phone, and a README saying it is not signed evidence.
+/// Share of a set-aside log (item 122's decision 2 (a); ADR 0087 since 1.13): one ZIP of the file as the phone kept it, the
+/// photos and clips it names that are on the phone and that the current log does not name, and a README saying it is not
+/// signed evidence.
 enum SetAsideLogShare {
     /// The ZIP's name: "Malinois set-aside log" and when it was set aside, in the evidence ZIP's form ("2026-11-07 1325").
     static func name(for log: SetAsideLog) -> String {
@@ -364,8 +366,11 @@ enum SetAsideLogShare {
     /// nil when the file cannot be read or is not a plain file. A file under any other name is not the log's, and is
     /// not carried, as the log's screen does not show it. The photos and clips are taken as plain
     /// files from a real media folder only (item 218's Codex-1): nothing is read through a link, in the log's place, the
-    /// media folder's or a photo's, and a folder under a photo's name is not copied.
-    static func folder(of log: SetAsideLog, mediaDirectory: URL, in directory: URL) throws -> URL? {
+    /// media folder's or a photo's, and a folder under a photo's name is not copied. A photo or clip in `liveMedia`, the
+    /// current log's and those of captures still being saved (`EventStore.mediaSetAsideShareLeavesOut`), stays out
+    /// (`sharedMedia`, item 241's A4, gpt6-astra-r1 and -m1).
+    static func folder(of log: SetAsideLog, mediaDirectory: URL, in directory: URL,
+                       liveMedia: Set<String> = []) throws -> URL? {
         guard EventStore.isPlainFile(log.url), let bytes = try? Data(contentsOf: log.url) else { return nil }
         let manager = FileManager.default
         let folder = directory.appendingPathComponent(name(for: log), isDirectory: true)
@@ -375,10 +380,11 @@ enum SetAsideLogShare {
         let onPhone = EventStore.realDirectory(mediaDirectory)
             ? ((try? manager.contentsOfDirectory(atPath: mediaDirectory.path)) ?? []) : []
         let forms = SetAsideLog.searchForms(of: bytes)
-        let named = onPhone.filter { name in
+        let found = onPhone.filter { name in
             EventStore.isStoredMediaName(name) && SetAsideLog.names(name, in: forms)
                 && EventStore.isPlainFile(mediaDirectory.appendingPathComponent(name))
         }
+        let named = sharedMedia(named: found, liveMedia: liveMedia)
         guard !named.isEmpty else { return folder }
         let media = folder.appendingPathComponent("Media", isDirectory: true)
         try manager.createDirectory(at: media, withIntermediateDirectories: true)
@@ -388,16 +394,34 @@ enum SetAsideLogShare {
         return folder
     }
 
+    /// The photos and clips the current log names (item 241's A4): with those of captures still being saved, what Share of
+    /// a set-aside log leaves out (`EventStore.mediaSetAsideShareLeavesOut`, gpt6-astra-m1).
+    static func liveMedia(of events: [Event]) -> Set<String> {
+        Set(events.flatMap(\.storedMediaNames))
+    }
+
+    /// Pure (unit-tested): which of `named`, the photos and clips a set-aside log's bytes name, Share carries: those the
+    /// current log does not name (item 241's A4, DeepSeek-4, and gpt6-astra-r1; ADR 0087). Only an edited backup restored
+    /// to the phone can make a set-aside log name a live capture, and nothing in the set-aside file can show which event a
+    /// photo is of: an edit can copy a live event's ID as readily as its photo's name. So, as its Delete, Share leaves out
+    /// every photo and clip the current log names, a record the journal brought back included, whose event in the Event
+    /// Log shares it; and, in the names the store gives, every one a capture still being saved names (gpt6-astra-m1).
+    static func sharedMedia(named: [String], liveMedia: Set<String>) -> [String] {
+        named.filter { !liveMedia.contains($0) }
+    }
+
     /// Share's ZIP of `log`, in a folder of its own under `temporaryDirectory`, named as the evidence ZIP's are so that a
-    /// launch clears one a share left behind (`EvidenceExporter.removeLeftovers`); nil when the file cannot be read or is
-    /// not a plain file.
+    /// launch clears one a share left behind (`EvidenceExporter.leftoverFolders`, listed at launch); nil when the file
+    /// cannot be read or is not a plain file. `liveMedia`: the photos and clips Share leaves out, as the store gives them
+    /// (`EventStore.mediaSetAsideShareLeavesOut`: the current log's and those of captures still being saved).
     static func zip(of log: SetAsideLog, mediaDirectory: URL,
-                    temporaryDirectory: URL = FileManager.default.temporaryDirectory) throws -> URL? {
+                    temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+                    liveMedia: Set<String> = []) throws -> URL? {
         let manager = FileManager.default
         let place = temporaryDirectory.appendingPathComponent(EvidenceExporter.folderPrefix + UUID().uuidString, isDirectory: true)
         try manager.createDirectory(at: place, withIntermediateDirectories: true)
         do {
-            guard let folder = try folder(of: log, mediaDirectory: mediaDirectory, in: place) else {
+            guard let folder = try folder(of: log, mediaDirectory: mediaDirectory, in: place, liveMedia: liveMedia) else {
                 try? manager.removeItem(at: place)
                 return nil
             }

@@ -1179,16 +1179,21 @@ final class Item90SignerTests: XCTestCase {
         XCTAssertEqual(file.read()?.filter { $0.kind == .absenceLogged }.map(\.records), [[a.id]], "noted once a write held it")
     }
 
-    /// The limit removing an iCloud copy lists nothing: only this phone's own records are signed.
+    /// The limit removing an iCloud copy lists nothing: only this phone's own records are signed. Since item 242's round
+    /// q other devices' status entries have a budget of their own (ADR 0088), so the limit removes one when a pull brings
+    /// one more than that budget, not when this phone's own history is full (the copy went first then).
     func testTheLimitRemovingAnICloudCopyListsNothing() throws {
         TestIsolation.setUp(folderPrefix: "Item182RemovalsCopy")
         defer { TestIsolation.tearDown() }
         let store = EventStore()
-        var copy = statusEvent(0)
-        copy.sourceDevice = "iPhone Air"
-        store.add(copy)
-        for minute in 1...EventStore.maxAuditEvents { store.add(statusEvent(minute)) }
-        XCTAssertFalse(store.events.contains { $0.id == copy.id }, "the copy went first")
+        let copies = (0...EventStore.maxMirroredAuditEvents).map { minute in
+            var copy = statusEvent(minute)
+            copy.sourceDevice = "iPhone Air"
+            copy.cloudSyncState = .synced
+            return copy
+        }
+        _ = store.merge(copies)
+        XCTAssertFalse(store.events.contains { $0.id == copies[0].id }, "the oldest copy went")
         XCTAssertEqual(store.limitRemovals, [])
     }
 

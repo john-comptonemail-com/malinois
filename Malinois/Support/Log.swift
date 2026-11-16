@@ -35,6 +35,9 @@ enum Log {
     /// Camera session plumbing — in particular the vision tap, whose failure mode is
     /// silence (frames simply never arrive), so it has to say what happened out loud.
     static let camera = Logger(subsystem: subsystem, category: "camera")
+    /// The share sheet's evidence ZIP (item 223's diagnostic, D7 (a)): when iOS asks for it, on which thread, and how
+    /// each share ended. Its lines name no record, so they are written in the open, for the Console app on the phone.
+    static let share  = Logger(subsystem: subsystem, category: "share")
 
     /// Pure (unit-tested): the public, identifier-free half of an error log line —
     /// "domain#code" (e.g. "CKErrorDomain#4"). Log this `.public` and the description

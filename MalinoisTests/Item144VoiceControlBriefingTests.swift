@@ -24,7 +24,8 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
                                            "com.malinois.onboarding.acknowledgedGuidedAccessBriefing",
                                            "com.malinois.onboarding.acknowledgedVoiceControlBriefing",
                                            "com.malinois.onboarding.hasArmedOnce",
-                                           "com.malinois.onboarding.acknowledgedSideButtonBriefing"]
+                                           "com.malinois.onboarding.acknowledgedSideButtonBriefing",
+                                           "com.malinois.onboarding.acknowledgedNoDeleteBriefing"]
     nonisolated private static let voiceControlKey = "com.malinois.onboarding.acknowledgedVoiceControlBriefing"
     private static let pendingReArmKey = "com.malinois.recovery.pendingReArm"
     private static let shortScreen = CGSize(width: 375, height: 667)
@@ -40,6 +41,7 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
         // Part 4, the Side Button (BACKLOG 153), has tests of its own: acknowledged here, so these tests see parts
         // 1 to 3 as before.
         OnboardingState.acknowledgedSideButtonBriefing = true
+        OnboardingState.acknowledgedNoDeleteBriefing = true   // part 5 (item 240) has tests of its own
     }
 
     override func tearDown() {
@@ -183,13 +185,13 @@ final class Item144VoiceControlBriefingTests: XCTestCase {
 
     // MARK: - The screen
 
-    /// The owner's approved words.
+    /// The owner's approved words (since item 242's round q, 2026-11-14: that it is off unless the owner turned it on).
     func testThePartUsesTheApprovedWords() {
         XCTAssertEqual(FirstArmBriefing.voiceControlHeading, "Voice Control")
         XCTAssertEqual(FirstArmBriefing.voiceControlText,
-                       "If you use Voice Control, turn it OFF before you arm (Settings → Accessibility → Voice Control). "
-                        + "It keeps working under Guided Access and can be told to close Malinois. Malinois can't see "
-                        + "whether it is on, so this is up to you.")
+                       "Voice Control is off unless you turned it on. If you did, turn it OFF before you arm (Settings → "
+                        + "Accessibility → Voice Control): it keeps working under Guided Access and can be told to close "
+                        + "Malinois. Malinois can't see whether it is on, so this is up to you.")
     }
 
     /// The part alone shows its heading and text under the screen's title, footnote and button, and nothing of the

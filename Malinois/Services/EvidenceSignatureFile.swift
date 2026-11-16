@@ -14,6 +14,42 @@ struct EvidenceSignatureFile: Sendable {
     /// The file's name, in the event log's folder.
     static let name = "evidence-signatures.jsonl"
 
+    /// The largest file whose lines the launch reads to judge whether it shows records (`showsRecords(at:)`). A new
+    /// install's key lines come to a few kilobytes; a file past this counts unread.
+    static let launchReadLimit = 1 << 20
+
+    /// Whether the file at `url` shows that its folder held records, for the launch's question whether an earlier
+    /// install's evidence is there (`KeychainService.hasPriorLocalEvidence`). The signer writes this file at launch,
+    /// before any PIN exists, so a new install's has key lines only: a key made (`keyPending`) or lost (`keyLost`), a
+    /// certification naming no records (`keyCertified`), or this device's lack of App Attest (`unsupported`). Those show
+    /// nothing (item 242's A1 and A2: the file alone made a second launch before a PIN ask for PIN recovery, and a
+    /// reinstall owe no entry). A signed statement, an absence statement's line, a history gap, or a certification that
+    /// names the log's records shows records. So does whatever this cannot rule out: a file that is not a regular file
+    /// (a link) or cannot be read (the phone locked, a fault), one past `launchReadLimit`, or a line that does not
+    /// decode (a kind added later, or a line a kill cut short).
+    static func showsRecords(at url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, (values.fileSize ?? Int.max) <= launchReadLimit,
+              let data = try? Data(contentsOf: url) else { return true }
+        return showsRecords(data)
+    }
+
+    /// `showsRecords(at:)` for the file's bytes, line by line.
+    static func showsRecords(_ data: Data) -> Bool {
+        for line in data.split(separator: newline, omittingEmptySubsequences: true) {
+            guard let entry = try? StoredJSON.decode(Entry.self, from: Data(line)) else { return true }
+            switch entry.kind {
+            case .keyPending, .keyLost, .unsupported:
+                continue
+            case .keyCertified:
+                if !(entry.existing ?? []).isEmpty { return true }   // the install's first: the records the log had
+            case .signature, .absenceLogged, .historyMissing:
+                return true
+            }
+        }
+        return false
+    }
+
     /// What an entry is.
     enum EntryKind: String, Codable, Sendable {
         /// A key made, with the statement Apple is asked to certify (kept for retries with the same statement).

@@ -152,6 +152,8 @@ final class MonitoringEngine: ObservableObject {
     /// What the running launch pull is doing, for Home's wording (owner, 2026-10-11): a restore
     /// only for an empty log or an owed restore, otherwise a routine check for new events.
     @Published private(set) var currentLaunchPull: LaunchPullKind = .checking
+    /// How the last pull of the event log from iCloud went (item 227's Codex-1): Home and the Event Log say it.
+    @Published private(set) var lastCloudPull: CloudPullOutcome?
     /// True while the CURRENT arming flow was started automatically after a crash/force-
     /// quit recovery (not by the owner). Cancelling it requires the PIN (R-04).
     @Published private(set) var armWasAutoRecovered = false
@@ -373,6 +375,7 @@ final class MonitoringEngine: ObservableObject {
         cloudCoordinator.onCloudPushRefusedChange = { [weak self] in self?.cloudPushRefused = $0 }
         cloudCoordinator.onCloudRestoreInProgressChange = { [weak self] in self?.cloudRestoreInProgress = $0 }
         cloudCoordinator.onCurrentLaunchPullChange = { [weak self] in self?.currentLaunchPull = $0 }
+        cloudCoordinator.onLastCloudPullChange = { [weak self] in self?.lastCloudPull = $0 }
         cloudCoordinator.onPendingSweepActiveChange = { [weak self] in self?.pendingSweepActive = $0 }
         cloudCoordinator.onPendingSweepWaitingChange = { [weak self] in self?.pendingSweepWaiting = $0 }
     }
@@ -463,6 +466,7 @@ final class MonitoringEngine: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshBrightness() }
         handTheUploaderTheLog()   // item 162's A10
+        watchSetAsideDeletesOwed()   // item 235's A11
         recoverInterruptedSessionIfNeeded()
         UserDefaults.standard.removeObject(forKey: Self.retiredGuidedAccessAtDisarmKey)   // item 70
         // The launch-order hole (fifth review, round 3): this init runs inside the app's
@@ -846,7 +850,10 @@ final class MonitoringEngine: ObservableObject {
             .motion: motion, .power: power, .proximity: proximity, .audio: audio, .vision: vision
         ]
         // Frames from the camera's video tap feed the vision tripwire (BACKLOG 16).
-        camera.onVisionFrame = { [weak vision] frame in vision?.ingest(frame) }
+        // With each frame, the still of Vision's reference when it asked for one; and its asking goes to the camera
+        // (item 239, ADR 0081).
+        camera.onVisionFrame = { [weak vision] frame, still in vision?.ingest(frame, still: still) }
+        vision.onReferenceStillWanted = { [camera] number in camera.requestVisionStill(generation: number) }
         for (_, m) in monitors {
             m.onTrip = { [weak self] type in self?.handleTrip(type) }
         }
@@ -1427,6 +1434,7 @@ final class MonitoringEngine: ObservableObject {
             startHeartbeat(session: armedRecord.id)     // item 52: its beats name this record
             armingFlow.consumeLiftSpree() // the watch going live consumes the lift spree (R3-8, narrowed by item 73 R3.4)
             OnboardingState.hasArmedOnce = true   // the first-arm Guided Access auto-lift is now spent (68)
+            if guidedAccessEnabled { OnboardingState.hasArmedUnderGuidedAccess = true }   // item 240's D3: the steps fold
         }
         startThermalSentinel()           // item 38; idempotent within a watch
         startClockWatch()                // item 113
@@ -2083,6 +2091,7 @@ extension MonitoringEngine: MonitoringTripHost {
     }
     func tripNoteMotion(at date: Date) { lastMotionTrip = date }
     func tripRecentTrace(for sensor: SensorType) -> [Double]? { monitors[sensor]?.recentTrace() }
+    func tripTakeVisionReferenceStill() -> VisionStill? { visionMonitor?.takeTripStill() }
     func tripRearmSensor(_ sensor: SensorType) { monitors[sensor]?.rearm() }
     func tripRebaselineEnabledSensors() {
         for (_, m) in monitors where m.isEnabled { m.rearmAndRebaseline() }

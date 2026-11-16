@@ -21,7 +21,8 @@ final class Item152WalkAwayTests: XCTestCase {
 
     nonisolated private static let ackKeys = ["com.malinois.onboarding.acknowledgedDisarmBriefing",
                                               "com.malinois.onboarding.acknowledgedGuidedAccessBriefing",
-                                              "com.malinois.onboarding.acknowledgedVoiceControlBriefing"]
+                                              "com.malinois.onboarding.acknowledgedVoiceControlBriefing",
+                                              "com.malinois.onboarding.acknowledgedNoDeleteBriefing"]   // part 5 (item 240): a new install's first arm has it too
     /// The simulator's own acknowledgments, put back after each test.
     nonisolated(unsafe) private var savedAcks: [String: Any] = [:]
 

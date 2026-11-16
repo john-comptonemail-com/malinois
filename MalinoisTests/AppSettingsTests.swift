@@ -589,8 +589,8 @@ final class AppSettingsTests: XCTestCase {
 
     // MARK: - Cloud retention policy (32.R2)
 
-    /// Settings saved before the policy existed decode to the default (auto, 12 months) —
-    /// and an unknown future case degrades to the default instead of resetting everything.
+    /// Settings saved before the policy existed decode to the default (auto, 12 months). An unknown future case degrades
+    /// to Keep forever instead of resetting everything (item 224's point 3, Item224FailureNoticeTests).
     func testCloudRetentionDefaultsAndRoundTrip() throws {
         let fresh = AppSettings()
         XCTAssertEqual(fresh.cloudRetention, .months12, "the default is the least destructive auto value")

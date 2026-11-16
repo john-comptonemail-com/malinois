@@ -6,6 +6,8 @@
   posts). Written 2026-11-10, after a sweep of the documents against the code found the three stale; ADR 0052 has had
   its amendments, so under AGENTS.md's rule this is a record of its own.
 - **Date:** 2026-11-10
+- **Superseded in part** by ADR 0082 (1.13, BACKLOG item 219): decision 1's last sentence, and the consequence
+  naming item 219. Since 1.13 an alert the wake's end cuts off is written down and shown at the next launch or wake.
 
 ## Context
 
@@ -19,7 +21,7 @@ decision 4 gave every such read 2 seconds. A backlog of alerts with a list slow 
 
 1. **A link wake is given back after 10 seconds at the latest,** whatever is still in flight (`WatchLinkWakes`; item 212).
    An alert whose handling that cuts off is shown when the app next runs, or lost if watchOS ends the suspended app
-   first.
+   first (until 1.13: see ADR 0082).
 2. **The alerts handed over in one run share 2 seconds for their reads of the list** (`WatchRelayInbox`; item 218). A run
    is the alerts handed in while any is still to be handled. The time a read took counts whether or not the list
    answered. Once the 2 seconds are used, the rest of the run is posted without the list, as an alert already was when
@@ -33,8 +35,8 @@ decision 4 gave every such read 2 seconds. A backlog of alerts with a list slow 
 - Six alerts and a list that does not answer cost one wait of 2 seconds, where they cost six.
 - An alert posted without the list can leave its event with two entries in the watch's list until the next tidy-up: one
   more case beside those ADR 0052's decision 5 lists.
-- Not done, and for the next release (BACKLOG item 219): an alert written down when it is handed over and kept until it
-  is shown. Until then a post that is itself slow can still be cut off, and an alert cut off is only in memory.
+- Not done here, and done in 1.13 (BACKLOG item 219, ADR 0082): an alert written down when it is handed over, until it
+  is shown. Until then a post that is itself slow could still be cut off, and an alert cut off was only in memory.
 - Superseded by this record: ADR 0043's "holds each background wake until the link has handed over everything queued and
   every alert it handed over has been posted"; ADR 0051's "in a background wake that is held until the alert is handled";
   and, for the reads before posts, ADR 0052's "Every pairing or clean-up read of the list in the app ... has a deadline
