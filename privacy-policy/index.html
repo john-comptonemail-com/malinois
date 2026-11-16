@@ -52,7 +52,7 @@
 
   <h1>Privacy Policy — Malinois</h1>
   <div class="meta">
-    <div><strong>Effective date:</strong> 12 November 2026</div>
+    <div><strong>Effective date:</strong> 15 November 2026</div>
     <div><strong>Developer:</strong> John Compton</div>
     <div><strong>Contact:</strong> <a href="mailto:support@comptonemail.com">support@comptonemail.com</a></div>
   </div>
@@ -82,9 +82,11 @@
     If you turn on the optional <strong>Vision</strong> tripwire, the camera is also used to
     <em>detect</em>, not only to record: while the camera is held ready, the app compares
     successive frames in memory, a few times a second, to notice movement in the camera’s view.
-    Those frames are never written to storage, never leave the device, and are discarded as soon
-    as they are compared. As with every other tripwire, an image is saved only once something
-    trips. This tripwire is off unless you switch it on.</li>
+    Those frames never leave the device, and the app saves none of them while it watches. As
+    with every other tripwire, an image is saved only once something trips. If Vision trips on a
+    slow change, the frame it was comparing against is saved with that event too, so you can see
+    what changed; it can be from minutes or hours earlier, and it stays on your iPhone unless
+    you share the event’s evidence. This tripwire is off unless you switch it on.</li>
     <li><strong>Microphone</strong> — to listen or record, only if you turn on the Sound tripwire
     or <em>Record audio in clips</em>; both are off by default, and the app asks for microphone
     access at that moment, not at launch. It listens for sudden sounds nearby as a tamper tripwire, and records
@@ -151,8 +153,9 @@
     Apple Watch, over Apple’s WatchConnectivity, also while iCloud backup is off: the kind of alert,
     the event’s identifier and its time, never a photo, a clip or the event log. The watch keeps the
     identifiers and times of a limited number of recent alerts, and a count of older ones it has
-    summed up, so that a second copy of an alert it still remembers is not shown or counted again.
-    Turning off <em>Cross-device alerts</em> stops this.</li>
+    summed up, so that a second copy of an alert it still remembers is not shown or counted again,
+    and, until each is shown, up to 100 alerts it has been handed (their kind, identifier and time),
+    so that one cut off is shown later. Turning off <em>Cross-device alerts</em> stops this.</li>
     <li><strong>To Apple, once, to certify the app’s signing key.</strong> Once its signing key is certified,
     Malinois signs the records it writes, so that a record you share can be checked as unchanged since it was
     signed. The signing key is made in your iPhone’s Secure Enclave and never leaves it. Once per install (and

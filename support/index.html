@@ -80,7 +80,8 @@
   <h2 id="quick-start">Quick start</h2>
   <p>Malinois requires iOS 18 or later. Its Apple Watch companion requires watchOS 10 or later.</p>
   <ol>
-    <li><strong>Set a Malinois PIN.</strong> Four digits, or six. Use a code that is different
+    <li><strong>Set a Malinois PIN.</strong> A new install opens on a welcome screen: See it work tries the
+    sensors with nothing recorded, and Set a PIN starts here. Four digits, or six. Use a code that is different
     from your iPhone passcode and your Guided Access passcode.</li>
     <li><strong>Set up Guided Access once.</strong> It locks the iPhone to Malinois while it is
     armed. The steps are <a href="#guided-access-setup">below</a>, and the arming screen shows
@@ -113,7 +114,7 @@
     <li>Before typing your PIN, look at <strong>Armed for</strong> above the pad. It should match
     how long ago you armed.</li>
     <li>After disarming, Home's <strong>Last armed</strong> line should start at the time you armed.
-    If it starts later, your session ended and another began.</li>
+    If it starts later, your armed session ended and another began.</li>
     <li>Open the Event Log and read every entry since you armed, not just the newest. A disarm you
     didn't make, <strong>Monitoring interrupted</strong> or a wrong PIN means someone tried, even if
     the phone looks untouched. So does a change you didn't make to a setting that protects the
@@ -144,8 +145,9 @@
 
   <h3>I typed the wrong PIN too many times.</h3>
   <p>After five wrong tries the keypad locks for 30 seconds, and each further wrong try doubles the
-  wait, up to an hour. The right PIN resets it. On the armed screen, every wrong PIN is recorded in
-  the Event Log, and Malinois tries to take a photo.</p>
+  wait, up to an hour. The wait counts down only while the iPhone is awake. The right PIN resets
+  it. On the armed screen, every wrong PIN is recorded in the Event Log, and Malinois tries to take
+  a photo.</p>
 
   <h3>Why did Malinois ask for my PIN when I tapped ARM?</h3>
   <p>When your PIN has not been entered for 14 days, Malinois asks for it before arming, so you find
@@ -172,7 +174,7 @@
   <p>Guided Access is an iOS feature that locks the iPhone to one app. While Malinois is armed under
   it, nobody can go to the Home Screen, switch apps or close Malinois without your Guided Access
   passcode, as long as Voice Control is off and Face ID and Touch ID are off for ending Guided Access. Holding the buttons to force a restart still ends
-  Guided Access and the watch; Malinois normally records the handling first and, on Pro with iCloud
+  Guided Access and the armed session; Malinois normally records the handling first and, on Pro with iCloud
   backup on and a connection, sends it. On an iPhone without a passcode a forced restart also
   leaves the phone open; the arming screen says so.</p>
   <p>Without it, the armed iPhone is unlocked behind a dark screen: anyone who picks it up can leave
@@ -187,19 +189,19 @@
     <li>In iOS Settings, go to <strong>Accessibility → Guided Access</strong> and turn it on.</li>
     <li>Under <strong>Passcode Settings</strong>, set a Guided Access passcode that is different from
     your iPhone passcode, so someone who knows your unlock code cannot end Guided Access. They could
-    still force a restart, which ends the watch, and then unlock the phone with that code. Leave
+    still force a restart, which ends the armed session, and then unlock the phone with that code. Leave
     <strong>Face ID</strong> (or Touch ID) off there as a way to end Guided Access: anyone who knows your
     iPhone passcode can add their own face or fingerprint and end Guided Access with it.</li>
     <li>In Malinois, triple-click the side button (or the Home button). Before you tap
     <strong>Start</strong>, tap <strong>Options</strong> and turn off <strong>Side Button</strong>
-    (one press would otherwise lock the screen and pause the watch) and <strong>Volume
+    (one press would otherwise lock the screen and pause monitoring) and <strong>Volume
     Buttons</strong> (so nobody can turn the alarm down).</li>
     <li>If you use Voice Control, turn it off before you arm: it keeps working under Guided Access
     and can close apps.</li>
   </ol>
 
   <h3>Guided Access says it is unavailable.</h3>
-  <p>This is an iOS 26 bug, not Malinois: after a Guided Access session ends, iOS can refuse to start
+  <p>This is an iOS bug, not Malinois: after a Guided Access session ends, iOS can refuse to start
   a new one for a few minutes (“Guided Access is unavailable”). Wait 3 to 5 minutes, or restart the
   iPhone. It seems to happen more often when Face ID or Touch ID is set as a way to end Guided
   Access.</p>
